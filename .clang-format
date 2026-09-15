@@ -1,0 +1,40 @@
+BasedOnStyle: LLVM
+DerivePointerAlignment: false
+PointerAlignment: Left
+UseTab: Never
+IndentWidth: 4
+TabWidth: 4
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: MultiLine
+InsertBraces: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLoopsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortEnumsOnASingleLine: false
+IndentCaseLabels: false
+ColumnLimit: 79
+AccessModifierOffset: -4
+NamespaceIndentation: All
+FixNamespaceComments: false
+SpacesInCStyleCastParentheses: false
+SpaceAfterCStyleCast: true
+Cpp11BracedListStyle: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+SortIncludes: CaseInsensitive
+WhitespaceSensitiveMacros:
+  - 'HSD_ASSERT'
+  - 'HSD_ASSERTREPORT'
+IncludeBlocks: Regroup
+IncludeCategories:
+  # TODO: Required for weird interactions with dolphin headers
+  - Regex: '^<Runtime/platform\.h>$'
+    Priority: 1
+  # TODO: Required for unknown reasons
+  - Regex: '^<(.*/)?forward\.h>$'
+    Priority: 2
+  # TODO: Required for unknown reasons
+  - Regex: '^<[^/]*>$'
+    Priority: 6
+    SortPriority: 3

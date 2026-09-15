@@ -1,0 +1,499 @@
+#include "tag_assist.h"
+
+#include <melee/cm/camera.h>
+#include <melee/cm/types.h>
+#include <melee/ft/fighter.h>
+#include <melee/ft/ftanim.h>
+#include <melee/ft/ftcommon.h>
+#include <melee/ft/inlines.h>
+#include <melee/ft/types.h>
+#include <melee/if/textdraw.h>
+#include <melee/if/textlib.h>
+#include <melee/mp/forward.h>
+#include <melee/mp/mpcoll.h>
+#include <sysdolphin/baselib/controller.h>
+#include <sysdolphin/baselib/jobj.h>
+
+#include <melee/ft/kinds/ftCaptain/forward.h>
+#include <melee/ft/kinds/ftDonkey/forward.h>
+#include <melee/ft/kinds/ftFox/forward.h>
+#include <melee/ft/kinds/ftGameWatch/forward.h>
+#include <melee/ft/kinds/ftKoopa/forward.h>
+#include <melee/ft/kinds/ftMario/forward.h>
+#include <melee/ft/kinds/ftPopo/forward.h>
+#include <melee/ft/kinds/ftZelda/forward.h>
+
+/// v3 design (assist-call only -- tagging deliberately out of scope for now):
+///
+/// Ports are fixed roles, not swappable: Port 1 & Port 2 are always the
+/// human "point" characters; Port 3 & Port 4 are always their "assist"
+/// characters. Team A = Port 1 + Port 3, Team B = Port 2 + Port 4. Both
+/// point and assist are REAL, already-existing player-slot Fighters from
+/// the game's own normal spawn pipeline (assist ports set to CPU in CSS) --
+/// nothing is ever spawned or freed by this module, so each has its own
+/// independent stock/percent for free via the normal MatchPlayerData
+/// system, with no risk of the flat/collapsed-model bugs an ad-hoc
+/// Fighter_Create() mid-match produced in an earlier version.
+///
+/// Benching (v2 -> v3 fix): earlier versions only set rendering/collision
+/// flags (invisible, x2219_b1 intangibility, etc.) on the assist. That
+/// held for exactly one frame: the assist's own CPU AI (ftCo_800B3900,
+/// ftCo_0A01.c) kept running every frame regardless, deciding to walk/
+/// attack/whatever, and each state transition's own Enter-function cleanup
+/// reset those flags back to normal -- "goes invisible for a second, then
+/// back to being a normal CPU." The fix is fp->x221F_b3 = 1, which skips
+/// the CPU AI think-call entirely (Fighter_8006ABA0, fighter.c) -- no
+/// decisions are made, so nothing can reset anything. Combined with
+/// fp->cpu.kind = CpuKind_5 (disables CPU control outright, per
+/// ftCo_IsCpuControlled) this makes a genuinely inert, do-nothing fighter,
+/// not just a fighter we're racing against its own AI.
+///
+/// Explicitly out of scope for this pass:
+///  - Tagging (swapping which of point/assist is "active") -- come back to
+///    this once assist-calling alone is solid.
+///  - A dedicated menu/game-mode entry -- this still rides on a normal
+///    4-player VS match; surfacing it as its own mode is a separate,
+///    larger menu/scene-table change for later.
+///  - Full roster coverage beyond TagAssist_GetSpecialNState's current
+///    handful of characters.
+
+/// D-Pad Down calls in your assist. Note this can also fire alongside
+/// retail's own down-taunt if that's bound to the same input in a given
+/// state -- known v1 overlap, revisit if that's a problem in practice.
+#define TAG_ASSIST_PRESSED HSD_PAD_DPADDOWN
+
+/// How long a called assist stays out before auto-benching.
+/// 180 = 3 seconds at 60fps.
+#define ASSIST_DURATION_FRAMES 180
+
+/// Frames to let a freshly-spawned assist run completely untouched before
+/// we freeze it for the first time. This used to be 60 (~1s) to work
+/// around the flat-model bug (see TagAssist_Unbench's scale-reset comment
+/// for the actual root cause and fix). Now that the scale is force-reset
+/// directly on every bench/unbench, a full second of free-roaming CPU next
+/// to the point character is more risk than benefit -- e.g. it can get
+/// grabbed or otherwise physically linked to the point character before
+/// we ever freeze it, which showed up as "not affected by gravity, stuck
+/// riding the point character's momentum" on the first call. Kept small
+/// (not 0) only as a margin against any other first-frame spawn race.
+#define INITIAL_SETTLE_FRAMES 5
+
+typedef struct TeamState {
+    Fighter_GObj* point;  ///< Port 1 or Port 2: always human, never touched
+    Fighter_GObj* assist; ///< Port 3 or Port 4: CPU in CSS, benched by
+                           ///< default, this module owns its behavior
+    bool initialized;     ///< true once both members have been seen
+    bool benched_once;    ///< true once the initial (post-settle) bench has
+                           ///< actually been applied
+    u32 settle_timer;     ///< frames left before the initial bench (0 once
+                           ///< benched_once is true)
+    bool assist_out;      ///< true while the assist has been called out
+    u32 assist_timer;     ///< frames left before assist_out auto-benches
+    u32 despawn_grace;    ///< hard-cap frames left to wait on
+                           ///< ftAnim_IsFramesRemaining before re-benching
+                           ///< unconditionally once assist_timer hits 0
+} TeamState;
+
+/// If the assist gets KO'd for real while called out, forcing our bench
+/// (x221F_b3=1) the instant assist_timer expires can land mid-way through
+/// the real death/respawn action-state sequence -- Fighter_procUpdate
+/// early-returns on x221F_b3, which can halt whatever later step in that
+/// sequence re-arms the percent/stock HUD digit for this port. Waiting for
+/// the current animation to finish (capped, in case it never reports
+/// done) avoids interrupting that sequence. Kept short: ftAnim_IsFramesRemaining
+/// almost certainly never reports "done" once the assist settles into a
+/// normal looping idle animation after its move (looping = always "frames
+/// remaining"), so in the common case this cap is what actually decides
+/// how long the assist lingers, not real animation completion. This is a
+/// crude safety margin against interrupting a death sequence, not a
+/// precise detector -- worth revisiting with a real "is dying" signal.
+#define ASSIST_DESPAWN_GRACE_FRAMES 20
+
+/// Team A = Port 1 (point) + Port 3 (assist); Team B = Port 2 (point) +
+/// Port 4 (assist). In 0-indexed player_id terms: team = player_id % 2,
+/// role = player_id / 2 (0 = point, 1 = assist).
+static TeamState sTeams[2];
+
+/// Returns the Neutral Special action-state ID for a character, or -1 if
+/// this character isn't wired up for assists yet. Extending roster coverage
+/// is just adding more cases here using that character's own ftXx_MS_*
+/// enum (see e.g. src/melee/ft/kinds/ftMario/forward.h).
+static FtMotionId TagAssist_GetSpecialNState(FighterKind kind)
+{
+    switch (kind) {
+    case Ft_Kind_Mario:
+        return ftMr_MS_SpecialN;
+    case Ft_Kind_Fox:
+        return ftFx_MS_SpecialNStart;
+    case Ft_Kind_Captain:
+        return ftCa_MS_SpecialN;
+    case Ft_Kind_Zelda:
+        return ftZd_MS_SpecialN;
+    case Ft_Kind_Donkey:
+        return ftDk_MS_SpecialN;
+    case Ft_Kind_Koopa:
+        return ftKp_MS_SpecialN;
+    case Ft_Kind_GameWatch:
+        return ftGw_MS_SpecialN;
+    case Ft_Kind_Popo:
+        return ftPp_MS_SpecialN;
+    default:
+        return -1;
+    }
+}
+
+/// Puts the assist into a genuinely inert dormant state: no CPU AI
+/// decision-making at all (x221F_b3, which skips Fighter_8006ABA0's call
+/// into ftCo_800B3900 outright -- see the module comment for why this,
+/// not just rendering flags, is what actually makes it stick), CPU control
+/// disabled outright as a second layer (cpu.kind = CpuKind_5), invisible,
+/// intangible (x2219_b1 -- skips hurtboxes/collision AND
+/// ftCo_800D3158's blast-zone/KO check, so this can never cost a stock),
+/// and excluded from camera framing. The GObj/Fighter stays fully alive.
+static void TagAssist_SetBenched(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    fp->x221F_b3 = 1;
+    fp->cpu.kind = CpuKind_5;
+    fp->invisible = true;
+    fp->x2219_b1 = 1;
+    fp->x221E_b1 = 1;
+    fp->x221E_b2 = 1;
+    fp->x221F_b1 = 1;
+    fp->allow_interrupt = false;
+    // Hold a sane scale while benched too (see the matching reset in
+    // TagAssist_Unbench) -- invisible while benched so not visually
+    // needed, but keeps it correct/settled by the time we unbench instead
+    // of depending on that single reset alone.
+    fp->x34_scale.x = 1.0f;
+    fp->x34_scale.y = 1.0f;
+    fp->x34_scale.z = 1.0f;
+    if (fp->x890_cameraBox != NULL) {
+        Camera_80028F5C(fp->x890_cameraBox, CmSubjectState_Inactive);
+    }
+}
+
+/// Reverses TagAssist_SetBenched and repositions the assist next to
+/// `nearGobj` (the point character), facing the same way.
+///
+/// A raw fp->cur_pos write isn't enough: a real fighter carries physics
+/// state that only a real respawn normally resets. Skipping that produced
+/// two bugs -- (1) stale velocity from before the freeze (or accumulated
+/// during it) launches the fighter forward the instant physics resumes,
+/// rendering flat/collapsed on top of that, and (2) after several
+/// call/re-bench cycles the fighter stops moving to the new position at
+/// all, because Fighter_procUpdate's grounded-physics update drags
+/// fp->cur_pos every frame by whatever platform fp->coll_data.floor.index
+/// last pointed at, regardless of what we write to cur_pos. Both are fixed
+/// by mirroring what Fighter_UnkProcessDeath_80068354 actually does on a
+/// real respawn: zero velocity (ftCommon_8007E2FC) and force a fresh
+/// ground/floor re-detection (ground_or_air = GA_Air, gr_vel = 0,
+/// coll_data.x130_flags |= CollData_X130_Locked to briefly lock out ECB
+/// processing) instead of trusting stale coll_data.
+static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* nearFp = GET_FIGHTER(nearGobj);
+
+    ftCommon_8007E2FC(gobj);
+    fp->ground_or_air = GA_Air;
+    fp->gr_vel = 0.0f;
+
+    // Defensive scale reset: ftCommon_GetModelScale(fp) = fp->x34_scale.y *
+    // fp->co_attrs.model_scaling -- x34_scale.y directly drives the actual
+    // rendered/collision scale (via Fighter_UpdateModelScale ->
+    // HSD_JObjSetScale). The intermittent "flat" model is consistent with
+    // this getting caught mid-transition by some brief non-1.0 scale
+    // window (e.g. a landing-squash effect) right as we freeze the assist
+    // for benching, then never correcting itself since a frozen (x221F_b3)
+    // fighter's own animation/state machine never gets the chance to
+    // finish reverting it. Forcing 1:1:1 here and re-pushing it to the
+    // joint transform guarantees a sane scale every time the assist wakes
+    // up, regardless of what it was frozen mid-way through.
+    fp->x34_scale.x = 1.0f;
+    fp->x34_scale.y = 1.0f;
+    fp->x34_scale.z = 1.0f;
+    Fighter_UpdateModelScale(gobj);
+    // NOTE: deliberately NOT setting coll_data.x130_flags |=
+    // CollData_X130_Locked here anymore -- it was never cleared afterward
+    // (retail always pairs it with a frame-counted ecb_lock timer that
+    // expires it; we had no such timer), so it permanently froze this
+    // fighter's environment-collision processing from the first call
+    // onward. That's the likely cause of "died and did not go back to
+    // normal" -- blast-zone/death handling probably depends on ECB
+    // processing actually running.
+
+    fp->cur_pos = nearFp->cur_pos;
+    fp->cur_pos.x += nearFp->facing_dir * 20.0f;
+    fp->facing_dir = nearFp->facing_dir;
+    HSD_JObjSetTranslate(GET_JOBJ(gobj), &fp->cur_pos);
+
+    // The actual fix for "stuck on the last platform it ever landed on":
+    // mpColl_80044628_Floor casts a SEGMENT from coll_data.prev_pos to
+    // cur_pos every frame to detect the floor -- a raw cur_pos write
+    // leaves prev_pos/last_pos stale, so that segment still runs from the
+    // OLD platform through the new position and keeps re-acquiring the
+    // old floor. mpColl_80043680 is retail's own teleport helper (Warp
+    // Star uses exactly this, ftCo_WarpStar.c) -- it collapses
+    // prev_pos/last_pos onto the new cur_pos so next frame's floor check
+    // starts clean instead of dragging from where it used to be.
+    mpColl_80043680(&fp->coll_data, &fp->cur_pos);
+    fp->coll_data.floor.index = -1;
+
+    // Two more sources of "inherits the point character's momentum":
+    // (1) xF8_playerNudgeVel is the anti-overlap push force between nearby
+    // grounded fighters -- it accumulates from proximity to the point
+    // character before we ever freeze this fighter, is normally cleared
+    // once per frame but ONLY when intangible/grounded checks pass (which
+    // fail the whole time we're frozen), and ftCommon_8007E2FC above does
+    // NOT zero it. So it sits frozen, unapplied, then replays in full the
+    // instant Fighter_procUpdate resumes on unbench. (2) while frozen,
+    // Fighter_Spaghetti_8006AD10 skips the ENTIRE input-population block,
+    // so fp->input.lstick/held_buttons are stale from the instant we froze
+    // it -- some Neutral Specials read stick direction on entry, so a
+    // stale "was moving right" reads as if the player still is.
+    fp->xF8_playerNudgeVel.x = 0.0f;
+    fp->xF8_playerNudgeVel.y = 0.0f;
+    fp->input.lstick[0].x = 0.0f;
+    fp->input.lstick[0].y = 0.0f;
+    fp->input.lstick[1].x = 0.0f;
+    fp->input.lstick[1].y = 0.0f;
+    fp->input.lstick[2].x = 0.0f;
+    fp->input.lstick[2].y = 0.0f;
+    fp->input.cstick[0].x = 0.0f;
+    fp->input.cstick[0].y = 0.0f;
+    fp->input.cstick[1].x = 0.0f;
+    fp->input.cstick[1].y = 0.0f;
+    fp->input.cstick[2].x = 0.0f;
+    fp->input.cstick[2].y = 0.0f;
+    fp->input.held_buttons[0] = 0;
+    fp->input.held_buttons[1] = 0;
+    fp->input.held_buttons[2] = 0;
+    fp->input.pressed_buttons = 0;
+    fp->input.released_buttons = 0;
+
+    fp->x221F_b3 = 0;
+    fp->invisible = false;
+    fp->x2219_b1 = 0;
+    fp->x221E_b1 = 0;
+    fp->x221E_b2 = 0;
+    fp->x221F_b1 = 0;
+    if (fp->x890_cameraBox != NULL) {
+        Camera_80028F5C(fp->x890_cameraBox, CmSubjectState_Auto);
+    }
+}
+
+static void TagAssist_TryCallAssist(TeamState* team)
+{
+    Fighter* pointFp = GET_FIGHTER(team->point);
+    Fighter* assistFp = GET_FIGHTER(team->assist);
+    FtMotionId specialN;
+
+    if (team->assist_out) {
+        return; // already out
+    }
+    if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
+        return;
+    }
+
+    specialN = TagAssist_GetSpecialNState(assistFp->kind);
+    if (specialN < 0) {
+        return; // this character isn't wired up for assists yet
+    }
+
+    TagAssist_Unbench(team->assist, team->point);
+    Fighter_ChangeMotionState(team->assist, specialN, 0, 0.0f, 1.0f, 0.0f,
+                              NULL);
+
+    team->assist_out = true;
+    team->assist_timer = ASSIST_DURATION_FRAMES;
+    team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
+}
+
+static void TagAssist_UpdateTimer(TeamState* team)
+{
+    if (!team->assist_out) {
+        return;
+    }
+    if (team->assist_timer > 0) {
+        team->assist_timer--;
+        return;
+    }
+    // Don't force the bench mid-animation -- in particular, don't
+    // interrupt a real death/respawn sequence if the assist got KO'd
+    // while called out. Capped so a state that never reports "done"
+    // can't stall this forever.
+    if (ftAnim_IsFramesRemaining(team->assist) && team->despawn_grace > 0) {
+        team->despawn_grace--;
+        return;
+    }
+    TagAssist_SetBenched(team->assist);
+    team->assist_out = false;
+}
+
+/// Diagnostic only: records every distinct fp->player_id this hook has ever
+/// seen, so TagAssist_DrawStatusOverlay can show it.
+static s8 sSeenPlayerIds[4] = { -1, -1, -1, -1 };
+
+static void TagAssist_TrackPlayerId(u8 pid)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        if (sSeenPlayerIds[i] == (s8) pid) {
+            return;
+        }
+        if (sSeenPlayerIds[i] == -1) {
+            sSeenPlayerIds[i] = (s8) pid;
+            return;
+        }
+    }
+}
+
+/// Detects a new match starting: our module-level TeamState is a plain C
+/// static that lives for the whole process, but every match creates fresh
+/// Fighter_GObj instances -- without this, a second match in the same
+/// Dolphin session inherits the previous match's stale pointers/flags
+/// (initialized=true with dead GObj pointers, an assist_out/timer left
+/// over from however the last match ended, etc.), which is exactly what
+/// produced the "next match started with the assist moving around, then
+/// randomly went invisible" symptom. Resets THIS team's state the moment
+/// either role's gobj changes out from under it; converges correctly
+/// regardless of which of point/assist's frame call notices first (see the
+/// inline comments below).
+static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
+                                     Fighter_GObj* gobj)
+{
+    if (roleIdx == 0) {
+        if (team->point != NULL && team->point != gobj) {
+            team->initialized = false;
+            team->benched_once = false;
+            team->settle_timer = 0;
+            team->assist_out = false;
+            team->assist_timer = 0;
+            team->assist = NULL; // let the assist's own call re-set this
+        }
+        team->point = gobj;
+    } else {
+        if (team->assist != NULL && team->assist != gobj) {
+            team->initialized = false;
+            team->benched_once = false;
+            team->settle_timer = 0;
+            team->assist_out = false;
+            team->assist_timer = 0;
+            team->point = NULL; // let the point's own call re-set this
+        }
+        team->assist = gobj;
+    }
+}
+
+void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    int teamIdx = fp->player_id % 2;
+    int roleIdx = fp->player_id / 2; // 0 = point, 1 = assist
+    TeamState* team;
+
+    TagAssist_TrackPlayerId(fp->player_id);
+
+    if (roleIdx >= 2) {
+        return; // only 4 ports (2 teams of point+assist) are handled
+    }
+    team = &sTeams[teamIdx];
+    TagAssist_HandleNewMatch(team, roleIdx, gobj);
+
+    if (!team->initialized) {
+        if (team->point == NULL || team->assist == NULL) {
+            return; // waiting on both point and assist to (re)spawn
+        }
+        team->initialized = true;
+        team->settle_timer = INITIAL_SETTLE_FRAMES;
+    }
+
+    if (gobj == team->assist) {
+        if (!team->benched_once) {
+            // Let a freshly-spawned assist run completely untouched for
+            // INITIAL_SETTLE_FRAMES before ever freezing it -- see that
+            // macro's comment.
+            if (team->settle_timer > 0) {
+                team->settle_timer--;
+                return;
+            }
+            team->benched_once = true;
+        }
+        // Reassert the bench state EVERY frame while not called out,
+        // rather than once: Fighter_ChangeMotionState resets x221F_b3 (and
+        // friends) as part of any state transition, including ones the
+        // assist's own spawn-in sequence triggers internally in the
+        // background after our first bench call -- a one-time write loses
+        // that race unpredictably (sometimes it wins, sometimes the assist
+        // ends up "woken back up" as a normal-moving CPU). Continuously
+        // holding the freeze here means any such reset gets corrected the
+        // very next frame instead of silently sticking.
+        if (!team->assist_out) {
+            TagAssist_SetBenched(team->assist);
+        }
+        return;
+    }
+
+    if (gobj != team->point) {
+        return;
+    }
+
+    TagAssist_TryCallAssist(team);
+    TagAssist_UpdateTimer(team);
+}
+
+/// Always-on-screen confirmation that this build (not vanilla retail) is
+/// what's actually running -- visible from the title screen onward, so you
+/// don't need to start a match to tell the mod loaded. Hooked from
+/// gmscene.c's scene-independent per-frame loop.
+static DevText* sStatusText;
+static char sStatusBuf[0x200];
+
+static HSD_GObj* sStatusTextOwner;
+
+void TagAssist_DrawStatusOverlay(void)
+{
+    HSD_GObj* curOwner = DevText_GetGObj();
+
+    // Self-healing instead of "create once": the overlay has been observed
+    // to vanish at scene transitions (CSS -> intro, intro -> match), which
+    // is consistent with DevText's underlying driving GObj (curOwner) being
+    // torn down and recreated by that transition, orphaning a cached
+    // sStatusText that still looks non-NULL to us but no longer renders.
+    // Recreating whenever the owner GObj changes handles that regardless
+    // of exactly which transition is responsible.
+    if (sStatusText == NULL || curOwner != sStatusTextOwner) {
+        GXColor bg = { 0x00, 0x00, 0x00, 0xC0 };
+        GXColor fg = { 0x40, 0xFF, 0x40, 0xFF };
+        // Positioned mid-screen, away from the real match HUD (percent/
+        // stock icons along the bottom, timer top-center).
+        sStatusText = DevText_Create(7, 100, 90, 42, 5, sStatusBuf);
+        if (sStatusText == NULL) {
+            return;
+        }
+        DevText_Show(curOwner, sStatusText);
+        DevText_HideCursor(sStatusText);
+        DevText_SetBGColor(sStatusText, bg);
+        DevText_SetTextColor(sStatusText, fg);
+        DevText_SetScale(sStatusText, 12.0f, 16.0f);
+        sStatusTextOwner = curOwner;
+    }
+
+    DevText_SetCursorXY(sStatusText, 0, 0);
+    DevText_Printf(sStatusText, "tAi%do%d tBi%do%d", (int) sTeams[0].initialized,
+                   (int) sTeams[0].assist_out, (int) sTeams[1].initialized,
+                   (int) sTeams[1].assist_out);
+
+    if (sTeams[0].assist != NULL) {
+        Fighter* aFp = GET_FIGHTER(sTeams[0].assist);
+        // Diagnostic for the "push force on first call" bug: velocities
+        // as milli-units via %d in case this printf doesn't support %f.
+        DevText_Printf(sStatusText, "\nsv%d,%d gr%d nu%d,%d",
+                       (int) (aFp->self_vel.x * 1000.0f),
+                       (int) (aFp->self_vel.y * 1000.0f),
+                       (int) (aFp->gr_vel * 1000.0f),
+                       (int) (aFp->xF8_playerNudgeVel.x * 1000.0f),
+                       (int) (aFp->xF8_playerNudgeVel.y * 1000.0f));
+    }
+}
