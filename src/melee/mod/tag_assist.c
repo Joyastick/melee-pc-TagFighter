@@ -370,52 +370,57 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
 }
 
-/// Number of sparks in the despawn burst.
-#define ASSIST_DESPAWN_PARTICLE_COUNT 8
-/// How long each spark particle lives, in frames.
-#define ASSIST_DESPAWN_PARTICLE_LIFETIME 0x20
+/// gfx_ids 2, 5 and 24 are the three effects Zelda's Down-B transform
+/// spawns (confirmed live via MELEE_EF_LOG=1 -- see eflib.c's efLib_Create:
+/// these were the only three "ef: gfx_id" lines logged across an entire
+/// session, right as the transform's sparkle burst played). All three are
+/// < 1000, i.e. gfx_id/1000 == 0 in efLib_Create's
+/// efAsync_DatEntries[gfx_id / 1000] bank lookup -- the shared/common
+/// effect bank that's always loaded, not a per-character one gated on
+/// which fighters happen to be in this match. Safe to spawn regardless of
+/// whether Zelda is even one of the 8 characters this mod supports as an
+/// assist.
+static const u32 kDespawnEffectGfxIds[3] = { 2, 5, 24 };
 
-/// Small outward-bursting spark effect at `gobj`'s current position, reusing
-/// the same generic particle bank (gfx_id 0x1C-0x1F, random rotation, offset
-/// driven by efLib_Cb_SetOffset_FromParams) retail uses for its own
-/// generic dust/spark bursts (see efsync.c's 0x4CF/0x4D0 handling) -- these
-/// aren't tied to any one character's effect table, so they're safe to
-/// spawn directly from here rather than needing a character-specific
-/// effect id. Purely cosmetic: no gameplay effect, just a visible "poof"
-/// marking the moment the assist actually leaves.
+/// Star/sparkle burst (Zelda's transform effect, see kDespawnEffectGfxIds)
+/// at `gobj`'s current position. Each of the three spawns with its own
+/// baked-in animation/lifetime from its EF_EffectDesc, same as retail's own
+/// call would -- no custom update callback or params needed. Purely
+/// cosmetic: no gameplay effect, just a visible marker for the moment the
+/// assist actually leaves.
 static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Vec3 pos = fp->cur_pos;
     int i;
 
-    for (i = 0; i < ASSIST_DESPAWN_PARTICLE_COUNT; i++) {
-        static const u32 kSparkGfxIds[4] = { 0x1C, 0x1D, 0x1E, 0x1F };
-        u32 gfxId = kSparkGfxIds[i % 4];
-        EF_Effect* effect = efLib_Create_Attach_Pos(gfxId, gobj, &pos);
-        f32 rotY;
-        f32 rotX;
-        HSD_JObj* jobj;
-
-        if (effect == NULL) {
-            continue;
-        }
-
-        effect->update = efLib_Cb_SetOffset_FromParams;
-        effect->lifetime = ASSIST_DESPAWN_PARTICLE_LIFETIME;
-
-        rotY = M_TAU_F * HSD_Randf();
-        rotX = M_TAU_F * HSD_Randf();
-        jobj = GET_JOBJ(effect->gobj);
-        HSD_JObjSetRotationY(jobj, rotY);
-        HSD_JObjSetRotationX(jobj, rotX);
-
-        // Outward radial offset per frame, same construction retail uses
-        // for its own random spark burst (efsync.c cases 0x4CF/0x4D0).
-        effect->params.x = 2.0f * cosf(rotX) * sinf(rotY);
-        effect->params.y = 2.0f * sinf(rotX);
-        effect->params.z = 2.0f * cosf(rotX) * cosf(rotY);
+    for (i = 0; i < 3; i++) {
+        efLib_Create_Attach_Pos(kDespawnEffectGfxIds[i], gobj, &pos);
     }
+}
+
+/// Diagnostic for the "slides on first call, fine after a real respawn"
+/// report: dumps exactly what the grounded anti-overlap push
+/// (ftCommon_8007E0E4/xF8_playerNudgeVel) and floor state look like while
+/// the assist is actually out, throttled to every 10 frames so a 3-second
+/// call produces a readable handful of lines instead of ~180. Comparing a
+/// first-ever call against a call made after the assist has died and
+/// respawned for real once should show whether coll_data.floor.index (or
+/// the nudge push itself) actually differs between the two -- i.e. whether
+/// TagAssist_Unbench is missing some init that a real spawn-in normally
+/// does before a fighter's collision state is trustworthy.
+static void TagAssist_LogCollisionState(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    static u32 sLogFrames;
+    if ((sLogFrames++ % 10) != 0) {
+        return;
+    }
+    OSReport("TagAssist: out nudge=%.3f,%.3f floor_idx=%d goa=%d "
+             "pos=%.1f,%.1f,%.1f\n",
+             fp->xF8_playerNudgeVel.x, fp->xF8_playerNudgeVel.y,
+             fp->coll_data.floor.index, (int) fp->ground_or_air,
+             fp->cur_pos.x, fp->cur_pos.y, fp->cur_pos.z);
 }
 
 static void TagAssist_UpdateTimer(TeamState* team)
@@ -423,6 +428,7 @@ static void TagAssist_UpdateTimer(TeamState* team)
     if (!team->assist_out) {
         return;
     }
+    TagAssist_LogCollisionState(team->assist);
     if (team->assist_timer > 0) {
         team->assist_timer--;
         return;
