@@ -253,21 +253,21 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // processing actually running.
 
     fp->cur_pos = nearFp->cur_pos;
-    // Wide enough to clear ftcommon.c's grounded anti-overlap push
-    // (ftCommon_8007E0E4, xF8_playerNudgeVel) for every character, not just
-    // an average one -- it re-evaluates every frame against each fighter's
-    // own per-character x2C4 collision width once BOTH are grounded, and
-    // 20.0f was inside that combined threshold for wide-ECB characters
-    // (observed: Captain Falcon) while narrower ones (observed: Mario)
-    // happened to clear it. We spawn airborne (ground_or_air = GA_Air,
-    // above), so this doesn't fire immediately -- but the moment the
-    // assist lands next to the point character, being inside the
-    // threshold means real per-frame push force, not a one-off nudge,
-    // until they're far enough apart -- i.e. exactly the "something is
-    // pushing it" slide. 150.0f comfortably clears the widest character's
-    // threshold; the assist still reads as "right next to" the point
-    // character on screen at this scale.
-    fp->cur_pos.x += nearFp->facing_dir * 150.0f;
+    // Deliberately close (tighter than ftcommon.c's grounded anti-overlap
+    // push threshold -- ftCommon_8007E0E4/xF8_playerNudgeVel -- for
+    // wide-ECB characters like Captain Falcon): a wider offset (150.0f)
+    // reliably cleared it, but read as spawning the assist too far from
+    // the point character. At 10.0f, expect the same "something is
+    // pushing it apart" slide to come back for wide-ECB characters once
+    // the assist lands next to the point character and both are grounded
+    // -- that's this same per-frame push, not a new bug, and not fixable
+    // from the spawn offset alone at this distance. If that's not
+    // acceptable, the real fix is on the OTHER side of the tradeoff:
+    // suppress/clamp xF8_playerNudgeVel for the assist specifically
+    // (e.g. intangibility already skips hurtboxes -- extending that or an
+    // equivalent flag to this push check) rather than backing off the
+    // spawn distance.
+    fp->cur_pos.x += nearFp->facing_dir * 10.0f;
     fp->facing_dir = nearFp->facing_dir;
     HSD_JObjSetTranslate(GET_JOBJ(gobj), &fp->cur_pos);
 
