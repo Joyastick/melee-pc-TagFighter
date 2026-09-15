@@ -1,8 +1,13 @@
 #include "tag_assist.h"
 
+#include <math.h>
+
+#include <Runtime/platform.h>
 #include <dolphin/os.h>
 #include <melee/cm/camera.h>
 #include <melee/cm/types.h>
+#include <melee/ef/eflib.h>
+#include <melee/ef/types.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
@@ -14,6 +19,7 @@
 #include <melee/mp/mpcoll.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/jobj.h>
+#include <sysdolphin/baselib/random.h>
 
 #include <melee/ft/kinds/ftCaptain/forward.h>
 #include <melee/ft/kinds/ftDonkey/forward.h>
@@ -364,6 +370,54 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
 }
 
+/// Number of sparks in the despawn burst.
+#define ASSIST_DESPAWN_PARTICLE_COUNT 8
+/// How long each spark particle lives, in frames.
+#define ASSIST_DESPAWN_PARTICLE_LIFETIME 0x20
+
+/// Small outward-bursting spark effect at `gobj`'s current position, reusing
+/// the same generic particle bank (gfx_id 0x1C-0x1F, random rotation, offset
+/// driven by efLib_Cb_SetOffset_FromParams) retail uses for its own
+/// generic dust/spark bursts (see efsync.c's 0x4CF/0x4D0 handling) -- these
+/// aren't tied to any one character's effect table, so they're safe to
+/// spawn directly from here rather than needing a character-specific
+/// effect id. Purely cosmetic: no gameplay effect, just a visible "poof"
+/// marking the moment the assist actually leaves.
+static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    Vec3 pos = fp->cur_pos;
+    int i;
+
+    for (i = 0; i < ASSIST_DESPAWN_PARTICLE_COUNT; i++) {
+        static const u32 kSparkGfxIds[4] = { 0x1C, 0x1D, 0x1E, 0x1F };
+        u32 gfxId = kSparkGfxIds[i % 4];
+        EF_Effect* effect = efLib_Create_Attach_Pos(gfxId, gobj, &pos);
+        f32 rotY;
+        f32 rotX;
+        HSD_JObj* jobj;
+
+        if (effect == NULL) {
+            continue;
+        }
+
+        effect->update = efLib_Cb_SetOffset_FromParams;
+        effect->lifetime = ASSIST_DESPAWN_PARTICLE_LIFETIME;
+
+        rotY = M_TAU_F * HSD_Randf();
+        rotX = M_TAU_F * HSD_Randf();
+        jobj = GET_JOBJ(effect->gobj);
+        HSD_JObjSetRotationY(jobj, rotY);
+        HSD_JObjSetRotationX(jobj, rotX);
+
+        // Outward radial offset per frame, same construction retail uses
+        // for its own random spark burst (efsync.c cases 0x4CF/0x4D0).
+        effect->params.x = 2.0f * cosf(rotX) * sinf(rotY);
+        effect->params.y = 2.0f * sinf(rotX);
+        effect->params.z = 2.0f * cosf(rotX) * cosf(rotY);
+    }
+}
+
 static void TagAssist_UpdateTimer(TeamState* team)
 {
     if (!team->assist_out) {
@@ -381,6 +435,7 @@ static void TagAssist_UpdateTimer(TeamState* team)
         team->despawn_grace--;
         return;
     }
+    TagAssist_SpawnDespawnEffect(team->assist);
     TagAssist_SetBenched(team->assist);
     team->assist_out = false;
 }
