@@ -1,5 +1,6 @@
 #include "tag_assist.h"
 
+#include <dolphin/os.h>
 #include <melee/cm/camera.h>
 #include <melee/cm/types.h>
 #include <melee/ft/fighter.h>
@@ -305,6 +306,17 @@ static void TagAssist_TryCallAssist(TeamState* team)
     Fighter_ChangeMotionState(team->assist, specialN, 0, 0.0f, 1.0f, 0.0f,
                               NULL);
 
+    // Diagnostic for the per-character sliding-on-call bug (seen on
+    // Captain Falcon, not seen on Mario): dump exactly what Unbench left
+    // behind right as the new action state takes over, before any of this
+    // frame's physics/AS-script code has a chance to touch it further.
+    OSReport("TagAssist: called kind=%d sv=%.3f,%.3f gr=%.3f goa=%d "
+             "scale=%.2f,%.2f,%.2f\n",
+             (int) assistFp->kind, assistFp->self_vel.x, assistFp->self_vel.y,
+             assistFp->gr_vel, (int) assistFp->ground_or_air,
+             assistFp->x34_scale.x, assistFp->x34_scale.y,
+             assistFp->x34_scale.z);
+
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
@@ -452,9 +464,18 @@ static char sStatusBuf[0x200];
 
 static HSD_GObj* sStatusTextOwner;
 
+/// DevText_Create(id, ...) silently returns NULL if `id` is already claimed
+/// by another live DevText (see textlib.c's find_by_id) -- it does NOT
+/// overwrite or queue behind the existing owner. dbanim.c's animation-info
+/// debug overlay (gated behind DbLevel, off by default) also claims id 7;
+/// picking something no other module uses avoids ever silently losing this
+/// slot to it.
+#define TAG_ASSIST_DEVTEXT_ID 100
+
 void TagAssist_DrawStatusOverlay(void)
 {
     HSD_GObj* curOwner = DevText_GetGObj();
+    static u32 sDiagFrames = 0;
 
     // Self-healing instead of "create once": the overlay has been observed
     // to vanish at scene transitions (CSS -> intro, intro -> match), which
@@ -468,7 +489,10 @@ void TagAssist_DrawStatusOverlay(void)
         GXColor fg = { 0x40, 0xFF, 0x40, 0xFF };
         // Positioned mid-screen, away from the real match HUD (percent/
         // stock icons along the bottom, timer top-center).
-        sStatusText = DevText_Create(7, 100, 90, 42, 5, sStatusBuf);
+        sStatusText =
+            DevText_Create(TAG_ASSIST_DEVTEXT_ID, 100, 90, 42, 5, sStatusBuf);
+        OSReport("TagAssist: overlay (re)create attempt, owner=%p -> %p\n",
+                 (void*) curOwner, (void*) sStatusText);
         if (sStatusText == NULL) {
             return;
         }
@@ -478,6 +502,15 @@ void TagAssist_DrawStatusOverlay(void)
         DevText_SetTextColor(sStatusText, fg);
         DevText_SetScale(sStatusText, 12.0f, 16.0f);
         sStatusTextOwner = curOwner;
+    }
+
+    // Cheap "is this hook even still running" heartbeat -- once every ~2s
+    // at 60fps -- independent of whether DevText itself is visibly
+    // rendering, so a real match can be checked against the console instead
+    // of only against what's on screen.
+    if ((sDiagFrames++ % 120) == 0) {
+        OSReport("TagAssist: overlay heartbeat, owner=%p text=%p\n",
+                 (void*) curOwner, (void*) sStatusText);
     }
 
     DevText_SetCursorXY(sStatusText, 0, 0);
