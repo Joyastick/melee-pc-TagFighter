@@ -253,7 +253,21 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // processing actually running.
 
     fp->cur_pos = nearFp->cur_pos;
-    fp->cur_pos.x += nearFp->facing_dir * 20.0f;
+    // Wide enough to clear ftcommon.c's grounded anti-overlap push
+    // (ftCommon_8007E0E4, xF8_playerNudgeVel) for every character, not just
+    // an average one -- it re-evaluates every frame against each fighter's
+    // own per-character x2C4 collision width once BOTH are grounded, and
+    // 20.0f was inside that combined threshold for wide-ECB characters
+    // (observed: Captain Falcon) while narrower ones (observed: Mario)
+    // happened to clear it. We spawn airborne (ground_or_air = GA_Air,
+    // above), so this doesn't fire immediately -- but the moment the
+    // assist lands next to the point character, being inside the
+    // threshold means real per-frame push force, not a one-off nudge,
+    // until they're far enough apart -- i.e. exactly the "something is
+    // pushing it" slide. 150.0f comfortably clears the widest character's
+    // threshold; the assist still reads as "right next to" the point
+    // character on screen at this scale.
+    fp->cur_pos.x += nearFp->facing_dir * 150.0f;
     fp->facing_dir = nearFp->facing_dir;
     HSD_JObjSetTranslate(GET_JOBJ(gobj), &fp->cur_pos);
 
