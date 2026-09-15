@@ -93,6 +93,10 @@ typedef struct TeamState {
     u32 despawn_grace;    ///< hard-cap frames left to wait on
                            ///< ftAnim_IsFramesRemaining before re-benching
                            ///< unconditionally once assist_timer hits 0
+    u32 last_seen_frame;  ///< sFrameCounter value as of the most recent
+                           ///< TagAssist_OnFighterInputFrame call for
+                           ///< *either* member of this team -- see
+                           ///< TAG_ASSIST_STALE_FRAMES
 } TeamState;
 
 /// If the assist gets KO'd for real while called out, forcing our bench
@@ -114,6 +118,30 @@ typedef struct TeamState {
 /// Port 4 (assist). In 0-indexed player_id terms: team = player_id % 2,
 /// role = player_id / 2 (0 = point, 1 = assist).
 static TeamState sTeams[2];
+
+/// Incremented once per TagAssist_DrawStatusOverlay call (i.e. once per
+/// retail frame, unconditionally, every scene -- see gmscene.c). Used
+/// together with TeamState::last_seen_frame to tell "this team's fighters
+/// are still being simulated" apart from "the match ended (or a reset
+/// happened) and these are now dangling Fighter_GObj pointers into freed
+/// memory" -- see TAG_ASSIST_STALE_FRAMES for why this exists at all.
+static u32 sFrameCounter;
+
+/// How many frames of silence from TagAssist_OnFighterInputFrame (i.e. no
+/// port on this team got a fighter-input-frame call at all) before the
+/// overlay stops trusting sTeams[i].assist/point and treats them as stale.
+/// Root-caused from a real crash: leaving a match (results screen, or a
+/// hard reset) stops fighters from being simulated -- and therefore stops
+/// TagAssist_OnFighterInputFrame from ever being called for them again --
+/// but this module kept the last-known Fighter_GObj* around indefinitely,
+/// and the overlay (which runs every frame in every scene, unconditionally)
+/// kept dereferencing it. A hard reset frees the backing memory outright
+/// (crash); an ordinary scene change merely recycles the GObj pool slot
+/// (silently wrong data, not a crash) -- either way the pointer was never
+/// safe to keep trusting once nothing is updating it. 2 frames is enough
+/// margin for ordinary per-frame call-order jitter without masking a real
+/// staleness for very long.
+#define TAG_ASSIST_STALE_FRAMES 2
 
 /// Returns the Neutral Special action-state ID for a character, or -1 if
 /// this character isn't wired up for assists yet. Extending roster coverage
@@ -412,6 +440,7 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
     }
     team = &sTeams[teamIdx];
     TagAssist_HandleNewMatch(team, roleIdx, gobj);
+    team->last_seen_frame = sFrameCounter;
 
     if (!team->initialized) {
         if (team->point == NULL || team->assist == NULL) {
@@ -477,6 +506,8 @@ void TagAssist_DrawStatusOverlay(void)
     HSD_GObj* curOwner = DevText_GetGObj();
     static u32 sDiagFrames = 0;
 
+    sFrameCounter++;
+
     // Self-healing instead of "create once": the overlay has been observed
     // to vanish at scene transitions (CSS -> intro, intro -> match), which
     // is consistent with DevText's underlying driving GObj (curOwner) being
@@ -518,7 +549,17 @@ void TagAssist_DrawStatusOverlay(void)
                    (int) sTeams[0].assist_out, (int) sTeams[1].initialized,
                    (int) sTeams[1].assist_out);
 
-    if (sTeams[0].assist != NULL) {
+    // sTeams[0].assist is a raw Fighter_GObj* that TagAssist_OnFighterInputFrame
+    // stops refreshing as soon as its fighters stop being simulated (match
+    // end -> results screen, or a reset) -- nothing else invalidates it, so
+    // it can easily be a dangling pointer into freed memory by the time this
+    // unconditional, every-scene, every-frame draw call gets to it. Root
+    // cause of a real crash (TagAssist_DrawStatusOverlay reading through a
+    // freed assist fighter right after leaving a match); see
+    // TAG_ASSIST_STALE_FRAMES.
+    if (sTeams[0].assist != NULL &&
+        sFrameCounter - sTeams[0].last_seen_frame <= TAG_ASSIST_STALE_FRAMES)
+    {
         Fighter* aFp = GET_FIGHTER(sTeams[0].assist);
         // Diagnostic for the "push force on first call" bug: velocities
         // as milli-units via %d in case this printf doesn't support %f.
