@@ -649,6 +649,15 @@ config.libs = [
         ],
     ),
     MeleeLib(
+        "mod (Tag-team mod)",
+        [
+            # Not "Matching" in the decomp sense (there is no retail
+            # equivalent) -- this flag is what makes --non-matching's
+            # link_order_callback include the object in the link at all.
+            Object(Matching, "melee/mod/tag_assist.c"),
+        ],
+    ),
+    MeleeLib(
         "ft (Fighters)",
         [
             # Main

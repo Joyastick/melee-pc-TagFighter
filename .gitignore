@@ -38,6 +38,14 @@ orig/*/sys/*
 .env
 .venv
 env/
+
+# Local build/dev artifacts (large, machine-specific, or copyrighted game data)
+/build_vanilla/
+/iso_build/
+/verify_extract/
+/verify_extract2/
+/tools_ext/
+*.iso
 venv/
 ENV/
 env.bak/

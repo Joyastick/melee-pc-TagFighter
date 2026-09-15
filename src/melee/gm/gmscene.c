@@ -12,6 +12,7 @@
 #include <melee/lb/lbaudio_ax.h>
 #include <melee/lb/lbcardgame.h>
 #include <melee/lb/lbheap.h>
+#include <melee/mod/tag_assist.h>
 #include <sysdolphin/baselib/class.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/gobjproc.h>
@@ -345,6 +346,7 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
                 temp_r25->unk_10.pre_gobj_proc();
             }
             HSD_GObj_RunProcs();
+            TagAssist_DrawStatusOverlay();
             if (temp_r25->unk_0 != -2) {
                 temp_r25->unk_0++;
             }
