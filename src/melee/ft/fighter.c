@@ -32,6 +32,8 @@
 #include "ftlib.h"
 #include "ftmetal.h"
 #include "ftparts.h"
+#include <melee/mod/tag_assist.h>
+
 #include "kinds/ftCommon/ftCo_09F4.h"
 #include "kinds/ftCommon/ftCo_0A01.h"
 #include "kinds/ftCommon/ftCo_0C35.h"
@@ -1902,6 +1904,8 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
             }
 
             Fighter_Spaghetti_8006AD10_Inner1(fp);
+
+            TagAssist_OnFighterInputFrame(gobj);
 
             // Fighter_ClampSpecificValue
             fp->x676_x++;
