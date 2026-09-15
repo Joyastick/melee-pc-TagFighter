@@ -1,6 +1,24 @@
 build/
 build-win/
+build-pc/
 dist/
+build_vanilla/
+iso_build/
+verify_extract/
+verify_extract2/
+tools_ext/
+*.iso
+.ninja_deps
+.ninja_log
+build.ninja
+compile_commands.json
+objdiff.json
+
+# Original (retail-extracted) files -- never commit copyrighted game data.
+orig/*/*
+!orig/*/sys
+orig/*/sys/*
+!orig/*/sys/.gitkeep
 *.inc
 __pycache__/
 
