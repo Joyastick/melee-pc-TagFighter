@@ -307,6 +307,15 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
 
         if (HSD_PadGetResetSwitch()) {
             gmMainLib_8046B0F0.resetting = true;
+            // A reset tears down memory more aggressively than an ordinary
+            // scene change -- unlike returning to CSS/menu, which just
+            // recycles GObj pool slots (a stale Fighter_GObj* still points
+            // at *some* mapped, if wrong, memory), the reset path frees the
+            // backing pools outright. This module holds raw fighter
+            // pointers across frames (TeamState); drop them now, before the
+            // engine tears anything down, so the boot/title scene's first
+            // frames don't dereference memory that's gone.
+            TagAssist_OnReset();
             break;
         }
 

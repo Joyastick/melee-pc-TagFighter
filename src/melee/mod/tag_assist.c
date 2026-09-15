@@ -530,3 +530,25 @@ void TagAssist_DrawStatusOverlay(void)
                        (int) (aFp->xF8_playerNudgeVel.y * 1000.0f));
     }
 }
+
+void TagAssist_OnReset(void)
+{
+    int i;
+    OSReport("TagAssist: reset detected, dropping cached fighter pointers\n");
+    for (i = 0; i < 2; i++) {
+        sTeams[i].point = NULL;
+        sTeams[i].assist = NULL;
+        sTeams[i].initialized = false;
+        sTeams[i].benched_once = false;
+        sTeams[i].settle_timer = 0;
+        sTeams[i].assist_out = false;
+        sTeams[i].assist_timer = 0;
+        sTeams[i].despawn_grace = 0;
+    }
+    // The reset also invalidates whatever memory backed the DevText pool
+    // entry itself, not just the fighters -- force a clean recreate rather
+    // than let the overlay keep writing through a pointer into freed
+    // memory on the very first post-reset frame.
+    sStatusText = NULL;
+    sStatusTextOwner = NULL;
+}

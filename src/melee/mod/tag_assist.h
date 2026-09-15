@@ -47,4 +47,14 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj);
 /// Call once per frame from a scene-independent hook (see gmscene.c).
 void TagAssist_DrawStatusOverlay(void);
 
+/// Clears every fighter pointer this module has cached. Call as soon as a
+/// hardware reset (LRA+Start) is detected, before the engine actually tears
+/// anything down -- unlike an ordinary scene change (menu/CSS/match, which
+/// just recycles GObj pool slots and leaves a stale pointer merely wrong but
+/// still mapped), a reset frees the backing memory pools outright, so a
+/// stale Fighter_GObj* read afterward (e.g. from TagAssist_DrawStatusOverlay,
+/// which runs unconditionally every frame including at the post-reset boot
+/// screen) is a genuine use-after-free.
+void TagAssist_OnReset(void);
+
 #endif
