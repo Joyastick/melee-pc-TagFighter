@@ -481,15 +481,25 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
 /// the nudge push itself) actually differs between the two -- i.e. whether
 /// TagAssist_Unbench is missing some init that a real spawn-in normally
 /// does before a fighter's collision state is trustworthy.
-static void TagAssist_LogCollisionState(Fighter_GObj* gobj)
+static void TagAssist_LogCollisionState(Fighter_GObj* gobj, TeamState* team)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    static u32 sLogFrames;
-    if ((sLogFrames++ % 10) != 0) {
+    // Frames elapsed since THIS call started, derived from the existing
+    // countdown rather than a free-running counter -- a free-running one
+    // would carry over between separate calls (and separate teams) and
+    // stop lining up with "how long has this specific call been out".
+    u32 frame = ASSIST_DURATION_FRAMES - team->assist_timer;
+    // Every frame for the first 40 (0.66s) -- enough to catch exactly
+    // which frame introduces bad velocity/position, since the call-time
+    // snapshot alone (self_vel/gr_vel = 0) isn't the frame where the
+    // slide actually appears -- then fall back to every 10th so a full
+    // 3-second call doesn't spam the console for its whole duration.
+    if (frame >= 40 && (frame % 10) != 0) {
         return;
     }
-    OSReport("TagAssist: out nudge=%.3f,%.3f floor_idx=%d goa=%d "
-             "pos=%.1f,%.1f,%.1f\n",
+    OSReport("TagAssist: out f=%u sv=%.3f,%.3f gr=%.3f nudge=%.3f,%.3f "
+             "floor_idx=%d goa=%d pos=%.2f,%.2f,%.2f\n",
+             frame, fp->self_vel.x, fp->self_vel.y, fp->gr_vel,
              fp->xF8_playerNudgeVel.x, fp->xF8_playerNudgeVel.y,
              fp->coll_data.floor.index, (int) fp->ground_or_air,
              fp->cur_pos.x, fp->cur_pos.y, fp->cur_pos.z);
@@ -500,7 +510,7 @@ static void TagAssist_UpdateTimer(TeamState* team)
     if (!team->assist_out) {
         return;
     }
-    TagAssist_LogCollisionState(team->assist);
+    TagAssist_LogCollisionState(team->assist, team);
     if (team->assist_timer > 0) {
         team->assist_timer--;
         return;
