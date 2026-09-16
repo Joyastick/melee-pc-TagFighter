@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #if defined(__linux__)
@@ -215,14 +218,25 @@ bool preload_single_file(const char* name, int entryNum) {
     bool success = false;
     if (file_len > 0) {
         size_t aligned_sz = (file_len + 31) & ~31;
+#if defined(_WIN32)
+        // MinGW/MSVCRT don't provide POSIX posix_memalign; _aligned_malloc is
+        // the equivalent (freed via _aligned_free, not free()).
+        void* raw_buf = _aligned_malloc(aligned_sz, 32);
+        if (raw_buf != nullptr) {
+#else
         void* raw_buf = nullptr;
         if (posix_memalign(&raw_buf, 32, aligned_sz) == 0 && raw_buf != nullptr) {
+#endif
             s32 bytesRead = DVDReadPrio(&fi, raw_buf, static_cast<s32>(aligned_sz), 0, 1);
             if (bytesRead >= 0) {
                 pc_file_cache_put(key.c_str(), raw_buf, file_len);
                 success = true;
             }
+#if defined(_WIN32)
+            _aligned_free(raw_buf);
+#else
             free(raw_buf);
+#endif
         }
     }
     DVDClose(&fi);
