@@ -416,6 +416,21 @@ static void TagAssist_TryCallAssist(TeamState* team)
     if (sFrameCounter < team->ready_frame) {
         return; // see TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
     }
+    if (pointFp->ground_or_air != GA_Ground) {
+        // Every supported character's assist move is called via its
+        // GROUNDED Neutral Special motion ID (TagAssist_GetSpecialNState)
+        // -- there's no aerial-variant lookup yet, and at least one
+        // character's grounded move script doesn't handle actually being
+        // airborne gracefully (observed: Falcon Punch's forward-glide
+        // phase held self_vel.y at 0 well past its intended duration
+        // when forced into the air, since a real move-triggered call is
+        // the one case TagAssist_Unbench can't safely ground -- neither
+        // fighter has a real floor to copy). Simplest safe fix for now:
+        // don't allow calling the assist while the point character isn't
+        // grounded, rather than risk it on every character until aerial
+        // variants are actually wired up.
+        return;
+    }
 
     specialN = TagAssist_GetSpecialNState(assistFp->kind);
     if (specialN < 0) {
