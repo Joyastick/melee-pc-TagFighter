@@ -99,6 +99,9 @@ typedef struct TeamState {
     u32 despawn_grace;    ///< hard-cap frames left to wait on
                            ///< ftAnim_IsFramesRemaining before re-benching
                            ///< unconditionally once assist_timer hits 0
+    u32 ready_frame;      ///< sFrameCounter value at which the first-ever
+                           ///< TryCallAssist is allowed to proceed -- see
+                           ///< TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
     u32 last_seen_frame;  ///< sFrameCounter value as of the most recent
                            ///< TagAssist_OnFighterInputFrame call for
                            ///< *either* member of this team -- see
@@ -111,14 +114,17 @@ typedef struct TeamState {
 /// early-returns on x221F_b3, which can halt whatever later step in that
 /// sequence re-arms the percent/stock HUD digit for this port. Waiting for
 /// the current animation to finish (capped, in case it never reports
-/// done) avoids interrupting that sequence. Kept short: ftAnim_IsFramesRemaining
-/// almost certainly never reports "done" once the assist settles into a
-/// normal looping idle animation after its move (looping = always "frames
-/// remaining"), so in the common case this cap is what actually decides
-/// how long the assist lingers, not real animation completion. This is a
-/// crude safety margin against interrupting a death sequence, not a
-/// precise detector -- worth revisiting with a real "is dying" signal.
-#define ASSIST_DESPAWN_GRACE_FRAMES 20
+/// done) avoids interrupting that sequence.
+///
+/// Confirmed via a real bug: this used to be 20 (a third of a second) --
+/// nowhere near long enough for an actual death->respawn cycle (fall as a
+/// star, land, get up), which normally runs over a second. A real KO
+/// while assist_out's timer had already run out got benched mid-respawn,
+/// and its percent HUD digit never got reset even though the character
+/// itself did respawn. Bumped to a full 3 seconds -- long enough for any
+/// real respawn to finish, short enough that a genuinely stuck
+/// ftAnim_IsFramesRemaining (idle loop) doesn't hold the assist forever.
+#define ASSIST_DESPAWN_GRACE_FRAMES 180
 
 /// Team A = Port 1 (point) + Port 3 (assist); Team B = Port 2 (point) +
 /// Port 4 (assist). In 0-indexed player_id terms: team = player_id % 2,
@@ -148,6 +154,29 @@ static u32 sFrameCounter;
 /// margin for ordinary per-frame call-order jitter without masking a real
 /// staleness for very long.
 #define TAG_ASSIST_STALE_FRAMES 2
+
+/// Frames to wait after a team is first seen before EVER allowing the
+/// first TryCallAssist to go through. 300 = 5 seconds at 60fps.
+///
+/// Root cause of a real bug: a freshly-spawned fighter's own spawn-in
+/// sequence keeps running internally in the background across several
+/// action-state transitions even while this module holds it frozen (see
+/// the "Reassert the bench state EVERY frame" comment below -- each such
+/// transition resets x221F_b3, which is why we have to keep re-freezing
+/// it every frame instead of once). If the very first call's
+/// Fighter_ChangeMotionState into the assist's Neutral Special races
+/// against that still-in-progress background sequence, the two
+/// transitions can stomp on each other -- observed as the called assist
+/// drifting with self_vel exactly zero at the moment of the call (ruled
+/// out via TagAssist_TryCallAssist's own OSReport dump) but with gravity
+/// and ground collision simply not applying for the rest of that one
+/// move, until it eventually dies off-stage. A real death/respawn always
+/// fixed it afterward because that cycle runs to completion, unlike the
+/// interrupted spawn-in. INITIAL_SETTLE_FRAMES only controls the first
+/// *bench*, not the first *call* -- 5 frames is nowhere near enough for a
+/// spawn sequence to finish, so this is a separate, much longer gate
+/// specifically on the first call.
+#define TAG_ASSIST_FIRST_CALL_GRACE_FRAMES 300
 
 /// Returns the Neutral Special action-state ID for a character, or -1 if
 /// this character isn't wired up for assists yet. Extending roster coverage
@@ -344,6 +373,9 @@ static void TagAssist_TryCallAssist(TeamState* team)
     if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
         return;
     }
+    if (sFrameCounter < team->ready_frame) {
+        return; // see TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
+    }
 
     specialN = TagAssist_GetSpecialNState(assistFp->kind);
     if (specialN < 0) {
@@ -523,6 +555,7 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
         }
         team->initialized = true;
         team->settle_timer = INITIAL_SETTLE_FRAMES;
+        team->ready_frame = sFrameCounter + TAG_ASSIST_FIRST_CALL_GRACE_FRAMES;
     }
 
     if (gobj == team->assist) {
