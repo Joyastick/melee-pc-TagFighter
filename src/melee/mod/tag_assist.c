@@ -21,6 +21,8 @@
 #include <sysdolphin/baselib/jobj.h>
 #include <sysdolphin/baselib/random.h>
 
+#include <melee/ft/kinds/ftCommon/forward.h>
+
 #include <melee/ft/kinds/ftCaptain/forward.h>
 #include <melee/ft/kinds/ftDonkey/forward.h>
 #include <melee/ft/kinds/ftFox/forward.h>
@@ -605,6 +607,30 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
                 team->settle_timer--;
                 return;
             }
+            // Root cause of the sliding-on-first-call bug, found by
+            // comparing two PRE-UNBENCH dumps within the same match that
+            // were byte-for-byte identical (position, floor, ecb flags --
+            // everything this module could read) yet one call slid and
+            // the other didn't: it was never about *state data*, it's
+            // about which action state the assist is transitioning FROM.
+            // TagAssist_SetBenched only twiddles flags -- it never puts
+            // the fighter in a real, fully-resolved action state, so the
+            // very first freeze locks in whatever ad-hoc/interrupted
+            // state its own spawn-in sequence happened to be mid-way
+            // through. The first TryCallAssist then transitions directly
+            // from that malformed state into the assist move, which is
+            // what actually broke. Every later call works because by
+            // then the fighter has already completed one full, clean
+            // action-state cycle (the move itself, or a real
+            // death/respawn) to transition from instead. Forcing a
+            // known-good baseline state here -- before ever freezing it
+            // for the first time -- means every subsequent call always
+            // transitions from something real. ftCo_MS_Wait is a
+            // fighter-generic idle state (used the same way elsewhere,
+            // e.g. ftCo_800C7220.c), not X-specific, so this is safe
+            // for every supported character.
+            Fighter_ChangeMotionState(gobj, ftCo_MS_Wait, 0, 0.0f, 1.0f,
+                                      0.0f, NULL);
             team->benched_once = true;
         }
         // Reassert the bench state EVERY frame while not called out,
