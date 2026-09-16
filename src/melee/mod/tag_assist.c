@@ -74,16 +74,28 @@
 #define ASSIST_DURATION_FRAMES 180
 
 /// Frames to let a freshly-spawned assist run completely untouched before
-/// we freeze it for the first time. This used to be 60 (~1s) to work
-/// around the flat-model bug (see TagAssist_Unbench's scale-reset comment
-/// for the actual root cause and fix). Now that the scale is force-reset
-/// directly on every bench/unbench, a full second of free-roaming CPU next
-/// to the point character is more risk than benefit -- e.g. it can get
-/// grabbed or otherwise physically linked to the point character before
-/// we ever freeze it, which showed up as "not affected by gravity, stuck
-/// riding the point character's momentum" on the first call. Kept small
-/// (not 0) only as a margin against any other first-frame spawn race.
-#define INITIAL_SETTLE_FRAMES 5
+/// we freeze it for the first time.
+///
+/// This used to be 60 (~1s), cut to 5 out of concern it let the assist get
+/// grabbed/physically linked to the point character before ever being
+/// frozen -- symptom quoted at the time: "not affected by gravity, stuck
+/// riding the point character's momentum" on the first call.
+///
+/// That's exactly the bug that came back at 5 frames, and increasing the
+/// grace period before the first *call* (TAG_ASSIST_FIRST_CALL_GRACE_FRAMES)
+/// didn't help at all -- proving the corruption happens at the first
+/// *bench*, not the first call; waiting longer afterward can't fix state
+/// that was already frozen mid-transition. The actual distinguishing
+/// factor isn't point-character proximity (CSS spawn points are normally
+/// well separated, and this module's own 10.0f re-spawn offset for
+/// *later* calls is fine): every match starts with an intro/countdown
+/// sequence (fighters descend onto the stage, "3, 2, 1, GO") that a real
+/// mid-match death/respawn never repeats. 5 frames freezes the assist
+/// while that one-time intro is still running, every match, without
+/// fail -- corrupting something the intro never gets to finish, which a
+/// later real respawn (a completely different code path) simply doesn't
+/// share. 180 frames (3s) comfortably outlasts the intro.
+#define INITIAL_SETTLE_FRAMES 180
 
 typedef struct TeamState {
     Fighter_GObj* point;  ///< Port 1 or Port 2: always human, never touched
