@@ -483,31 +483,33 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
 }
 
-/// gfx_ids 2, 5 and 24 are the three effects Zelda's Down-B transform
-/// spawns (confirmed live via MELEE_EF_LOG=1 -- see eflib.c's efLib_Create:
-/// these were the only three "ef: gfx_id" lines logged across an entire
-/// session, right as the transform's sparkle burst played). All three are
-/// < 1000, i.e. gfx_id/1000 == 0 in efLib_Create's
-/// efAsync_DatEntries[gfx_id / 1000] bank lookup -- the shared/common
-/// effect bank that's always loaded, not a per-character one gated on
-/// which fighters happen to be in this match. Safe to spawn regardless of
-/// whether Zelda is even one of the 8 characters this mod supports as an
-/// assist.
-static const u32 kDespawnEffectGfxIds[3] = { 2, 5, 24 };
+/// gfx_ids 2 and 24 are Zelda's Down-B transform sparkle (confirmed live
+/// via MELEE_EF_LOG=1 -- see eflib.c's efLib_Create). The first capture
+/// also included id 5, but that was contamination from an unrelated
+/// action (most likely a jump -- the resulting effect visibly looked like
+/// a jump dust puff, not a sparkle burst) elsewhere in that longer,
+/// messier test session; a clean capture that did nothing but transform
+/// immediately on spawn showed only these two. Both are < 1000, i.e.
+/// gfx_id/1000 == 0 in efLib_Create's efAsync_DatEntries[gfx_id / 1000]
+/// bank lookup -- the shared/common effect bank that's always loaded, not
+/// a per-character one gated on which fighters happen to be in this
+/// match. Safe to spawn regardless of whether Zelda is even one of the 8
+/// characters this mod supports as an assist.
+static const u32 kDespawnEffectGfxIds[2] = { 2, 24 };
 
 /// Star/sparkle burst (Zelda's transform effect, see kDespawnEffectGfxIds)
-/// at `gobj`'s current position. Each of the three spawns with its own
-/// baked-in animation/lifetime from its EF_EffectDesc, same as retail's own
-/// call would -- no custom update callback or params needed. Purely
-/// cosmetic: no gameplay effect, just a visible marker for the moment the
-/// assist actually leaves.
+/// at `gobj`'s current position. Each spawns with its own baked-in
+/// animation/lifetime from its EF_EffectDesc, same as retail's own call
+/// would -- no custom update callback or params needed. Purely cosmetic:
+/// no gameplay effect, just a visible marker for the moment the assist
+/// actually leaves.
 static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Vec3 pos = fp->cur_pos;
     int i;
 
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < 2; i++) {
         efLib_Create_Attach_Pos(kDespawnEffectGfxIds[i], gobj, &pos);
     }
 }
