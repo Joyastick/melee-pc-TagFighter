@@ -483,19 +483,24 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
 }
 
-/// gfx_ids 2 and 24 are Zelda's Down-B transform sparkle (confirmed live
-/// via MELEE_EF_LOG=1 -- see eflib.c's efLib_Create). The first capture
-/// also included id 5, but that was contamination from an unrelated
-/// action (most likely a jump -- the resulting effect visibly looked like
-/// a jump dust puff, not a sparkle burst) elsewhere in that longer,
-/// messier test session; a clean capture that did nothing but transform
-/// immediately on spawn showed only these two. Both are < 1000, i.e.
+/// gfx_ids 22 and 24, captured live via MELEE_EF_LOG=1 firing together on
+/// the exact frame Zelda's Down-B transform triggered (after standing
+/// completely idle for 7s first, ruling out any spawn/landing effect as
+/// contamination this time). Two earlier captures each turned out to be
+/// polluted by something else in-frame with the transform -- gfx_id 5
+/// visibly looked like a jump-dust puff, and a {2, 24} pairing visibly
+/// looked like ground-landing wind, not a sparkle burst; 24 shows up in
+/// both of those AND here, so it's likely a generic ground-impact dust
+/// riding along rather than something transform-specific, kept here on
+/// the assumption it's still part of the intended look (drop it if the
+/// visual still reads as "landing wind" rather than sparkle -- 22 alone
+/// would be the next thing to try). Both ids are < 1000, i.e.
 /// gfx_id/1000 == 0 in efLib_Create's efAsync_DatEntries[gfx_id / 1000]
 /// bank lookup -- the shared/common effect bank that's always loaded, not
 /// a per-character one gated on which fighters happen to be in this
 /// match. Safe to spawn regardless of whether Zelda is even one of the 8
 /// characters this mod supports as an assist.
-static const u32 kDespawnEffectGfxIds[2] = { 2, 24 };
+static const u32 kDespawnEffectGfxIds[2] = { 22, 24 };
 
 /// Star/sparkle burst (Zelda's transform effect, see kDespawnEffectGfxIds)
 /// at `gobj`'s current position. Each spawns with its own baked-in
