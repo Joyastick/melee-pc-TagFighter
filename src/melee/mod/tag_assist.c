@@ -13,8 +13,6 @@
 #include <melee/ft/ftcommon.h>
 #include <melee/ft/inlines.h>
 #include <melee/ft/types.h>
-#include <melee/if/textdraw.h>
-#include <melee/if/textlib.h>
 #include <melee/mp/forward.h>
 #include <melee/mp/mpcoll.h>
 #include <sysdolphin/baselib/controller.h>
@@ -116,10 +114,6 @@ typedef struct TeamState {
     u32 ready_frame;      ///< sFrameCounter value at which the first-ever
                            ///< TryCallAssist is allowed to proceed -- see
                            ///< TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
-    u32 last_seen_frame;  ///< sFrameCounter value as of the most recent
-                           ///< TagAssist_OnFighterInputFrame call for
-                           ///< *either* member of this team -- see
-                           ///< TAG_ASSIST_STALE_FRAMES
 } TeamState;
 
 /// If the assist gets KO'd for real while called out, forcing our bench
@@ -145,29 +139,10 @@ typedef struct TeamState {
 /// role = player_id / 2 (0 = point, 1 = assist).
 static TeamState sTeams[2];
 
-/// Incremented once per TagAssist_DrawStatusOverlay call (i.e. once per
-/// retail frame, unconditionally, every scene -- see gmscene.c). Used
-/// together with TeamState::last_seen_frame to tell "this team's fighters
-/// are still being simulated" apart from "the match ended (or a reset
-/// happened) and these are now dangling Fighter_GObj pointers into freed
-/// memory" -- see TAG_ASSIST_STALE_FRAMES for why this exists at all.
+/// Incremented once per frame, unconditionally, every scene -- see
+/// TagAssist_Tick and its call site in gmscene.c. Drives
+/// TAG_ASSIST_FIRST_CALL_GRACE_FRAMES gating.
 static u32 sFrameCounter;
-
-/// How many frames of silence from TagAssist_OnFighterInputFrame (i.e. no
-/// port on this team got a fighter-input-frame call at all) before the
-/// overlay stops trusting sTeams[i].assist/point and treats them as stale.
-/// Root-caused from a real crash: leaving a match (results screen, or a
-/// hard reset) stops fighters from being simulated -- and therefore stops
-/// TagAssist_OnFighterInputFrame from ever being called for them again --
-/// but this module kept the last-known Fighter_GObj* around indefinitely,
-/// and the overlay (which runs every frame in every scene, unconditionally)
-/// kept dereferencing it. A hard reset frees the backing memory outright
-/// (crash); an ordinary scene change merely recycles the GObj pool slot
-/// (silently wrong data, not a crash) -- either way the pointer was never
-/// safe to keep trusting once nothing is updating it. 2 frames is enough
-/// margin for ordinary per-frame call-order jitter without masking a real
-/// staleness for very long.
-#define TAG_ASSIST_STALE_FRAMES 2
 
 /// Frames to wait after a team is first seen before EVER allowing the
 /// first TryCallAssist to go through. 300 = 5 seconds at 60fps.
@@ -181,9 +156,8 @@ static u32 sFrameCounter;
 /// Fighter_ChangeMotionState into the assist's Neutral Special races
 /// against that still-in-progress background sequence, the two
 /// transitions can stomp on each other -- observed as the called assist
-/// drifting with self_vel exactly zero at the moment of the call (ruled
-/// out via TagAssist_TryCallAssist's own OSReport dump) but with gravity
-/// and ground collision simply not applying for the rest of that one
+/// drifting with self_vel exactly zero at the moment of the call but with
+/// gravity and ground collision simply not applying for the rest of that one
 /// move, until it eventually dies off-stage. A real death/respawn always
 /// fixed it afterward because that cycle runs to completion, unlike the
 /// interrupted spawn-in. INITIAL_SETTLE_FRAMES only controls the first
@@ -437,46 +411,9 @@ static void TagAssist_TryCallAssist(TeamState* team)
         return; // this character isn't wired up for assists yet
     }
 
-    // Diagnostic for the per-character sliding-on-call bug: two attempts
-    // at a timing fix (first-call grace period, then a longer first-bench
-    // settle window) both failed to change the outcome, and the one
-    // working case observed so far was a fighter that inherited an
-    // ALREADY-benched state from a previous match's fighter object
-    // occupying the same memory (assist spawned in already invisible) --
-    // i.e. this isn't about *when* we freeze it, it's about some field
-    // this module never touches that differs between a truly-fresh
-    // spawn and a reused/already-initialized one. Dump the full
-    // collision/ECB state BEFORE Unbench touches anything, so a broken
-    // (fresh-spawn) capture can be diffed field-by-field against a
-    // working (reused-memory) capture instead of guessing further.
-    OSReport("TagAssist: PRE-UNBENCH kind=%d goa=%d floor_idx=%d "
-             "x130=%08X env=%08X prev_env=%08X x221D_b5=%d x2219_b1=%d "
-             "pos=%.2f,%.2f,%.2f prev_pos=%.2f,%.2f,%.2f "
-             "last_pos=%.2f,%.2f,%.2f\n",
-             (int) assistFp->kind, (int) assistFp->ground_or_air,
-             assistFp->coll_data.floor.index, assistFp->coll_data.x130_flags,
-             assistFp->coll_data.env_flags, assistFp->coll_data.prev_env_flags,
-             (int) assistFp->x221D_b5, (int) assistFp->x2219_b1,
-             assistFp->cur_pos.x, assistFp->cur_pos.y, assistFp->cur_pos.z,
-             assistFp->coll_data.prev_pos.x, assistFp->coll_data.prev_pos.y,
-             assistFp->coll_data.prev_pos.z, assistFp->coll_data.last_pos.x,
-             assistFp->coll_data.last_pos.y, assistFp->coll_data.last_pos.z);
-
     TagAssist_Unbench(team->assist, team->point);
     Fighter_ChangeMotionState(team->assist, specialN, 0, 0.0f, 1.0f, 0.0f,
                               NULL);
-
-    // Same fields, right as the new action state takes over, so we can
-    // also see what Unbench actually changed vs. left alone.
-    OSReport("TagAssist: POST-UNBENCH kind=%d sv=%.3f,%.3f gr=%.3f goa=%d "
-             "scale=%.2f,%.2f,%.2f floor_idx=%d x130=%08X env=%08X "
-             "x221D_b5=%d x2219_b1=%d\n",
-             (int) assistFp->kind, assistFp->self_vel.x, assistFp->self_vel.y,
-             assistFp->gr_vel, (int) assistFp->ground_or_air,
-             assistFp->x34_scale.x, assistFp->x34_scale.y,
-             assistFp->x34_scale.z, assistFp->coll_data.floor.index,
-             assistFp->coll_data.x130_flags, assistFp->coll_data.env_flags,
-             (int) assistFp->x221D_b5, (int) assistFp->x2219_b1);
 
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
@@ -519,46 +456,11 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
     }
 }
 
-/// Diagnostic for the "slides on first call, fine after a real respawn"
-/// report: dumps exactly what the grounded anti-overlap push
-/// (ftCommon_8007E0E4/xF8_playerNudgeVel) and floor state look like while
-/// the assist is actually out, throttled to every 10 frames so a 3-second
-/// call produces a readable handful of lines instead of ~180. Comparing a
-/// first-ever call against a call made after the assist has died and
-/// respawned for real once should show whether coll_data.floor.index (or
-/// the nudge push itself) actually differs between the two -- i.e. whether
-/// TagAssist_Unbench is missing some init that a real spawn-in normally
-/// does before a fighter's collision state is trustworthy.
-static void TagAssist_LogCollisionState(Fighter_GObj* gobj, TeamState* team)
-{
-    Fighter* fp = GET_FIGHTER(gobj);
-    // Frames elapsed since THIS call started, derived from the existing
-    // countdown rather than a free-running counter -- a free-running one
-    // would carry over between separate calls (and separate teams) and
-    // stop lining up with "how long has this specific call been out".
-    u32 frame = ASSIST_DURATION_FRAMES - team->assist_timer;
-    // Every frame for the first 40 (0.66s) -- enough to catch exactly
-    // which frame introduces bad velocity/position, since the call-time
-    // snapshot alone (self_vel/gr_vel = 0) isn't the frame where the
-    // slide actually appears -- then fall back to every 10th so a full
-    // 3-second call doesn't spam the console for its whole duration.
-    if (frame >= 40 && (frame % 10) != 0) {
-        return;
-    }
-    OSReport("TagAssist: out f=%u sv=%.3f,%.3f gr=%.3f nudge=%.3f,%.3f "
-             "floor_idx=%d goa=%d pos=%.2f,%.2f,%.2f\n",
-             frame, fp->self_vel.x, fp->self_vel.y, fp->gr_vel,
-             fp->xF8_playerNudgeVel.x, fp->xF8_playerNudgeVel.y,
-             fp->coll_data.floor.index, (int) fp->ground_or_air,
-             fp->cur_pos.x, fp->cur_pos.y, fp->cur_pos.z);
-}
-
 static void TagAssist_UpdateTimer(TeamState* team)
 {
     if (!team->assist_out) {
         return;
     }
-    TagAssist_LogCollisionState(team->assist, team);
     if (team->assist_timer > 0) {
         team->assist_timer--;
         return;
@@ -574,24 +476,6 @@ static void TagAssist_UpdateTimer(TeamState* team)
     TagAssist_SpawnDespawnEffect(team->assist);
     TagAssist_SetBenched(team->assist);
     team->assist_out = false;
-}
-
-/// Diagnostic only: records every distinct fp->player_id this hook has ever
-/// seen, so TagAssist_DrawStatusOverlay can show it.
-static s8 sSeenPlayerIds[4] = { -1, -1, -1, -1 };
-
-static void TagAssist_TrackPlayerId(u8 pid)
-{
-    int i;
-    for (i = 0; i < 4; i++) {
-        if (sSeenPlayerIds[i] == (s8) pid) {
-            return;
-        }
-        if (sSeenPlayerIds[i] == -1) {
-            sSeenPlayerIds[i] = (s8) pid;
-            return;
-        }
-    }
 }
 
 /// Detects a new match starting: our module-level TeamState is a plain C
@@ -638,14 +522,11 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
     int roleIdx = fp->player_id / 2; // 0 = point, 1 = assist
     TeamState* team;
 
-    TagAssist_TrackPlayerId(fp->player_id);
-
     if (roleIdx >= 2) {
         return; // only 4 ports (2 teams of point+assist) are handled
     }
     team = &sTeams[teamIdx];
     TagAssist_HandleNewMatch(team, roleIdx, gobj);
-    team->last_seen_frame = sFrameCounter;
 
     if (!team->initialized) {
         if (team->point == NULL || team->assist == NULL) {
@@ -714,98 +595,17 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
     TagAssist_UpdateTimer(team);
 }
 
-/// Always-on-screen confirmation that this build (not vanilla retail) is
-/// what's actually running -- visible from the title screen onward, so you
-/// don't need to start a match to tell the mod loaded. Hooked from
-/// gmscene.c's scene-independent per-frame loop.
-static DevText* sStatusText;
-static char sStatusBuf[0x200];
-
-static HSD_GObj* sStatusTextOwner;
-
-/// DevText_Create(id, ...) silently returns NULL if `id` is already claimed
-/// by another live DevText (see textlib.c's find_by_id) -- it does NOT
-/// overwrite or queue behind the existing owner. dbanim.c's animation-info
-/// debug overlay (gated behind DbLevel, off by default) also claims id 7;
-/// picking something no other module uses avoids ever silently losing this
-/// slot to it.
-#define TAG_ASSIST_DEVTEXT_ID 100
-
-void TagAssist_DrawStatusOverlay(void)
+/// Advances sFrameCounter once per frame, unconditionally, every scene --
+/// call once per frame from a scene-independent hook (see gmscene.c). Drives
+/// TAG_ASSIST_FIRST_CALL_GRACE_FRAMES gating in TagAssist_TryCallAssist.
+void TagAssist_Tick(void)
 {
-    HSD_GObj* curOwner = DevText_GetGObj();
-    static u32 sDiagFrames = 0;
-
     sFrameCounter++;
-
-    // Self-healing instead of "create once": the overlay has been observed
-    // to vanish at scene transitions (CSS -> intro, intro -> match), which
-    // is consistent with DevText's underlying driving GObj (curOwner) being
-    // torn down and recreated by that transition, orphaning a cached
-    // sStatusText that still looks non-NULL to us but no longer renders.
-    // Recreating whenever the owner GObj changes handles that regardless
-    // of exactly which transition is responsible.
-    if (sStatusText == NULL || curOwner != sStatusTextOwner) {
-        GXColor bg = { 0x00, 0x00, 0x00, 0xC0 };
-        GXColor fg = { 0x40, 0xFF, 0x40, 0xFF };
-        // Positioned mid-screen, away from the real match HUD (percent/
-        // stock icons along the bottom, timer top-center).
-        sStatusText =
-            DevText_Create(TAG_ASSIST_DEVTEXT_ID, 100, 90, 42, 5, sStatusBuf);
-        OSReport("TagAssist: overlay (re)create attempt, owner=%p -> %p\n",
-                 (void*) curOwner, (void*) sStatusText);
-        if (sStatusText == NULL) {
-            return;
-        }
-        DevText_Show(curOwner, sStatusText);
-        DevText_HideCursor(sStatusText);
-        DevText_SetBGColor(sStatusText, bg);
-        DevText_SetTextColor(sStatusText, fg);
-        DevText_SetScale(sStatusText, 12.0f, 16.0f);
-        sStatusTextOwner = curOwner;
-    }
-
-    // Cheap "is this hook even still running" heartbeat -- once every ~2s
-    // at 60fps -- independent of whether DevText itself is visibly
-    // rendering, so a real match can be checked against the console instead
-    // of only against what's on screen.
-    if ((sDiagFrames++ % 120) == 0) {
-        OSReport("TagAssist: overlay heartbeat, owner=%p text=%p\n",
-                 (void*) curOwner, (void*) sStatusText);
-    }
-
-    DevText_SetCursorXY(sStatusText, 0, 0);
-    DevText_Printf(sStatusText, "tAi%do%d tBi%do%d", (int) sTeams[0].initialized,
-                   (int) sTeams[0].assist_out, (int) sTeams[1].initialized,
-                   (int) sTeams[1].assist_out);
-
-    // sTeams[0].assist is a raw Fighter_GObj* that TagAssist_OnFighterInputFrame
-    // stops refreshing as soon as its fighters stop being simulated (match
-    // end -> results screen, or a reset) -- nothing else invalidates it, so
-    // it can easily be a dangling pointer into freed memory by the time this
-    // unconditional, every-scene, every-frame draw call gets to it. Root
-    // cause of a real crash (TagAssist_DrawStatusOverlay reading through a
-    // freed assist fighter right after leaving a match); see
-    // TAG_ASSIST_STALE_FRAMES.
-    if (sTeams[0].assist != NULL &&
-        sFrameCounter - sTeams[0].last_seen_frame <= TAG_ASSIST_STALE_FRAMES)
-    {
-        Fighter* aFp = GET_FIGHTER(sTeams[0].assist);
-        // Diagnostic for the "push force on first call" bug: velocities
-        // as milli-units via %d in case this printf doesn't support %f.
-        DevText_Printf(sStatusText, "\nsv%d,%d gr%d nu%d,%d",
-                       (int) (aFp->self_vel.x * 1000.0f),
-                       (int) (aFp->self_vel.y * 1000.0f),
-                       (int) (aFp->gr_vel * 1000.0f),
-                       (int) (aFp->xF8_playerNudgeVel.x * 1000.0f),
-                       (int) (aFp->xF8_playerNudgeVel.y * 1000.0f));
-    }
 }
 
 void TagAssist_OnReset(void)
 {
     int i;
-    OSReport("TagAssist: reset detected, dropping cached fighter pointers\n");
     for (i = 0; i < 2; i++) {
         sTeams[i].point = NULL;
         sTeams[i].assist = NULL;
@@ -816,10 +616,4 @@ void TagAssist_OnReset(void)
         sTeams[i].assist_timer = 0;
         sTeams[i].despawn_grace = 0;
     }
-    // The reset also invalidates whatever memory backed the DevText pool
-    // entry itself, not just the fighters -- force a clean recreate rather
-    // than let the overlay keep writing through a pointer into freed
-    // memory on the very first post-reset frame.
-    sStatusText = NULL;
-    sStatusTextOwner = NULL;
 }

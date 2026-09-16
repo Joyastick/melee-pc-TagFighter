@@ -469,7 +469,18 @@ void ftFc_Init_OnLoad(HSD_GObj* gobj)
 {
     Fighter* fp = gobj->user_data;
     ftData* ftdata = fp->ft_data;
-    s32* sa2;
+    /// @bug Was `s32* sa2 = fp->dat_attrs;` read via plain-int index
+    /// arithmetic (sa2[7]/sa2[8]) instead of ftFox_DatAttrs's own named
+    /// fields, unlike ftFx_Init_OnLoad's identical read. Retail disc data
+    /// stays big-endian in memory on the PC port; DISC_STRUCT types like
+    /// ftFox_DatAttrs get GCC's scalar_storage_order byte-swap on every
+    /// field access, but a raw s32* is a plain (non-DISC_STRUCT) type, so
+    /// indexing through it skips that swap entirely -- the item kind came
+    /// out byte-reversed (e.g. 55 read back as 0x37000000) and
+    /// it_8026B3F8 then indexed its table wildly out of bounds with it.
+    /// Harmless on the original big-endian GameCube target, which is
+    /// exactly why this matched retail there.
+    ftFox_DatAttrs* sa2 = fp->dat_attrs;
     DiscU32* items = DP(DiscU32, ftdata->x48_items);
 
     u8 _[8];
@@ -477,10 +488,18 @@ void ftFc_Init_OnLoad(HSD_GObj* gobj)
     fp->can_walljump = true;
     ftFx_Init_OnLoadForFalco(fp);
 
-    sa2 = fp->dat_attrs;
-    it_8026B3F8(DP(Article, items[0].v), sa2[7]);
-    it_8026B3F8(DP(Article, items[1].v), sa2[8]);
-    it_8026B3F8(DP(Article, items[3].v), It_Kind_Falco_Phantasm);
+    it_8026B3F8(DP(Article, items[0].v), sa2->x1C_FOX_BLASTER_SHOT_ITKIND);
+    it_8026B3F8(DP(Article, items[1].v), sa2->x20_FOX_BLASTER_GUN_ITKIND);
+    /// @bug Was `items[3].v` -- Falco's item table only has 3 entries
+    /// (0,1,2), so index 3 read past the end into whatever memory happened
+    /// to follow, which is why the garbage value differed on every run.
+    it_8026B3F8(DP(Article, items[2].v), It_Kind_Falco_Phantasm);
+    /// @bug fp->dat_attrs_backup/fp (HSD_ObjAlloc'd) come back uncleared,
+    /// so x222C_blasterGObj otherwise starts out holding stale memory from
+    /// whatever previously occupied this slot instead of a real NULL --
+    /// ftFoxspecialn.c's blaster logic trusts NULL to mean "no blaster
+    /// article out yet".
+    fp->u.fx.x222C_blasterGObj = NULL;
 }
 
 void ftFc_Init_LoadSpecialAttrs(HSD_GObj* gobj)

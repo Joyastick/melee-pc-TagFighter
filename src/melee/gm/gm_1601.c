@@ -2200,10 +2200,7 @@ void gm_801641E4(u8 stage, u8 enable)
 
 bool gm_IsStageUnlocked(u16 stkind)
 {
-    if ((1 << stkind) & gmMainLib_GetGamePrefs()->stage_mask) {
-        return true;
-    }
-    return false;
+    return true;
 }
 
 bool fn_801642A0(void)
@@ -2375,16 +2372,7 @@ int gm_801647F8(u8 arg0)
 /// Is a specific character unlocked?
 bool gm_IsCKindUnlocked(u8 ckind)
 {
-    u16* unlocked_chars_bitmask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
-    u8 selkind = ckind_to_selkind_map[ckind];
-    u8 unlock_bit = gm_SelKindToUnlockIndex(selkind);
-
-    if (unlock_bit == NUM_UNLOCKABLE_CHARACTERS ||
-        (*unlocked_chars_bitmask & (1LL << unlock_bit)))
-    {
-        return true;
-    }
-    return false;
+    return true;
 }
 
 void gm_UnlockCKind(CharacterKind ckind)

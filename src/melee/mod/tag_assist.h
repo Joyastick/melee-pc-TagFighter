@@ -42,19 +42,17 @@
 /// and neutral-input gating for whichever entity isn't currently active.
 void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj);
 
-/// Draws (creating on first call) a small always-on-screen status box
-/// confirming this build is running, visible from the title screen onward.
-/// Call once per frame from a scene-independent hook (see gmscene.c).
-void TagAssist_DrawStatusOverlay(void);
+/// Advances this module's internal frame counter. Call once per frame from a
+/// scene-independent hook (see gmscene.c) -- drives the first-call grace
+/// period gating in TagAssist_TryCallAssist.
+void TagAssist_Tick(void);
 
 /// Clears every fighter pointer this module has cached. Call as soon as a
 /// hardware reset (LRA+Start) is detected, before the engine actually tears
 /// anything down -- unlike an ordinary scene change (menu/CSS/match, which
 /// just recycles GObj pool slots and leaves a stale pointer merely wrong but
 /// still mapped), a reset frees the backing memory pools outright, so a
-/// stale Fighter_GObj* read afterward (e.g. from TagAssist_DrawStatusOverlay,
-/// which runs unconditionally every frame including at the post-reset boot
-/// screen) is a genuine use-after-free.
+/// stale Fighter_GObj* read afterward is a genuine use-after-free.
 void TagAssist_OnReset(void);
 
 #endif
