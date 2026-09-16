@@ -274,7 +274,26 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     Fighter* nearFp = GET_FIGHTER(nearGobj);
 
     ftCommon_8007E2FC(gobj);
-    fp->ground_or_air = GA_Air;
+    // Ground the assist directly onto the point character's own current
+    // floor when it has one, rather than always forcing GA_Air and
+    // relying on collision re-detecting a floor within the very same
+    // frame. Root-caused via frame-by-frame logging of a real slide: a
+    // forced-airborne assist sat at self_vel.y == 0.0 (no gravity) for
+    // exactly ~60 frames before gravity ever kicked back in -- the
+    // signature of a move's own action-state script (Falcon Punch's
+    // forward-glide phase, here) running its scripted physics assuming a
+    // normal grounded context, which never expects to still be airborne
+    // that long. Re-detection normally wins that same-frame race
+    // (invisibly, which is why every later call "just worked"), but nothing
+    // guarantees it does, and on this capture it didn't. The point
+    // character is right there and, in every normal case, already
+    // standing on a real floor -- copying it outright removes the race
+    // entirely instead of gambling on winning it.
+    if (nearFp->ground_or_air == GA_Ground && nearFp->coll_data.floor.index >= 0) {
+        fp->ground_or_air = GA_Ground;
+    } else {
+        fp->ground_or_air = GA_Air;
+    }
     fp->gr_vel = 0.0f;
 
     // Defensive scale reset: ftCommon_GetModelScale(fp) = fp->x34_scale.y *
@@ -330,7 +349,14 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // prev_pos/last_pos onto the new cur_pos so next frame's floor check
     // starts clean instead of dragging from where it used to be.
     mpColl_80043680(&fp->coll_data, &fp->cur_pos);
-    fp->coll_data.floor.index = -1;
+    if (fp->ground_or_air == GA_Ground) {
+        // Known-good floor, copied outright -- see the ground_or_air
+        // assignment above for why this replaces the old "always -1,
+        // let collision re-detect it" approach.
+        fp->coll_data.floor = nearFp->coll_data.floor;
+    } else {
+        fp->coll_data.floor.index = -1;
+    }
 
     // Two more sources of "inherits the point character's momentum":
     // (1) xF8_playerNudgeVel is the anti-overlap push force between nearby
