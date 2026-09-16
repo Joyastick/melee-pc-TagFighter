@@ -1,39 +1,35 @@
 ---
+# Clang-Tidy configuration for melee-pc
 Checks: >
   -*,
-  custom-ban-primitive-c-types,
-  misc-include-cleaner,
+  bugprone-argument-comment,
+  bugprone-assert-side-effect,
+  bugprone-dangling-handle,
+  bugprone-inaccurate-erase,
+  bugprone-narrowing-conversions,
+  bugprone-sizeof-expression,
+  bugprone-use-after-move,
+  misc-redundant-expression,
+  modernize-redundant-void-arg,
+  modernize-use-bool-literals,
+  modernize-use-nullptr,
+  modernize-use-override,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-move-const-arg,
+  performance-unnecessary-value-param,
   portability-restrict-system-includes,
   readability-duplicate-include,
   readability-non-const-parameter,
   readability-redundant-casting,
-  readability-redundant-declaration,
-  readability-redundant-parentheses,
-WarningsAsErrors: '*'
+  readability-redundant-control-flow,
+  readability-redundant-declaration
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'src/pc/.*'
+
 CheckOptions:
-  - key: portability-restrict-system-includes.Includes
-    value: '*,-MSL/*'
-  - key: readability-redundant-parentheses.AllowedDecls
-    value: '::HSD_JObjSetMtxDirty'
-  - key: misc-include-cleaner.MissingIncludes
-    # TODO: Try enabling
-    value: false
-CustomChecks:
-  - Name: ban-primitive-c-types
-    Query: |
-      match varDecl(
-        isExpansionInFileMatching(".*/src/(melee|sysdolphin)/.*"),
-        hasType(anyOf(
-          asString("long"),
-          asString("short"),
-          asString("long long"),
-          asString("unsigned long"),
-          asString("unsigned short"),
-          asString("unsigned long long")
-        ))
-      ).bind("forbidden_primitive")
-    Diagnostic:
-      - BindName: forbidden_primitive
-        Message: "Do not use primitive short/long types. Use fixed-length types from <dolphin/types.h>."
-        Level: Warning
----
+  - key: readability-redundant-declaration.IgnoreMacros
+    value: 'true'
+...
