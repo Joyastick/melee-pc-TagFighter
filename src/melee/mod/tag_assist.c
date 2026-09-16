@@ -394,20 +394,46 @@ static void TagAssist_TryCallAssist(TeamState* team)
         return; // this character isn't wired up for assists yet
     }
 
+    // Diagnostic for the per-character sliding-on-call bug: two attempts
+    // at a timing fix (first-call grace period, then a longer first-bench
+    // settle window) both failed to change the outcome, and the one
+    // working case observed so far was a fighter that inherited an
+    // ALREADY-benched state from a previous match's fighter object
+    // occupying the same memory (assist spawned in already invisible) --
+    // i.e. this isn't about *when* we freeze it, it's about some field
+    // this module never touches that differs between a truly-fresh
+    // spawn and a reused/already-initialized one. Dump the full
+    // collision/ECB state BEFORE Unbench touches anything, so a broken
+    // (fresh-spawn) capture can be diffed field-by-field against a
+    // working (reused-memory) capture instead of guessing further.
+    OSReport("TagAssist: PRE-UNBENCH kind=%d goa=%d floor_idx=%d "
+             "x130=%08X env=%08X prev_env=%08X x221D_b5=%d x2219_b1=%d "
+             "pos=%.2f,%.2f,%.2f prev_pos=%.2f,%.2f,%.2f "
+             "last_pos=%.2f,%.2f,%.2f\n",
+             (int) assistFp->kind, (int) assistFp->ground_or_air,
+             assistFp->coll_data.floor.index, assistFp->coll_data.x130_flags,
+             assistFp->coll_data.env_flags, assistFp->coll_data.prev_env_flags,
+             (int) assistFp->x221D_b5, (int) assistFp->x2219_b1,
+             assistFp->cur_pos.x, assistFp->cur_pos.y, assistFp->cur_pos.z,
+             assistFp->coll_data.prev_pos.x, assistFp->coll_data.prev_pos.y,
+             assistFp->coll_data.prev_pos.z, assistFp->coll_data.last_pos.x,
+             assistFp->coll_data.last_pos.y, assistFp->coll_data.last_pos.z);
+
     TagAssist_Unbench(team->assist, team->point);
     Fighter_ChangeMotionState(team->assist, specialN, 0, 0.0f, 1.0f, 0.0f,
                               NULL);
 
-    // Diagnostic for the per-character sliding-on-call bug (seen on
-    // Captain Falcon, not seen on Mario): dump exactly what Unbench left
-    // behind right as the new action state takes over, before any of this
-    // frame's physics/AS-script code has a chance to touch it further.
-    OSReport("TagAssist: called kind=%d sv=%.3f,%.3f gr=%.3f goa=%d "
-             "scale=%.2f,%.2f,%.2f\n",
+    // Same fields, right as the new action state takes over, so we can
+    // also see what Unbench actually changed vs. left alone.
+    OSReport("TagAssist: POST-UNBENCH kind=%d sv=%.3f,%.3f gr=%.3f goa=%d "
+             "scale=%.2f,%.2f,%.2f floor_idx=%d x130=%08X env=%08X "
+             "x221D_b5=%d x2219_b1=%d\n",
              (int) assistFp->kind, assistFp->self_vel.x, assistFp->self_vel.y,
              assistFp->gr_vel, (int) assistFp->ground_or_air,
              assistFp->x34_scale.x, assistFp->x34_scale.y,
-             assistFp->x34_scale.z);
+             assistFp->x34_scale.z, assistFp->coll_data.floor.index,
+             assistFp->coll_data.x130_flags, assistFp->coll_data.env_flags,
+             (int) assistFp->x221D_b5, (int) assistFp->x2219_b1);
 
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
