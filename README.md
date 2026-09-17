@@ -1,9 +1,9 @@
-# Tag Fighter
+# MeleeXKO - Melee Tag Fighter
 
 **Alpha, for testing only.** A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
-a partner "assist" fighter mid-match, similar to *Pokémon Trainer* switching
-or *Marvel vs. Capcom*-style assist calls, instead of Melee's normal
+a partner "assist" fighter mid-match, similar to *Marvel vs. Capcom* switching
+or *2XKO*-style assist calls, instead of Melee's normal
 1-life-per-slot model. The mod lives almost entirely in
 [`src/melee/mod/`](src/melee/mod), layered as a thin, largely non-matching
 addition on top of the real, already-decompiled game code rather than a fork
