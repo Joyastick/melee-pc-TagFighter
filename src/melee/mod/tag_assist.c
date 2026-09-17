@@ -64,9 +64,10 @@
 
 /// v3 design (assist-call only -- tagging deliberately out of scope for now):
 ///
-/// Ports are fixed roles, not swappable: Port 1 & Port 2 are always the
-/// human "point" characters; Port 3 & Port 4 are always their "assist"
-/// characters. Team A = Port 1 + Port 3, Team B = Port 2 + Port 4. Both
+/// Team pairing and point/assist roles are read from the CSS's own Red/Blue
+/// team-color selection and its per-team point-character choice (see
+/// TagAssist_IsTagBattleOn / TagAssist_IsPortPoint and their CSS-side call
+/// sites in mncharsel.c) -- no longer a fixed Port1+3/Port2+4 layout. Both
 /// point and assist are REAL, already-existing player-slot Fighters from
 /// the game's own normal spawn pipeline (assist ports set to CPU in CSS) --
 /// nothing is ever spawned or freed by this module, so each has its own
@@ -159,10 +160,24 @@ typedef struct TeamState {
 /// ftAnim_IsFramesRemaining (idle loop) doesn't hold the assist forever.
 #define ASSIST_DESPAWN_GRACE_FRAMES 180
 
-/// Team A = Port 1 (point) + Port 3 (assist); Team B = Port 2 (point) +
-/// Port 4 (assist). In 0-indexed player_id terms: team = player_id % 2,
-/// role = player_id / 2 (0 = point, 1 = assist).
+/// sTeams[0] = the Red team, sTeams[1] = Blue -- which two ports belong to
+/// each is no longer fixed by port number, but read from the CSS's own
+/// Red/Blue team-color selection (see sPortTeamColor below).
 static TeamState sTeams[2];
+static bool sTagBattleOn = false;
+
+/// Mirrors each port's CSS-selected team color (0 = Red, 1 = Blue, 2 =
+/// Green) once per CSS frame (TagAssist_CssSyncPortTeam) -- frozen at
+/// whatever it last was once the match begins and CSS's own per-frame
+/// updates stop. Unindexed/empty ports are left however they last were;
+/// TagAssist_OnFighterInputFrame only reads slots with a live fp anyway.
+static u8 sPortTeamColor[4];
+
+/// The port a player explicitly chose (via Z on the CSS team button) as
+/// each team's point character; index 0 = Red, index 1 = Blue. -1 means no
+/// explicit choice yet, in which case the lower port number on that team is
+/// the default point (see TagAssist_IsPortPoint).
+static s8 sExplicitPointPort[2] = { -1, -1 };
 
 /// Incremented once per frame, unconditionally, every scene -- see
 /// TagAssist_Tick and its call site in gmscene.c. Drives
@@ -919,12 +934,73 @@ static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
     }
 }
 
+bool TagAssist_IsTagBattleOn(void)
+{
+    return sTagBattleOn;
+}
+
+void TagAssist_ToggleTagBattle(void)
+{
+    sTagBattleOn = !sTagBattleOn;
+    if (!sTagBattleOn) {
+        // Leaving Tag Battle: drop any explicit point choices so a later
+        // re-toggle starts from the same lower-port-is-point default as a
+        // fresh CSS entry, rather than resurrecting a stale choice from a
+        // completely different set of doors/colors.
+        sExplicitPointPort[0] = -1;
+        sExplicitPointPort[1] = -1;
+    }
+}
+
+void TagAssist_CssSyncPortTeam(int port, u8 team_color)
+{
+    sPortTeamColor[port] = team_color;
+}
+
+void TagAssist_SetExplicitPoint(u8 team_color, int port)
+{
+    if (team_color < 2) {
+        sExplicitPointPort[team_color] = (s8) port;
+    }
+}
+
+bool TagAssist_IsPortPoint(int port)
+{
+    u8 color = sPortTeamColor[port];
+    s8 chosen;
+    int i;
+
+    if (color >= 2) {
+        return false; // Green, or no color yet -- not a valid Tag Battle team
+    }
+
+    chosen = sExplicitPointPort[color];
+    // Only honor an explicit choice while it still names a port actually on
+    // this team -- if that port has since switched colors, fall through to
+    // the default below instead of pointing at the wrong team's player.
+    if (chosen >= 0 && sPortTeamColor[chosen] == color) {
+        return chosen == port;
+    }
+
+    for (i = 0; i < 4; i++) {
+        if (sPortTeamColor[i] == color) {
+            return i == port; // lowest-numbered port on this team is default
+        }
+    }
+    return false;
+}
+
 void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
+    u8 color;
     int teamIdx;
     int roleIdx;
     TeamState* team;
+
+    if (!sTagBattleOn) {
+        return; // untoggled: play as ordinary Melee, no benching/assist-calls
+    }
 
     // Ice Climbers' Nana is not a separate assist-able role -- she's a
     // dependent sub-fighter of Popo and shares Popo's own fp->player_id
@@ -943,12 +1019,15 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
         return;
     }
 
-    teamIdx = fp->player_id % 2;
-    roleIdx = fp->player_id / 2; // 0 = point, 1 = assist
-
-    if (roleIdx >= 2) {
-        return; // only 4 ports (2 teams of point+assist) are handled
+    if (fp->player_id >= 4) {
+        return; // only the first 4 ports are handled
     }
+    color = sPortTeamColor[fp->player_id];
+    if (color >= 2) {
+        return; // not on Red or Blue -- no Tag Battle pairing for this port
+    }
+    teamIdx = color; // 0 = Red -> sTeams[0], 1 = Blue -> sTeams[1]
+    roleIdx = TagAssist_IsPortPoint(fp->player_id) ? 0 : 1;
     team = &sTeams[teamIdx];
     TagAssist_HandleNewMatch(team, roleIdx, gobj);
 

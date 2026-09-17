@@ -28,13 +28,41 @@
  *  - Per-character assist moves beyond Neutral Special, and full roster
  *    coverage (TagAssist_GetSpecialNState only maps a handful of
  *    characters right now).
- *  - Team-select UI; partner pairing is a hardcoded table
- *    (kPartnerKindForSlot) standing in for real CSS data.
  *  - Stocks/percent/HUD/results-screen integration (MatchPlayerData).
  *  - Duo mode (a second physical controller for the partner character).
  */
 
 #include <melee/ft/forward.h>
+
+/// Whether "Tag Battle" is currently toggled on from the CSS rules screen
+/// (see TagAssist_ToggleTagBattle). Off by default, so an un-toggled match
+/// plays as ordinary Melee -- every other TagAssist_* hook below no-ops
+/// while this is false.
+bool TagAssist_IsTagBattleOn(void);
+
+/// Flips the Tag Battle toggle. Call from the CSS rules-screen input
+/// handler, mirroring how Team Battle's own is_teams flag is flipped.
+void TagAssist_ToggleTagBattle(void);
+
+/// Mirrors a CSS door's currently-selected team color (0 = Red, 1 = Blue,
+/// 2 = Green) into this module, so the real gameplay pairing (who's on
+/// whose team) can be read from the player's own CSS choice instead of a
+/// fixed port layout. Call every CSS frame, for every non-empty door, while
+/// Tag Battle is on -- the mirrored values stay put once CSS's own per-frame
+/// updates stop and the match actually begins.
+void TagAssist_CssSyncPortTeam(int port, unsigned char team_color);
+
+/// Claims "point" for `port`'s team (Red or Blue), bumping whichever other
+/// port was previously on that team down to "assist". Call when a player
+/// presses Z while hovering their door's team button in the CSS. No-ops if
+/// `team_color` isn't Red/Blue (2 = Green is never a valid Tag Battle team).
+void TagAssist_SetExplicitPoint(unsigned char team_color, int port);
+
+/// True if `port` is currently its Red/Blue team's point character (for the
+/// CSS's flashing indicator, and internally for TagAssist_OnFighterInputFrame's
+/// own role lookup). False for a port with no explicit team assignment yet or
+/// one on Green -- Tag Battle can't start until every port is Red or Blue.
+bool TagAssist_IsPortPoint(int port);
 
 /// Call once per frame for every live fighter, from the same per-frame input
 /// pass that populates fp->input (Fighter_Spaghetti_8006AD10). Handles

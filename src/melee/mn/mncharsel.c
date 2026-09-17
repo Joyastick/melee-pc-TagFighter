@@ -25,6 +25,7 @@
 #include <melee/lb/lblanguage.h>
 #include <melee/lb/lbspdisplay.h>
 #include <melee/lb/types.h>
+#include <melee/mod/tag_assist.h>
 #include <sysdolphin/baselib/aobj.h>
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/controller.h>
@@ -1591,7 +1592,13 @@ void mnCharSel_8025EE8C(u8 idx)
         }
         return;
     }
-    if (mnCharSel_804D6CB0->vs.start.rules.is_teams) {
+    // No baked "TAG BATTLE" banner text exists in MnSlChr.dat, so Tag
+    // Battle borrows the existing "TEAM BATTLE" banner text here -- it's
+    // then made to flash in fn_80262F44 so it still reads as visually
+    // distinct from an ordinary, static Team Battle banner.
+    if (mnCharSel_804D6CB0->vs.start.rules.is_teams ||
+        TagAssist_IsTagBattleOn())
+    {
         mode_frame = mnCharSel_803F0A48.mode_info[idx].mode_teams_frame;
         cc0 = mnCharSel_804D6CC0;
         lb_80011E24(cc0, &result_jobj, 36, -1);
@@ -2340,19 +2347,30 @@ static inline void updateGrabbedSlider(struct CSSCursorData* cursor,
     }
 }
 
+/// Whether the cursor is currently over a door's team-color button.
+static inline bool cursorOverTeamBtn(struct CSSCursorData* cursor, CSSDoor* dp)
+{
+    f32 cx5 = cursor->xC;
+    f32 cy5 = cursor->x10;
+    return cx5 > dp->teambtn_left && cx5 < dp->teambtn_right &&
+           cy5 < -0.9999999046325683 && cy5 > -5.800000095367432;
+}
+
 /// Advances the door's team colour when the cursor clicks its team box.
 static inline void cycleTeam(struct CSSCursorData* cursor, CSSDoor* dp, s32 di)
 {
-    f32 cx5 = cursor->xC;
-    if (cx5 > dp->teambtn_left && cx5 < dp->teambtn_right) {
-        f32 cy5 = cursor->x10;
-        if (cy5 < -0.9999999046325683 && cy5 > -5.800000095367432) {
-            cursor->x10 = -3.4f;
+    if (cursorOverTeamBtn(cursor, dp)) {
+        cursor->x10 = -3.4f;
+        if (TagAssist_IsTagBattleOn()) {
+            // Only Red/Blue are valid Tag Battle teams -- Green has no
+            // partner slot in a 2v2 pairing, so skip it entirely.
+            dp->team = (u8) ((dp->team + 1) % 2);
+        } else {
             dp->team = (u8) ((dp->team + 1) % 3);
-            mnCharSel_804D6CB0->vs.start.players[di].team = dp->team;
-            mnCharSel_8025DB34((u8) di);
-            sfxMove();
         }
+        mnCharSel_804D6CB0->vs.start.players[di].team = dp->team;
+        mnCharSel_8025DB34((u8) di);
+        sfxMove();
     }
 }
 
@@ -2898,6 +2916,26 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                         cursor->x8 = 1;
                         if (trigger & HSD_PAD_A) {
                             sfxMove();
+                            if (buttons & HSD_PAD_Z) {
+                                // Hold Z on the Team Battle hotspot to flip
+                                // Tag Battle instead -- there's no dedicated
+                                // CSS art/hotspot for it yet (see
+                                // tag_assist_notes.md's CSS-integration TODO),
+                                // so it rides on the same toggle a player
+                                // already uses for is_teams.
+                                TagAssist_ToggleTagBattle();
+                                // Tag Battle needs the real Red/Blue/Green
+                                // team-color picker, which retail only shows
+                                // when is_teams is on -- couple the two
+                                // directly rather than building a separate
+                                // selection UI. Turning Tag Battle off drops
+                                // back to FFA the same way.
+                                mnCharSel_804D6CB0->vs.start.rules.is_teams =
+                                    TagAssist_IsTagBattleOn() ? 1 : 0;
+                                mnCharSel_8025EE8C(
+                                    mnCharSel_804D6CB0->match_type);
+                                break;
+                            }
                             {
                                 u8* is_teams = &mnCharSel_804D6CB0->vs.start
                                                     .rules.is_teams;
@@ -3150,6 +3188,26 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        if (TagAssist_IsTagBattleOn() && (trigger & HSD_PAD_Z))
+                        {
+                            // Z on a door's team button claims "point" for
+                            // that player's team -- mirrors cycleTeam's own
+                            // hitbox above, but doesn't touch the color.
+                            for (door = 0; door < (s32) mnCharSel_804D6CF5;
+                                 door++)
+                            {
+                                CSSDoor* zdp = &mnCharSel_803F0DFC.doors[door];
+                                if (zdp->p_kind == 3 || zdp->team >= 2) {
+                                    continue; // empty door, or not Red/Blue
+                                }
+                                if (cursorOverTeamBtn(cursor, zdp)) {
+                                    TagAssist_SetExplicitPoint(zdp->team,
+                                                                door);
+                                    sfxMove();
                                 }
                             }
                         }
@@ -3614,6 +3672,56 @@ void fn_80262F44(HSD_GObj* gobj)
     int valid_count = 0;
     PAD_STACK(0x8);
 
+    if (TagAssist_IsTagBattleOn()) {
+        // Flash the "TEAM BATTLE" banner (joint 36, forced on regardless of
+        // the real is_teams state by mnCharSel_8025EE8C above) so it reads
+        // as an animated Tag Battle indicator rather than a static, ordinary
+        // Team Battle banner -- there's no baked Tag Battle art to swap in.
+        static u32 sTagBannerFlashTimer = 0;
+        HSD_JObj* banner_jobj;
+        // 8 frames/phase at the engine's 60fps tick is a brisk ~3.75Hz blink
+        // (was 30, ~1Hz -- too slow to read at a glance).
+        bool flash_on = ((sTagBannerFlashTimer++ / 8) & 1) == 0;
+        lb_80011E24(mnCharSel_804D6CC0, &banner_jobj, 36, -1);
+        if (flash_on) {
+            HSD_JObjClearFlags(banner_jobj, JOBJ_HIDDEN);
+        } else {
+            HSD_JObjSetFlags(banner_jobj, JOBJ_HIDDEN);
+        }
+
+        for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
+            if (mnCharSel_803F0DFC.doors[i].p_kind == 3) {
+                continue; // empty door
+            }
+            // Keep the mod's own copy of each port's team color current --
+            // TagAssist_OnFighterInputFrame reads this to pair players by
+            // their chosen Red/Blue team once the match actually starts.
+            TagAssist_CssSyncPortTeam(i, mnCharSel_803F0DFC.doors[i].team);
+
+            {
+                // Flash the point door's own (correctly Red/Blue) team icon
+                // rather than forcing a color, so it's visually distinct
+                // without lying about anyone's real team. Every non-point
+                // door gets its icon force-shown every frame regardless --
+                // otherwise a door that stops being point right as its flash
+                // lands on the "off" phase (a teammate presses Z, or it
+                // switches team color) is left with team_joint stuck hidden
+                // forever, since nothing else ever re-clears that flag once
+                // this loop stops treating it as the flashing one.
+                HSD_JObj* team_jobj;
+                lb_80011E24(mnCharSel_804D6CC0, &team_jobj,
+                            mnCharSel_803F0DFC.doors[i].team_joint, -1);
+                if (!TagAssist_IsPortPoint(i)) {
+                    HSD_JObjClearFlags(team_jobj, JOBJ_HIDDEN);
+                } else if (flash_on) {
+                    HSD_JObjClearFlags(team_jobj, JOBJ_HIDDEN);
+                } else {
+                    HSD_JObjSetFlags(team_jobj, JOBJ_HIDDEN);
+                }
+            }
+        }
+    }
+
     if (mnCharSel_804D6CB0->match_type == VS_CAMERA) {
         if (HSD_PadCopyStatus[3].err != 0) {
             HSD_JObjClearFlagsAll(
@@ -3648,6 +3756,27 @@ void fn_80262F44(HSD_GObj* gobj)
         }
 
         if (valid_count >= 2) {
+            // Tag Battle needs exactly two players on Red and two on Blue --
+            // TagAssist_OnFighterInputFrame pairs players by their chosen
+            // team color, so anything else leaves someone with no partner
+            // (or a 3-vs-1, or a Green player it won't recognize at all).
+            if (TagAssist_IsTagBattleOn()) {
+                int red_count = 0;
+                int blue_count = 0;
+                for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
+                    if (mnCharSel_803F0DFC.doors[i].p_kind == 3) {
+                        continue;
+                    }
+                    if (mnCharSel_803F0DFC.doors[i].team == 0) {
+                        red_count++;
+                    } else if (mnCharSel_803F0DFC.doors[i].team == 1) {
+                        blue_count++;
+                    }
+                }
+                if (red_count != 2 || blue_count != 2) {
+                    goto hide;
+                }
+            }
             if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                 for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                     s32 j;

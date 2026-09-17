@@ -30,14 +30,20 @@ You need your own disc image. No game data ships here.
 
 - [x] Grounded assist calls, implemented for every character.
 - [x] Air assist calls, implemented for every character.
+- [x] Tag Battle toggle in the character-select rules screen -- off by
+  default, so vanilla Melee (including normal Team Battle) is completely
+  unaffected until it's turned on.
+- [x] Player-driven Red/Blue team pairing and point-character selection,
+  replacing the old fixed Port1+3/Port2+4 layout.
 
 ### Planned
 
 - [ ] Tagging between characters (swapping which fighter is point mid-match,
   not just a timed assist call).
 - [ ] Duo play support (shared-team play in the style of *2XKO*).
-- [ ] A separate Tag mode selectable alongside vanilla Melee, so the base
-  game remains playable without any tag-mod behavior enabled.
+- [ ] Dedicated Tag Battle art/UI in the character-select screen (currently
+  reuses Team Battle's own banner and team-color icons, since there's no
+  Tag Battle-specific art yet).
 - [ ] Online play, built on melee-pc's own online implementation once that
   lands upstream.
 
@@ -92,10 +98,26 @@ Sans fonts are covered by `resources/FONT-LICENSE.txt`.
 
 ## Playing Tag Fighter
 
-Set up a 4-player VS match: Port 1 + Port 3 are Team A (point + assist),
-Port 2 + Port 4 are Team B. Set each slot's assist port to CPU on the
-character-select screen — the mod takes it over (benched, no CPU AI) once the
-match starts.
+Tag Battle is off by default, so a normal 4-player VS (or Team Battle) match
+plays exactly like vanilla Melee.
+
+**Turn Tag Battle on**: in the character-select rules corner (top-left, same
+hotspot as Team Battle), hold **Z** and press **A**. The "TEAM BATTLE" banner
+starts flashing to confirm it's on — press the same combo again to turn it
+back off. This also forces Team Battle on, since Tag Battle reuses its
+Red/Blue/Green team-color picker.
+
+**Pick your team**: with Tag Battle on, each door's team-color button only
+cycles between Red and Blue (Green is unavailable — a 2v2 mode has no room
+for a third team). Whoever picks Red plays together, whoever picks Blue plays
+together — team pairing is no longer tied to which port you're in.
+
+**Pick your point character**: hover a door's team-color button and press
+**Z**. That player becomes their team's point (human-controlled) character,
+their teammate becomes the assist, and their team icon starts flashing. If
+nobody presses Z, the lower port number on each team is point by default.
+
+**Start**: requires exactly 2 players on Red and 2 on Blue.
 
 - **Call an assist**: D-Pad Down. The assist spawns already performing its
   assigned move (grounded or airborne, depending on the point character's own
