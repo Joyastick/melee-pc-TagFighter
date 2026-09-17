@@ -1,13 +1,22 @@
-# melee-pc
+# Tag Fighter
 
-**Beta, for testing only.** "melee-pc" is a working name. Online play with
-rollback netcode is planned and **not implemented yet**.
+**Alpha, for testing only.** A gameplay mod for Super Smash Bros. Melee
+(NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
+a partner "assist" fighter mid-match, similar to *Pokémon Trainer* switching
+or *Marvel vs. Capcom*-style assist calls, instead of Melee's normal
+1-life-per-slot model. The mod lives almost entirely in
+[`src/melee/mod/`](src/melee/mod), layered as a thin, largely non-matching
+addition on top of the real, already-decompiled game code rather than a fork
+of the engine itself.
 
-A native PC port of Super Smash Bros. Melee (NTSC-U 1.02), built from
-[doldecomp/melee](https://github.com/doldecomp/melee) on top of
-[aurora](https://github.com/encounter/aurora) (GX/OS/PAD/DVD/CARD/THP
-compatibility layer with a WebGPU backend) and SDL3. Same approach as
-[dusklight](https://github.com/TwilitRealm/dusklight).
+This repository is a fork of
+[999sian/melee-pc](https://github.com/999sian/melee-pc), a native PC port of
+Melee built from [doldecomp/melee](https://github.com/doldecomp/melee) on top
+of [aurora](https://github.com/encounter/aurora) (GX/OS/PAD/DVD/CARD/THP
+compatibility layer with a WebGPU backend) and SDL3. Everything melee-pc
+provides — the native build, launcher, settings overlay, and so on — still
+applies here; this fork adds the Tag Fighter mod on top of it. Online play
+with rollback netcode is planned upstream and **not implemented yet**.
 
 You need your own disc image. No game data ships here.
 
