@@ -26,6 +26,7 @@ __pycache__/
 docs/*
 !docs/screenshots/
 !docs/CODING_STYLE.md
+!docs/tag_assist_roster.csv
 
 # Claude working notes stay local -- never commit these.
 CLAUDE.md
