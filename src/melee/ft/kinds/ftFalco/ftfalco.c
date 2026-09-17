@@ -480,7 +480,19 @@ void ftFc_Init_OnLoad(HSD_GObj* gobj)
     sa2 = fp->dat_attrs;
     it_8026B3F8(DP(Article, items[0].v), sa2->x1C_FOX_BLASTER_SHOT_ITKIND);
     it_8026B3F8(DP(Article, items[1].v), sa2->x20_FOX_BLASTER_GUN_ITKIND);
-    it_8026B3F8(DP(Article, items[2].v), It_Kind_Falco_Phantasm);
+    /// @bug Was "fixed" to items[2] on the theory that Falco's item table
+    /// only has 3 entries (0-2), making items[3] out of bounds. Checked
+    /// against the actual retail disassembly (build_vanilla's
+    /// ftfalco.s, ftFc_Init_OnLoad @ 0x80149D18): retail reads `0xc(r30)`
+    /// -- i.e. items[3] -- with `li r4, 0x39` (0x39 == 57 ==
+    /// It_Kind_Falco_Phantasm's enum value), not items[2]. items[2] is a
+    /// different, unrelated slot that's NULL/garbage for Falco, so
+    /// registering it as the Phantasm article left
+    /// it_804D6D38[It_Kind_Falco_Phantasm] NULL -- Item_802682F0 then
+    /// dereferenced that NULL article_data->x10_modelDesc on every Side-B,
+    /// crashing (read from address 0x10). items[3] is genuinely in bounds;
+    /// the "OOB" theory was never checked against retail before landing.
+    it_8026B3F8(DP(Article, items[3].v), It_Kind_Falco_Phantasm);
     fp->u.fx.x222C_blasterGObj = NULL;
 }
 
