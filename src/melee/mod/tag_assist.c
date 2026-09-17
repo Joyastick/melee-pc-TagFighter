@@ -15,6 +15,7 @@
 #include <melee/ft/types.h>
 #include <melee/mp/forward.h>
 #include <melee/mp/mpcoll.h>
+#include <melee/mp/mplib.h>
 #include <melee/pl/player.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/jobj.h>
@@ -382,6 +383,60 @@ static TagAssistMoveFn TagAssist_GetAssistMoveEnter(FighterKind kind)
     }
 }
 
+/// v1 aerial assist table: every character currently just reuses their
+/// grounded assist move -- this is a real, separate lookup rather than
+/// TagAssist_TryCallAssist's airborne path just calling
+/// TagAssist_GetAssistMoveEnter directly, so a character can later get its
+/// own dedicated aerial-specific Enter function (e.g. an actual aerial
+/// special/attack, instead of the grounded move entered at wherever the
+/// ground-below raycast landed) without touching the grounded table at all.
+static TagAssistMoveFn TagAssist_GetAssistMoveEnterAerial(FighterKind kind)
+{
+    return TagAssist_GetAssistMoveEnter(kind);
+}
+
+/// Distance (in-game units) to search straight down from a point for the
+/// stage's own floor geometry when the point character calls an assist
+/// while airborne -- large enough to span the full vertical extent any real
+/// stage actually uses, so a hit means "there's a real floor down there
+/// somewhere," full stop, not merely "somewhere nearby." Deliberately not
+/// clamped any tighter than that -- the assist is allowed to land a full
+/// stage height below an airborne point character; see
+/// TagAssist_TryCallAssist.
+#define TAG_ASSIST_AIR_RAYCAST_DISTANCE 100000.0f
+
+/// Casts a straight line down from `pos` looking for the stage's own floor
+/// collision geometry, and returns the hit position/surface if found.
+///
+/// Uses mpCheckFloor directly -- the same low-level segment-vs-floor-line
+/// primitive mpColl_80044628_Floor (mpcoll.c) is itself built on -- instead
+/// of routing through a full CollData/ECB setup and the wall/ceiling/squeeze
+/// resolution loop that goes with it (see mpColl_80046904). All that's
+/// needed here is "is there a floor down there, and if so where," not any
+/// of that loop's other side effects.
+///
+/// The stage's own collision lines are defined in 2D (X/Y) only -- there's
+/// no meaningful Z-depth collision -- so mpCheckFloor always writes 0 into
+/// out_ground_pos->z; this fills it back in from `pos->z` afterward so the
+/// result is directly usable as a real world position.
+///
+/// Returns false (out_ground_pos/out_floor untouched) if nothing is found
+/// within TAG_ASSIST_AIR_RAYCAST_DISTANCE -- e.g. the point character is out
+/// over a gap or blast zone with no floor below them at all.
+static bool TagAssist_FindGroundBelow(const Vec3* pos, Vec3* out_ground_pos,
+                                      SurfaceData* out_floor)
+{
+    if (!mpCheckFloor(pos->x, pos->y, pos->x,
+                      pos->y - TAG_ASSIST_AIR_RAYCAST_DISTANCE, 0.0f,
+                      out_ground_pos, &out_floor->index, &out_floor->flags,
+                      &out_floor->normal, -1, -1, -1, NULL, NULL))
+    {
+        return false;
+    }
+    out_ground_pos->z = pos->z;
+    return true;
+}
+
 /// If `gobj` is Popo (Ice Climbers' leader), returns Nana's own separate
 /// Fighter_GObj -- NULL for every other character, and for Popo if Nana
 /// somehow isn't present.
@@ -449,7 +504,14 @@ static void TagAssist_SetBenched(Fighter_GObj* gobj)
 }
 
 /// Reverses TagAssist_SetBenched and repositions the assist next to
-/// `nearGobj` (the point character), facing the same way.
+/// `nearGobj` (the point character), facing the same way -- or, when
+/// `groundPos`/`groundFloor` are given (non-NULL), directly onto that
+/// already-confirmed floor position instead (the airborne-point-character
+/// path: see TagAssist_FindGroundBelow and TagAssist_TryCallAssist). In that
+/// case the assist can legitimately end up a full stage height away from
+/// `nearGobj` -- there's no adjacency guarantee once the point character is
+/// airborne, just "the ground directly below them, however far down that
+/// is."
 ///
 /// A raw fp->cur_pos write isn't enough: a real fighter carries physics
 /// state that only a real respawn normally resets. Skipping that produced
@@ -473,13 +535,15 @@ static void TagAssist_SetBenched(Fighter_GObj* gobj)
 /// starts closing whatever distance remains, exactly like retail's
 /// existing Ice Climbers separation/reunion behavior, so this settles
 /// within a frame or two rather than staying visibly wrong.
-static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
+static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj,
+                              const Vec3* groundPos,
+                              const SurfaceData* groundFloor)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Fighter* nearFp = GET_FIGHTER(nearGobj);
     Fighter_GObj* partner = TagAssist_GetIceClimberPartner(gobj);
     if (partner != NULL) {
-        TagAssist_Unbench(partner, nearGobj);
+        TagAssist_Unbench(partner, nearGobj, groundPos, groundFloor);
     }
 
     ftCommon_8007E2FC(gobj);
@@ -498,7 +562,12 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // character is right there and, in every normal case, already
     // standing on a real floor -- copying it outright removes the race
     // entirely instead of gambling on winning it.
-    if (nearFp->ground_or_air == GA_Ground && nearFp->coll_data.floor.index >= 0) {
+    if (groundPos != NULL) {
+        // Airborne-point path: the caller already confirmed a real floor at
+        // groundPos via TagAssist_FindGroundBelow, so there's nothing left
+        // to race here the way the grounded path below has to.
+        fp->ground_or_air = GA_Ground;
+    } else if (nearFp->ground_or_air == GA_Ground && nearFp->coll_data.floor.index >= 0) {
         fp->ground_or_air = GA_Ground;
     } else {
         fp->ground_or_air = GA_Air;
@@ -529,22 +598,32 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // normal" -- blast-zone/death handling probably depends on ECB
     // processing actually running.
 
-    fp->cur_pos = nearFp->cur_pos;
-    // Deliberately close (tighter than ftcommon.c's grounded anti-overlap
-    // push threshold -- ftCommon_8007E0E4/xF8_playerNudgeVel -- for
-    // wide-ECB characters like Captain Falcon): a wider offset (150.0f)
-    // reliably cleared it, but read as spawning the assist too far from
-    // the point character. At 10.0f, expect the same "something is
-    // pushing it apart" slide to come back for wide-ECB characters once
-    // the assist lands next to the point character and both are grounded
-    // -- that's this same per-frame push, not a new bug, and not fixable
-    // from the spawn offset alone at this distance. If that's not
-    // acceptable, the real fix is on the OTHER side of the tradeoff:
-    // suppress/clamp xF8_playerNudgeVel for the assist specifically
-    // (e.g. intangibility already skips hurtboxes -- extending that or an
-    // equivalent flag to this push check) rather than backing off the
-    // spawn distance.
-    fp->cur_pos.x += nearFp->facing_dir * 10.0f;
+    if (groundPos != NULL) {
+        fp->cur_pos = *groundPos;
+    } else {
+        fp->cur_pos = nearFp->cur_pos;
+        // Deliberately close (tighter than ftcommon.c's grounded
+        // anti-overlap push threshold -- ftCommon_8007E0E4/
+        // xF8_playerNudgeVel -- for wide-ECB characters like Captain
+        // Falcon): a wider offset (150.0f) reliably cleared it, but read
+        // as spawning the assist too far from the point character. At
+        // 10.0f, expect the same "something is pushing it apart" slide to
+        // come back for wide-ECB characters once the assist lands next to
+        // the point character and both are grounded -- that's this same
+        // per-frame push, not a new bug, and not fixable from the spawn
+        // offset alone at this distance. If that's not acceptable, the
+        // real fix is on the OTHER side of the tradeoff: suppress/clamp
+        // xF8_playerNudgeVel for the assist specifically (e.g.
+        // intangibility already skips hurtboxes -- extending that or an
+        // equivalent flag to this push check) rather than backing off the
+        // spawn distance.
+        //
+        // Not applicable to the groundPos case above: that spot is
+        // wherever straight down from the point character actually is,
+        // not necessarily anywhere near nearFp->cur_pos, so there's no
+        // "next to them" overlap to nudge away from in the first place.
+        fp->cur_pos.x += nearFp->facing_dir * 10.0f;
+    }
     fp->facing_dir = nearFp->facing_dir;
     HSD_JObjSetTranslate(GET_JOBJ(gobj), &fp->cur_pos);
 
@@ -558,7 +637,12 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
     // prev_pos/last_pos onto the new cur_pos so next frame's floor check
     // starts clean instead of dragging from where it used to be.
     mpColl_80043680(&fp->coll_data, &fp->cur_pos);
-    if (fp->ground_or_air == GA_Ground) {
+    if (groundPos != NULL) {
+        // Floor found by TagAssist_FindGroundBelow's own raycast, not
+        // nearFp's -- nearFp is airborne in this path, so it has no floor
+        // of its own worth copying.
+        fp->coll_data.floor = *groundFloor;
+    } else if (fp->ground_or_air == GA_Ground) {
         // Known-good floor, copied outright -- see the ground_or_air
         // assignment above for why this replaces the old "always -1,
         // let collision re-detect it" approach.
@@ -615,6 +699,9 @@ static void TagAssist_TryCallAssist(TeamState* team)
     Fighter* pointFp = GET_FIGHTER(team->point);
     Fighter* assistFp = GET_FIGHTER(team->assist);
     TagAssistMoveFn enterFn;
+    bool pointGrounded;
+    Vec3 groundPos;
+    SurfaceData groundFloor;
 
     if (team->assist_out) {
         return; // already out
@@ -625,28 +712,38 @@ static void TagAssist_TryCallAssist(TeamState* team)
     if (sFrameCounter < team->ready_frame) {
         return; // see TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
     }
-    if (pointFp->ground_or_air != GA_Ground) {
-        // Every supported character's assist move is a GROUNDED move
-        // (TagAssist_GetAssistMoveEnter) -- there's no aerial-variant
-        // lookup yet, and at least one character's grounded move script
-        // doesn't handle actually being airborne gracefully (observed:
-        // Falcon Punch's forward-glide phase held self_vel.y at 0 well
-        // past its intended duration when forced into the air, since a
-        // real move-triggered call is the one case TagAssist_Unbench
-        // can't safely ground -- neither fighter has a real floor to
-        // copy). Simplest safe fix for now: don't allow calling the
-        // assist while the point character isn't grounded, rather than
-        // risk it on every character until aerial variants are actually
-        // wired up.
-        return;
+
+    pointGrounded = pointFp->ground_or_air == GA_Ground;
+    // Every wired move (grounded and, for now, aerial -- see
+    // TagAssist_GetAssistMoveEnterAerial) is entered assuming a real floor
+    // under the assist; at least one grounded move script doesn't handle
+    // actually being airborne gracefully (observed: Falcon Punch's
+    // forward-glide phase held self_vel.y at 0 well past its intended
+    // duration when forced into the air). When the point character is
+    // airborne, find a real floor directly below them first -- if there
+    // isn't one (out over a gap/blast zone), don't call the assist at all
+    // rather than risk entering a grounded-assuming move with nothing under
+    // it.
+    if (!pointGrounded &&
+        !TagAssist_FindGroundBelow(&pointFp->cur_pos, &groundPos, &groundFloor))
+    {
+        return; // no floor found below the airborne point character
     }
 
-    enterFn = TagAssist_GetAssistMoveEnter(assistFp->kind);
+    enterFn = pointGrounded ? TagAssist_GetAssistMoveEnter(assistFp->kind)
+                            : TagAssist_GetAssistMoveEnterAerial(assistFp->kind);
     if (enterFn == NULL) {
         return; // this character isn't wired up for assists yet
     }
 
-    TagAssist_Unbench(team->assist, team->point);
+    if (pointGrounded) {
+        TagAssist_Unbench(team->assist, team->point, NULL, NULL);
+    } else {
+        // Ground found by the raycast above, however far below the
+        // (airborne) point character it actually is -- see
+        // TagAssist_Unbench's groundPos handling.
+        TagAssist_Unbench(team->assist, team->point, &groundPos, &groundFloor);
+    }
     enterFn(team->assist);
 
     team->assist_out = true;
