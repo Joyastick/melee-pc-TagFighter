@@ -36,6 +36,8 @@ You need your own disc image. No game data ships here.
 - [ ] Duo play support (shared-team play in the style of *2XKO*).
 - [ ] A separate Tag mode selectable alongside vanilla Melee, so the base
   game remains playable without any tag-mod behavior enabled.
+- [ ] Online play, built on melee-pc's own online implementation once that
+  lands upstream.
 
 ## Building
 
