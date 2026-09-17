@@ -22,6 +22,8 @@ notes, and contributing guide, see
 
 You need your own disc image. No game data ships here.
 
+![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
+
 ## Tag Fighter roadmap
 
 ### Completed
