@@ -45,6 +45,7 @@
 extern "C" {
 #endif
 
+extern uintptr_t OSBaseAddress;
 uint32_t pc_register_ext_ptr(const void* p);
 void* pc_resolve_ext_ptr(uint32_t id);
 void pc_disc_ptr_overflow(const void* p, const char* file, int line) __attribute__((noreturn));
@@ -55,12 +56,24 @@ static inline uint32_t pc_encode_dp(const void* p) {
     if (!((uintptr_t)p >> 32)) {
         return (uint32_t)(uintptr_t)p;
     }
+    if (OSBaseAddress && (uintptr_t)p >= OSBaseAddress &&
+        (uintptr_t)p < OSBaseAddress + 0x06000000ULL)
+    {
+        return (uint32_t)(uintptr_t)p;
+    }
     return 0x02000000u | pc_register_ext_ptr(p);
 }
 
 static inline void* pc_resolve_dp(uint32_t slot) {
+    if (!slot)
+        return (void*)0;
     if ((slot & 0xFF000000u) == 0x02000000u) {
-        return pc_resolve_ext_ptr(slot & 0x00FFFFFFu);
+        void* ext = pc_resolve_ext_ptr(slot & 0x00FFFFFFu);
+        if (ext)
+            return ext;
+    }
+    if (OSBaseAddress >> 32) {
+        return (void*)((uintptr_t)slot | (OSBaseAddress & ~0xFFFFFFFFULL));
     }
     return (void*)(uintptr_t)slot;
 }
@@ -69,9 +82,77 @@ static inline void* pc_resolve_dp(uint32_t slot) {
 }
 #endif
 
-#define DISC_STRUCT __attribute__((scalar_storage_order("big-endian")))
+#if defined(__cplusplus) && defined(__clang__)
+#include "pc/endian.hpp"
+#define DISC_STRUCT
 #define DISC_PTR(T) uint32_t
-#define DP(T, slot) ((T*)pc_resolve_dp((uint32_t)(slot)))
+#define DP(T, slot) ((T*)pc_resolve_dp((uint32_t)(uintptr_t)(slot)))
+#define DP_ARR(T, slot, i) DP(T, DP(DiscU32, slot)[i].v)
+#define DP_SET(slot, p)                                                                            \
+    do {                                                                                           \
+        (slot) = pc_encode_dp((const void*)(p));                                                   \
+    } while (0)
+
+#define DISC_ASSERT_SIZE(T, size) static_assert(sizeof(T) == (size), #T " disc size")
+
+#define PC_IS_ARAM_ADDR(a) ((uintptr_t)(a) < 0x01000000u)
+
+struct DiscF32 {
+    BE<float> v;
+    constexpr DiscF32() = default;
+    constexpr DiscF32(float val) : v(val) {}
+    constexpr operator float() const { return (float)v; }
+};
+struct DiscU32 {
+    BE<uint32_t> v;
+    constexpr DiscU32() = default;
+    constexpr DiscU32(uint32_t val) : v(val) {}
+    constexpr operator uint32_t() const { return (uint32_t)v; }
+};
+struct DiscS32 {
+    BE<int32_t> v;
+    constexpr DiscS32() = default;
+    constexpr DiscS32(int32_t val) : v(val) {}
+    constexpr operator int32_t() const { return (int32_t)v; }
+};
+struct DiscU16 {
+    BE<uint16_t> v;
+    constexpr DiscU16() = default;
+    constexpr DiscU16(uint16_t val) : v(val) {}
+    constexpr operator uint16_t() const { return (uint16_t)v; }
+};
+struct DiscS16 {
+    BE<int16_t> v;
+    constexpr DiscS16() = default;
+    constexpr DiscS16(int16_t val) : v(val) {}
+    constexpr operator int16_t() const { return (int16_t)v; }
+};
+struct DiscVec2 {
+    BE<float> x, y;
+};
+struct DiscVec3 {
+    BE<float> x, y, z;
+};
+struct DiscVec4 {
+    BE<float> x, y, z, w;
+};
+struct DiscS16Vec3 {
+    BE<int16_t> x, y, z;
+};
+struct DiscMtx {
+    BE<float> m[3][4];
+};
+
+#else
+
+#if defined(__clang__)
+#define DISC_STRUCT
+#else
+#define DISC_STRUCT __attribute__((scalar_storage_order("big-endian")))
+#endif
+#define DISC_PTR(T) uint32_t
+#define DP(T, slot) ((T*)pc_resolve_dp((uint32_t)(uintptr_t)(slot)))
+#define DP_ARR(T, slot, i) DP(T, DP(DiscU32, slot)[i].v)
 #define DP_SET(slot, p)                                                                            \
     do {                                                                                           \
         (slot) = pc_encode_dp((const void*)(p));                                                   \
@@ -114,6 +195,8 @@ typedef struct DISC_STRUCT {
 typedef struct DISC_STRUCT {
     float m[3][4];
 } DiscMtx;
+
+#endif
 
 #else /* GameCube build: identity */
 

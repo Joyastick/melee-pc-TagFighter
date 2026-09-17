@@ -190,6 +190,12 @@ suppress only; none of them fixes anything. See
 [the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md#environment-variables)
 for the full rendering/audio diagnostic variable list.
 
+## Contributing & Coding Style
+
+Please refer to [CODING_STYLE.md](CODING_STYLE.md) for architectural guidelines,
+formatting standards, 64-bit portability rules, and verification procedures. Run
+`python3 tools/check_style.py` before opening pull requests.
+
 ## Layout
 
 - `src/melee/mod` - the Tag Fighter mod itself.

@@ -1,6 +1,8 @@
 build/
 build-win/
 build-pc/
+build-win-arm64/
+build-ios/
 dist/
 build_vanilla/
 iso_build/
@@ -21,6 +23,7 @@ orig/*/sys/*
 !orig/*/sys/.gitkeep
 *.inc
 __pycache__/
+.zsign_cache/
 
 # Internal working notes stay local; only the screenshots are published.
 docs/*

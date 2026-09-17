@@ -33,19 +33,19 @@ static std::vector<std::filesystem::path> get_search_directories() {
     std::vector<std::filesystem::path> dirs;
     std::error_code ec;
 
-    // 1. User preferences directory: ~/.local/share/melee-pc_TagFighter/music/
-    char* pref = SDL_GetPrefPath("", "melee-pc_TagFighter");
+    // 1. User preferences directory: ~/.local/share/melee-pc/music/
+    char* pref = SDL_GetPrefPath("", "melee-pc");
     if (pref != nullptr) {
         dirs.push_back(std::filesystem::path(pref) / "music");
         SDL_free(pref);
     }
     const char* home = std::getenv("HOME");
     if (home != nullptr) {
-        dirs.push_back(std::filesystem::path(home) / ".local" / "share" / "melee-pc_TagFighter" / "music");
+        dirs.push_back(std::filesystem::path(home) / ".local" / "share" / "melee-pc" / "music");
     }
     const char* xdg = std::getenv("XDG_DATA_HOME");
     if (xdg != nullptr) {
-        dirs.push_back(std::filesystem::path(xdg) / "melee-pc_TagFighter" / "music");
+        dirs.push_back(std::filesystem::path(xdg) / "melee-pc" / "music");
     }
 
     // 2. Directory beside binary: <base>/music/
@@ -152,6 +152,29 @@ static std::vector<std::string> generate_candidate_stems(const char* track_stem)
         add_candidate("pokesta");
     } else if (lower_stem == "pokesta") {
         add_candidate("pstadium");
+    }
+
+    // Notice fanfare variations: s_info1..3 <-> notice / fanfare / achievement / info
+    if (lower_stem == "s_info1" || lower_stem == "s_info2" || lower_stem == "s_info3") {
+        add_candidate("notice");
+        add_candidate("fanfare");
+        add_candidate("achievement");
+        add_candidate("unlock");
+        add_candidate("info");
+        add_candidate("s_info");
+        if (lower_stem == "s_info1") {
+            add_candidate("notice1");
+            add_candidate("fanfare1");
+            add_candidate("info1");
+        } else if (lower_stem == "s_info2") {
+            add_candidate("notice2");
+            add_candidate("fanfare2");
+            add_candidate("info2");
+        } else if (lower_stem == "s_info3") {
+            add_candidate("notice3");
+            add_candidate("fanfare3");
+            add_candidate("info3");
+        }
     }
 
     return candidates;

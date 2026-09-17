@@ -414,6 +414,8 @@ bool http_get_string_winhttp(const std::wstring& host, const std::wstring& path,
         return false;
     }
 
+    WinHttpSetTimeouts(hSession, 5000, 5000, 5000, 5000);
+
     HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!hConnect) {
         out_error = "WinHttpConnect failed: " + std::to_string(GetLastError());
@@ -449,6 +451,13 @@ bool http_get_string_winhttp(const std::wstring& host, const std::wstring& path,
     DWORD dwDownloaded = 0;
     std::string response;
     do {
+        if (g_cancel.load()) {
+            out_error = "Request canceled";
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return false;
+        }
         dwSize = 0;
         if (!WinHttpQueryDataAvailable(hRequest, &dwSize))
             break;
@@ -464,6 +473,11 @@ bool http_get_string_winhttp(const std::wstring& host, const std::wstring& path,
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
+
+    if (g_cancel.load()) {
+        out_error = "Request canceled";
+        return false;
+    }
 
     out_body = std::move(response);
     return true;
@@ -639,7 +653,7 @@ void check_for_updates_async(bool include_prereleases) {
 #if defined(_WIN32)
         ok = http_get_string_winhttp(
             L"api.github.com", L"/repos/999sian/melee-pc/releases", body, error);
-#elif (defined(__linux__) || defined(__APPLE__)) && !defined(__ANDROID__)
+#elif defined(MELEE_USE_CURL)
         ok = http_get_string_curl(
             "https://api.github.com/repos/999sian/melee-pc/releases", body, error);
 #else
@@ -744,7 +758,7 @@ void start_download_async() {
         // Or open in browser if download URL is direct
         open_release_in_browser();
         ok = true;
-#elif (defined(__linux__) || defined(__APPLE__)) && !defined(__ANDROID__)
+#elif defined(MELEE_USE_CURL)
         ok = http_download_file_curl(download_url, dest_path, error);
         if (ok) {
             chmod(dest_path.c_str(), 0755);
