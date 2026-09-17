@@ -15,20 +15,51 @@
 #include <melee/ft/types.h>
 #include <melee/mp/forward.h>
 #include <melee/mp/mpcoll.h>
+#include <melee/pl/player.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/jobj.h>
 #include <sysdolphin/baselib/random.h>
 
 #include <melee/ft/kinds/ftCommon/forward.h>
 
-#include <melee/ft/kinds/ftCaptain/forward.h>
-#include <melee/ft/kinds/ftDonkey/forward.h>
-#include <melee/ft/kinds/ftFox/forward.h>
-#include <melee/ft/kinds/ftGameWatch/forward.h>
-#include <melee/ft/kinds/ftKoopa/forward.h>
-#include <melee/ft/kinds/ftMario/forward.h>
-#include <melee/ft/kinds/ftPopo/forward.h>
-#include <melee/ft/kinds/ftZelda/forward.h>
+/// Each of these declares that character's move-Enter function(s) --
+/// see TagAssist_GetAssistMoveEnter for why we call those directly instead
+/// of a bare Fighter_ChangeMotionState.
+#include <melee/ft/kinds/ftCaptain/ftcaptainspecialn.h>
+#include <melee/ft/kinds/ftCaptain/ftcaptainspeciallw.h>
+#include <melee/ft/kinds/ftDonkey/ftdonkey.h>
+#include <melee/ft/kinds/ftDonkey/ftdonkeyspecialn.h>
+#include <melee/ft/kinds/ftFox/ftfoxspecialn.h>
+#include <melee/ft/kinds/ftGameWatch/ftgamewatchspecialn.h>
+#include <melee/ft/kinds/ftKirby/ftkirby.h>
+#include <melee/ft/kinds/ftKoopa/ftkoopaspecialhi.h>
+#include <melee/ft/kinds/ftKoopa/ftkoopaspecialn.h>
+#include <melee/ft/kinds/ftLink/ftlinkspecialhi.h>
+#include <melee/ft/kinds/ftLink/ftlinkspecialn.h>
+#include <melee/ft/kinds/ftLink/ftlinkspecials.h>
+#include <melee/ft/kinds/ftLuigi/ftluigispeciallw.h>
+#include <melee/ft/kinds/ftLuigi/ftluigispecialn.h>
+#include <melee/ft/kinds/ftMario/ftmariospeciallw.h>
+#include <melee/ft/kinds/ftMario/ftmariospecialn.h>
+#include <melee/ft/kinds/ftMars/ftmarsspecialhi.h>
+#include <melee/ft/kinds/ftMars/ftmarsspecialn.h>
+#include <melee/ft/kinds/ftMewtwo/ftmewtwospecialn.h>
+#include <melee/ft/kinds/ftMewtwo/ftmewtwospecials.h>
+#include <melee/ft/kinds/ftNess/ftnessspecialn.h>
+#include <melee/ft/kinds/ftNess/ftnessspecials.h>
+#include <melee/ft/kinds/ftPeach/ftpeachspecialn.h>
+#include <melee/ft/kinds/ftPikachu/ftpikachuspeciallw.h>
+#include <melee/ft/kinds/ftPikachu/ftpikachuspecialn.h>
+#include <melee/ft/kinds/ftPopo/ftpopospeciallw.h>
+#include <melee/ft/kinds/ftPopo/ftpopospecialn.h>
+#include <melee/ft/kinds/ftPurin/ftpurinspecialn.h>
+#include <melee/ft/kinds/ftPurin/ftpurinspecials.h>
+#include <melee/ft/kinds/ftSamus/ftsamusspecialn.h>
+#include <melee/ft/kinds/ftSamus/ftsamusspecials.h>
+#include <melee/ft/kinds/ftSeak/ftseakspecialn.h>
+#include <melee/ft/kinds/ftYoshi/ftyoshispecialhi.h>
+#include <melee/ft/kinds/ftYoshi/ftyoshispecialn.h>
+#include <melee/ft/kinds/ftZelda/ftzeldaspecialn.h>
 
 /// v3 design (assist-call only -- tagging deliberately out of scope for now):
 ///
@@ -61,8 +92,9 @@
 ///  - A dedicated menu/game-mode entry -- this still rides on a normal
 ///    4-player VS match; surfacing it as its own mode is a separate,
 ///    larger menu/scene-table change for later.
-///  - Full roster coverage beyond TagAssist_GetSpecialNState's current
-///    handful of characters.
+///  - Any character whose assist move doesn't yet have an `_Enter`
+///    function wired into TagAssist_GetAssistMoveEnter -- unwired kinds
+///    return NULL there and simply can't be called out.
 
 /// D-Pad Down calls in your assist. Note this can also fire alongside
 /// retail's own down-taunt if that's bound to the same input in a given
@@ -76,26 +108,18 @@
 /// Frames to let a freshly-spawned assist run completely untouched before
 /// we freeze it for the first time.
 ///
-/// This used to be 60 (~1s), cut to 5 out of concern it let the assist get
-/// grabbed/physically linked to the point character before ever being
-/// frozen -- symptom quoted at the time: "not affected by gravity, stuck
-/// riding the point character's momentum" on the first call.
-///
-/// That's exactly the bug that came back at 5 frames, and increasing the
-/// grace period before the first *call* (TAG_ASSIST_FIRST_CALL_GRACE_FRAMES)
-/// didn't help at all -- proving the corruption happens at the first
-/// *bench*, not the first call; waiting longer afterward can't fix state
-/// that was already frozen mid-transition. The actual distinguishing
-/// factor isn't point-character proximity (CSS spawn points are normally
-/// well separated, and this module's own 10.0f re-spawn offset for
-/// *later* calls is fine): every match starts with an intro/countdown
-/// sequence (fighters descend onto the stage, "3, 2, 1, GO") that a real
-/// mid-match death/respawn never repeats. 5 frames freezes the assist
-/// while that one-time intro is still running, every match, without
-/// fail -- corrupting something the intro never gets to finish, which a
-/// later real respawn (a completely different code path) simply doesn't
-/// share. 180 frames (3s) comfortably outlasts the intro.
-#define INITIAL_SETTLE_FRAMES 180
+/// This used to need to be long enough (180f/3s) to outlast the match's
+/// intro/countdown sequence ("3, 2, 1, GO"), because benching mid-intro
+/// appeared to corrupt state the intro never got to finish. That symptom
+/// turned out to actually be the same physics-inheritance bug
+/// TagAssist_Unbench now fixes directly -- forcing a known-good
+/// ftCo_MS_Wait state before the first freeze, zeroing stale velocity/
+/// nudge/input, and re-grounding via mpColl_80043680 instead of trusting
+/// stale coll_data (see TagAssist_Unbench's comments). With that fix in
+/// place there's nothing left for a settle delay to protect against, so
+/// this is 0 -- the assist benches (goes invisible) on the very first
+/// frame it's seen.
+#define INITIAL_SETTLE_FRAMES 0
 
 typedef struct TeamState {
     Fighter_GObj* point;  ///< Port 1 or Port 2: always human, never touched
@@ -145,53 +169,243 @@ static TeamState sTeams[2];
 static u32 sFrameCounter;
 
 /// Frames to wait after a team is first seen before EVER allowing the
-/// first TryCallAssist to go through. 300 = 5 seconds at 60fps.
+/// first TryCallAssist to go through.
 ///
-/// Root cause of a real bug: a freshly-spawned fighter's own spawn-in
-/// sequence keeps running internally in the background across several
-/// action-state transitions even while this module holds it frozen (see
-/// the "Reassert the bench state EVERY frame" comment below -- each such
-/// transition resets x221F_b3, which is why we have to keep re-freezing
-/// it every frame instead of once). If the very first call's
-/// Fighter_ChangeMotionState into the assist's Neutral Special races
-/// against that still-in-progress background sequence, the two
-/// transitions can stomp on each other -- observed as the called assist
-/// drifting with self_vel exactly zero at the moment of the call but with
-/// gravity and ground collision simply not applying for the rest of that one
-/// move, until it eventually dies off-stage. A real death/respawn always
-/// fixed it afterward because that cycle runs to completion, unlike the
-/// interrupted spawn-in. INITIAL_SETTLE_FRAMES only controls the first
-/// *bench*, not the first *call* -- 5 frames is nowhere near enough for a
-/// spawn sequence to finish, so this is a separate, much longer gate
-/// specifically on the first call.
-#define TAG_ASSIST_FIRST_CALL_GRACE_FRAMES 300
+/// This used to guard against the called assist drifting off-stage with
+/// self_vel stuck at zero on its first call -- a race between
+/// Fighter_ChangeMotionState into the assist's Neutral Special and the
+/// assist's own still-in-progress spawn-in sequence. That's now fixed at
+/// the root in TagAssist_Unbench (explicit re-grounding, zeroed nudge
+/// velocity/stale input, mpColl_80043680 teleport instead of trusting
+/// stale coll_data) rather than by outwaiting the race, so the first call
+/// no longer needs to be held back. 0 = allowed as soon as the team is
+/// initialized (still subject to TagAssist_OnFighterInputFrame's own
+/// point/assist-both-present gating).
+#define TAG_ASSIST_FIRST_CALL_GRACE_FRAMES 0
 
-/// Returns the Neutral Special action-state ID for a character, or -1 if
-/// this character isn't wired up for assists yet. Extending roster coverage
-/// is just adding more cases here using that character's own ftXx_MS_*
-/// enum (see e.g. src/melee/ft/kinds/ftMario/forward.h).
-static FtMotionId TagAssist_GetSpecialNState(FighterKind kind)
+/// A move's own Enter function -- e.g. ftMr_SpecialN_Enter, or any other
+/// character's `_Enter(Fighter_GObj*)` for whichever single move that
+/// character is wired to. Same signature for a Neutral/Side/Up/Down
+/// Special, a smash, or a tilt, so this lookup isn't tied to "Neutral
+/// Special" at all -- it's just whatever move each case below names.
+typedef void (*TagAssistMoveFn)(Fighter_GObj* gobj);
+
+/// Returns the assist move's own Enter function for a character, or NULL
+/// if this character isn't wired up for assists yet.
+///
+/// This calls the move's real Enter function instead of driving
+/// Fighter_ChangeMotionState to the move's motion-state ID directly (the
+/// old approach). Retail never enters a move that way either -- every
+/// move's Enter function does its own setup on top of the state change:
+/// resetting cmd_vars, zeroing stale velocity, and critically, wiring up
+/// whatever callback the move's animation-event script actually calls to
+/// produce its effect. E.g. ftMr_SpecialN_Enter ends with
+/// `fp->accessory4_cb = ftMr_SpecialN_ItemFireSpawn` -- skip that (as the
+/// direct-ChangeMotionState approach did) and the animation plays but the
+/// fireball callback is never wired up, so nothing spawns. Confirmed root
+/// cause of "Mario/G&W's assist projectile doesn't come out": ftGw_SpecialN_Enter
+/// has the identical pattern for Chef's sausages. Any move with its own
+/// `_Enter` fits this lookup the same way, which is also what makes
+/// picking something other than Neutral Special for a given character
+/// (a smash, a tilt, a different special) just a different function
+/// reference here, not a different mechanism.
+///
+/// Extending roster coverage is adding a case using that character's own
+/// `ftXx_Yyyy_Enter` (declared in that character's own kinds/ftXx/*.h,
+/// included above) for whichever move that character is wired to -- not
+/// necessarily Neutral Special (see docs/tag_assist_roster.csv for the
+/// current character -> move mapping; keep that file in sync with this
+/// switch). A few clone characters reuse their base character's Enter
+/// function directly because retail shares it, which itself branches
+/// internally on fp->kind for whatever differs (item kind, effect color,
+/// etc.) when it needs to -- e.g. ftFox_SpecialN_InitializeState's
+/// fp->kind check for Fox vs Falco's blaster article, or
+/// ftCaptain_SpecialN_CreateWindEffect's case Ft_Kind_Ganon -- and simply
+/// has nothing left to differ (a bare Fighter_ChangeMotionState to a
+/// shared motion-state ID) when it doesn't, since each character's own
+/// separately-authored animation/hitbox data for that same state ID is
+/// what actually carries the difference (e.g. ftMr_SpecialLw_Enter for
+/// Mario/Dr. Mario's Tornado, or ftMs_SpecialHi_Enter for Marth/Roy's Up
+/// Special -- neither has any fp->kind branch at all). Ness's Enter
+/// functions are named SpecialNStart/SpecialHiStart/SpecialLwStart (each
+/// charges or holds before releasing), not the plain Special_ used
+/// elsewhere -- still the same shape.
+///
+/// Two moves here (Up Smash, Down Smash) aren't tied to a Neutral/Side/Up
+/// /Down Special at all: see TagAssist_Common_AttackHi4_Enter and
+/// TagAssist_Common_AttackLw4_Enter below.
+
+/// Up Smash and Down Smash's assist entries (used by Zelda, Sheik, and Fox
+/// for Up Smash; Peach for Down Smash).
+///
+/// Neither smash has a character-specific override for any of these four
+/// (nor for almost anyone -- Ness is the one exception in retail for
+/// both): every other character enters them through the exact same
+/// generic, shared function -- `doEnter` in ftCo_AttackHi4.c /
+/// ftCo_AttackLw4.c respectively. Those symbols happen to have external
+/// linkage (missing a `static` retail's own build didn't need, since
+/// decomp matching only cares about the compiled bytes, not the linkage)
+/// but aren't declared in either file's own header -- they're not meant
+/// to be called from outside their file. Rather than reach into a
+/// private, incidentally-external symbol by guessing its exact
+/// (unprefixed, collision-prone) name, these mirror their 3 lines
+/// directly: lock interrupts, force the shared motion state, and hand off
+/// to the standard animation-driven charge/release/IASA handling every
+/// smash already uses. Keeps this entirely mod-owned instead of touching
+/// decomp-matched common code for a mod-specific need.
+static void TagAssist_Common_AttackHi4_Enter(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    fp->allow_interrupt = false;
+    Fighter_ChangeMotionState(gobj, ftCo_MS_AttackHi4, Ft_MF_None, 0, 1, 0,
+                              NULL);
+    ftAnim_8006EBA4(gobj);
+}
+
+static void TagAssist_Common_AttackLw4_Enter(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    fp->allow_interrupt = false;
+    Fighter_ChangeMotionState(gobj, ftCo_MS_AttackLw4, Ft_MF_None, 0, 1, 0,
+                              NULL);
+    ftAnim_8006EBA4(gobj);
+}
+
+/// Donkey Kong's assist move: Giant Punch, thrown instantly uncharged
+/// instead of standing there winding up forever.
+///
+/// Giant Punch normally needs two separate Neutral Special inputs: the
+/// first starts the windup (ftDk_MS_SpecialNStart -> ...Loop, gaining a
+/// charge level each loop iteration), and a second B press is what
+/// actually releases it -- ftDk_SpecialNLoop_IASA is what reads that
+/// second press and transitions to the real punch (ftDk_MS_SpecialN).
+/// Calling ftDk_SpecialN_Enter directly, like every other move's assist
+/// entry, only ever does the first half: nothing ever delivers that
+/// second press for a CPU-frozen assist, so it just stands there winding
+/// up for the assist's whole time out and the punch never actually
+/// throws. Confirmed: this is the "DK just charges and never punches"
+/// bug.
+///
+/// This skips straight to the release state (ftDk_MS_SpecialN) instead,
+/// replicating the same per-move setup ftDk_SpecialN_Enter itself does
+/// (cmd_vars/velocity/damage-callback init -- see that function and its
+/// file-local setCallbacks helper in ftdonkeyspecialn.c) plus exactly
+/// what ftDk_SpecialNLoop_IASA does on that second B press. Charge
+/// (fp->mv.dk.specialn.xC) is forced to 0 -- an assist call always starts
+/// from fp->u.dk.x222C == 0 (no real windup time was ever spent), so
+/// there's no charge to preserve either way. Net effect: an immediate,
+/// uncharged (weakest) Giant Punch instead of a windup that never
+/// releases -- the assist equivalent of tapping Neutral Special twice
+/// instantly.
+static void TagAssist_Dk_SpecialN_Enter(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+
+    Fighter_ChangeMotionState(gobj, ftDk_MS_SpecialN, 0, 0, 1, 0, NULL);
+    fp->mv.dk.specialn.xC = 0;
+    fp->u.dk.x222C = 0;
+    Fighter_ClearCmdVars(fp);
+    fp->mv.dk.specialn.x0 = 0;
+    fp->mv.dk.specialn.x4 = 0;
+    fp->mv.dk.specialn.x14 = -1;
+    fp->mv.dk.specialn.x10 = -1;
+    ftCommon_8007D7FC(fp);
+    fp->self_vel.y = 0;
+
+    // Mirrors setCallbacks(gobj) in ftdonkeyspecialn.c (file-local, not
+    // callable from here).
+    fp->take_dmg_cb = ftDk_Init_8010D774;
+    fp->death2_cb = ftDk_Init_8010D774;
+    fp->take_dmg_2_cb = ftDk_SpecialN_DestroyAllEffects;
+    Fighter_SetEffectHitlagCallbacks(fp);
+
+    ftAnim_8006EBA4(gobj);
+}
+
+static TagAssistMoveFn TagAssist_GetAssistMoveEnter(FighterKind kind)
 {
     switch (kind) {
     case Ft_Kind_Mario:
-        return ftMr_MS_SpecialN;
+        return ftMr_SpecialN_Enter; // Neutral Special (Fireball)
+    case Ft_Kind_DrMario:
+        return ftMr_SpecialLw_Enter; // Down Special (Tornado) -- no fp->kind branch, identical for both
     case Ft_Kind_Fox:
-        return ftFx_MS_SpecialNStart;
+        return TagAssist_Common_AttackHi4_Enter; // Up Smash
+    case Ft_Kind_Falco:
+        return ftFx_SpecialN_Enter; // Neutral Special (Blaster)
     case Ft_Kind_Captain:
-        return ftCa_MS_SpecialN;
+        return ftCa_SpecialN_Enter; // Neutral Special (Falcon Punch)
+    case Ft_Kind_Ganon:
+        return ftCa_SpecialLw_Enter; // Down Special (Wizard's Foot) -- branches on fp->kind internally
     case Ft_Kind_Zelda:
-        return ftZd_MS_SpecialN;
+        return TagAssist_Common_AttackHi4_Enter; // Up Smash
+    case Ft_Kind_Seak:
+        return TagAssist_Common_AttackHi4_Enter; // Up Smash
     case Ft_Kind_Donkey:
-        return ftDk_MS_SpecialN;
+        return TagAssist_Dk_SpecialN_Enter; // instant uncharged Giant Punch -- see above
     case Ft_Kind_Koopa:
-        return ftKp_MS_SpecialN;
+        return ftKp_SpecialHi_Enter; // Up Special (Whirling Fortress)
     case Ft_Kind_GameWatch:
-        return ftGw_MS_SpecialN;
+        return ftGw_SpecialN_Enter; // Neutral Special (Chef)
     case Ft_Kind_Popo:
-        return ftPp_MS_SpecialN;
+        return ftPp_SpecialLw_Enter; // Down Special (Blizzard)
+    case Ft_Kind_Luigi:
+        return ftLg_SpecialLw_Enter; // Down Special (Luigi Cyclone)
+    case Ft_Kind_Mars:
+        return ftMs_SpecialN_Enter; // Neutral Special (Shield Breaker)
+    case Ft_Kind_Emblem:
+        return ftMs_SpecialHi_Enter; // Up Special (Blazer) -- no fp->kind branch, identical for both
+    case Ft_Kind_Yoshi:
+        return ftYs_SpecialHi_Enter; // Up Special (Egg Throw)
+    case Ft_Kind_Mewtwo:
+        return ftMt_SpecialS_Enter; // Side Special (Confusion)
+    case Ft_Kind_Peach:
+        return TagAssist_Common_AttackLw4_Enter; // Down Smash
+    case Ft_Kind_Samus:
+        return ftSs_SpecialS_Enter; // Side Special (Missile)
+    case Ft_Kind_Pikachu:
+        return ftPk_SpecialLw_Enter; // Down Special (Thunder)
+    case Ft_Kind_Pichu:
+        return ftPk_SpecialN_Enter; // Neutral Special (Thunder Jolt)
+    case Ft_Kind_Purin:
+        return ftPr_SpecialS_Enter; // Side Special (Pound)
+    case Ft_Kind_Kirby:
+        return ftKb_SpecialS_Enter; // Side Special (Hammer Flip)
+    case Ft_Kind_Link:
+        return ftLk_SpecialHi_Enter; // Up Special (Spin Attack)
+    case Ft_Kind_CLink:
+        return ftLk_SpecialS_Enter; // Side Special (Boomerang) -- no fp->kind branch, identical for both
+    case Ft_Kind_Ness:
+        return ftNs_SpecialS_Enter; // Side Special (PK Fire)
     default:
-        return -1;
+        return NULL;
     }
+}
+
+/// If `gobj` is Popo (Ice Climbers' leader), returns Nana's own separate
+/// Fighter_GObj -- NULL for every other character, and for Popo if Nana
+/// somehow isn't present.
+///
+/// Ice Climbers' assist role is really TWO independent Fighter_GObj
+/// instances running their own CPU AI: Popo (what TeamState.assist
+/// actually points to) and Nana, a dependent sub-fighter who shares
+/// Popo's own fp->player_id rather than having one of her own (retail's
+/// design -- every one of Nana's own move-scripts looks Popo up via
+/// Player_GetEntityAtIndex(nana_fp->player_id, 0), e.g.
+/// ftnanaspecials.c). Benching/unbenching Popo alone does nothing to
+/// Nana's own x221F_b3/cpu.kind/invisible flags -- confirmed root cause of
+/// "Ice Climbers assist: Popo benches fine, Nana keeps running as a
+/// normal CPU." index 1 (vs. Nana's own index-0 lookup for Popo) is
+/// retail's existing pairing for the non-transforming (Popo, Nana) case,
+/// the same player_entity/transformed[] mechanism Zelda/Sheik use for
+/// their transform instead.
+static Fighter_GObj* TagAssist_GetIceClimberPartner(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    if (fp->kind != Ft_Kind_Popo) {
+        return NULL;
+    }
+    return Player_GetEntityAtIndex(fp->player_id, 1);
 }
 
 /// Puts the assist into a genuinely inert dormant state: no CPU AI
@@ -202,9 +416,18 @@ static FtMotionId TagAssist_GetSpecialNState(FighterKind kind)
 /// intangible (x2219_b1 -- skips hurtboxes/collision AND
 /// ftCo_800D3158's blast-zone/KO check, so this can never cost a stock),
 /// and excluded from camera framing. The GObj/Fighter stays fully alive.
+///
+/// Also benches Nana when `gobj` is Popo -- see
+/// TagAssist_GetIceClimberPartner. The recursive call is on Nana, whose
+/// kind is Ft_Kind_Nana, so TagAssist_GetIceClimberPartner returns NULL
+/// for her and this doesn't recurse further.
 static void TagAssist_SetBenched(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
+    Fighter_GObj* partner = TagAssist_GetIceClimberPartner(gobj);
+    if (partner != NULL) {
+        TagAssist_SetBenched(partner);
+    }
     fp->x221F_b3 = 1;
     fp->cpu.kind = CpuKind_5;
     fp->invisible = true;
@@ -242,10 +465,22 @@ static void TagAssist_SetBenched(Fighter_GObj* gobj)
 /// ground/floor re-detection (ground_or_air = GA_Air, gr_vel = 0,
 /// coll_data.x130_flags |= CollData_X130_Locked to briefly lock out ECB
 /// processing) instead of trusting stale coll_data.
+///
+/// Also unbenches Nana when `gobj` is Popo -- see
+/// TagAssist_GetIceClimberPartner. She's placed at the same `nearGobj`
+/// -relative spot Popo is (briefly overlapping him) rather than
+/// positioned relative to Popo specifically: her own AI immediately
+/// starts closing whatever distance remains, exactly like retail's
+/// existing Ice Climbers separation/reunion behavior, so this settles
+/// within a frame or two rather than staying visibly wrong.
 static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Fighter* nearFp = GET_FIGHTER(nearGobj);
+    Fighter_GObj* partner = TagAssist_GetIceClimberPartner(gobj);
+    if (partner != NULL) {
+        TagAssist_Unbench(partner, nearGobj);
+    }
 
     ftCommon_8007E2FC(gobj);
     // Ground the assist directly onto the point character's own current
@@ -379,7 +614,7 @@ static void TagAssist_TryCallAssist(TeamState* team)
 {
     Fighter* pointFp = GET_FIGHTER(team->point);
     Fighter* assistFp = GET_FIGHTER(team->assist);
-    FtMotionId specialN;
+    TagAssistMoveFn enterFn;
 
     if (team->assist_out) {
         return; // already out
@@ -391,29 +626,28 @@ static void TagAssist_TryCallAssist(TeamState* team)
         return; // see TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
     }
     if (pointFp->ground_or_air != GA_Ground) {
-        // Every supported character's assist move is called via its
-        // GROUNDED Neutral Special motion ID (TagAssist_GetSpecialNState)
-        // -- there's no aerial-variant lookup yet, and at least one
-        // character's grounded move script doesn't handle actually being
-        // airborne gracefully (observed: Falcon Punch's forward-glide
-        // phase held self_vel.y at 0 well past its intended duration
-        // when forced into the air, since a real move-triggered call is
-        // the one case TagAssist_Unbench can't safely ground -- neither
-        // fighter has a real floor to copy). Simplest safe fix for now:
-        // don't allow calling the assist while the point character isn't
-        // grounded, rather than risk it on every character until aerial
-        // variants are actually wired up.
+        // Every supported character's assist move is a GROUNDED move
+        // (TagAssist_GetAssistMoveEnter) -- there's no aerial-variant
+        // lookup yet, and at least one character's grounded move script
+        // doesn't handle actually being airborne gracefully (observed:
+        // Falcon Punch's forward-glide phase held self_vel.y at 0 well
+        // past its intended duration when forced into the air, since a
+        // real move-triggered call is the one case TagAssist_Unbench
+        // can't safely ground -- neither fighter has a real floor to
+        // copy). Simplest safe fix for now: don't allow calling the
+        // assist while the point character isn't grounded, rather than
+        // risk it on every character until aerial variants are actually
+        // wired up.
         return;
     }
 
-    specialN = TagAssist_GetSpecialNState(assistFp->kind);
-    if (specialN < 0) {
+    enterFn = TagAssist_GetAssistMoveEnter(assistFp->kind);
+    if (enterFn == NULL) {
         return; // this character isn't wired up for assists yet
     }
 
     TagAssist_Unbench(team->assist, team->point);
-    Fighter_ChangeMotionState(team->assist, specialN, 0, 0.0f, 1.0f, 0.0f,
-                              NULL);
+    enterFn(team->assist);
 
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
@@ -435,7 +669,7 @@ static void TagAssist_TryCallAssist(TeamState* team)
 /// gfx_id/1000 == 0 in efLib_Create's efAsync_DatEntries[gfx_id / 1000]
 /// bank lookup -- the shared/common effect bank that's always loaded, not
 /// a per-character one gated on which fighters happen to be in this
-/// match. Safe to spawn regardless of whether Zelda is even one of the 8
+/// match. Safe to spawn regardless of whether Zelda is even one of the
 /// characters this mod supports as an assist.
 static const u32 kDespawnEffectGfxIds[2] = { 22, 24 };
 
@@ -456,20 +690,93 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
     }
 }
 
+/// True while `gobj`'s fighter is anywhere in the common death->respawn
+/// chain (falling as a star, landing, waking up, walking onto the
+/// newly-spawned platform) -- ftCo_MS_DeadDown..ftCo_MS_RebirthWait are the
+/// character-agnostic motion IDs retail chains through for every KO,
+/// contiguous in ftCommon's own MotionState enum (ftCo_MS_Wait, the first
+/// truly "done" state, immediately follows RebirthWait).
+///
+/// Root cause of "rebenched with no percent digit": TagAssist_UpdateTimer
+/// used to gate solely on ftAnim_IsFramesRemaining, which -- at each
+/// sub-state boundary inside this chain -- can read "no frames remaining"
+/// for exactly one frame after the old sub-state's animation finishes but
+/// before the next sub-state's Enter function has run and set new anim
+/// data. If that one-frame gap landed on the same frame this module
+/// checked, it read as "the assist is done, safe to bench" and force-froze
+/// (x221F_b3) the fighter mid-sequence -- which, per Fighter_procUpdate's
+/// early-return on that flag, halts whatever later step in the chain would
+/// have re-armed this port's percent/stock HUD digit, even though the
+/// fighter itself keeps existing in a normal, alive state. Checking the
+/// actual current motion_id instead of animation-frame bookkeeping closes
+/// that gap: it stays true across every sub-state transition in the chain,
+/// with no boundary to race.
+static bool TagAssist_IsInDeathSequence(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    return fp->motion_id >= ftCo_MS_DeadDown && fp->motion_id <= ftCo_MS_RebirthWait;
+}
+
+/// True once the assist's death/respawn sequence has reached the "angel
+/// platform" specifically -- ftCo_MS_Rebirth (riding the platform down) or
+/// ftCo_MS_RebirthWait (standing on it, about to drop through and become
+/// a normal, controllable fighter again) -- as opposed to anywhere earlier
+/// in TagAssist_IsInDeathSequence's wider range (still falling/flying as a
+/// star, not yet confirmed landed on the platform).
+///
+/// This distinction matters because Fighter_UnkProcessDeath_80068354 --
+/// which does the actual percent/HP reset for the new stock
+/// (fp->dmg.x1830_percent = Player_GetDamage(...) inside
+/// Fighter_UnkInitReset_80067C98) -- runs unconditionally at the very
+/// start of ftCo_800D4FF4 (ft_0D4D.c), BEFORE the fighter is ever put into
+/// ftCo_MS_Rebirth. So by the time motion_id reaches Rebirth, that reset
+/// has already happened; freezing here can't leave the stale-percent bug
+/// TagAssist_IsInDeathSequence's wider range was created to avoid (that
+/// bug was freezing during the earlier DeadDown..DeadUpFall* substates,
+/// BEFORE ftCo_800D4FF4 has ever run).
+static bool TagAssist_HasReachedRebirth(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    return fp->motion_id == ftCo_MS_Rebirth || fp->motion_id == ftCo_MS_RebirthWait;
+}
+
 static void TagAssist_UpdateTimer(TeamState* team)
 {
     if (!team->assist_out) {
         return;
     }
+
+    // A real KO overrides the normal timer/animation-based despawn
+    // entirely, checked every frame regardless of assist_timer -- a death
+    // doesn't pause assist_timer, so waiting for assist_timer to run out
+    // on its own could take up to its full remaining duration, during
+    // which the assist finishes respawning, walks off the platform, and
+    // starts fighting as a normal, un-benched CPU well before this
+    // function ever re-checked anything. Bench the instant they're
+    // confirmed safely on the platform instead of letting them ever climb
+    // down off it. Confirmed root cause of "assist walks off the angel
+    // platform and fights like a normal CPU."
+    if (TagAssist_HasReachedRebirth(team->assist)) {
+        TagAssist_SpawnDespawnEffect(team->assist);
+        TagAssist_SetBenched(team->assist);
+        team->assist_out = false;
+        return;
+    }
+
     if (team->assist_timer > 0) {
         team->assist_timer--;
         return;
     }
     // Don't force the bench mid-animation -- in particular, don't
     // interrupt a real death/respawn sequence if the assist got KO'd
-    // while called out. Capped so a state that never reports "done"
-    // can't stall this forever.
-    if (ftAnim_IsFramesRemaining(team->assist) && team->despawn_grace > 0) {
+    // while called out (TagAssist_HasReachedRebirth above already handles
+    // that case as soon as it's safe; this is for the ordinary
+    // non-death case, or for a death sequence that hasn't reached the
+    // platform yet). Capped so a state that never reports "done" can't
+    // stall this forever.
+    if ((TagAssist_IsInDeathSequence(team->assist) ||
+        ftAnim_IsFramesRemaining(team->assist)) && team->despawn_grace > 0)
+    {
         team->despawn_grace--;
         return;
     }
@@ -518,9 +825,29 @@ static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
 void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    int teamIdx = fp->player_id % 2;
-    int roleIdx = fp->player_id / 2; // 0 = point, 1 = assist
+    int teamIdx;
+    int roleIdx;
     TeamState* team;
+
+    // Ice Climbers' Nana is not a separate assist-able role -- she's a
+    // dependent sub-fighter of Popo and shares Popo's own fp->player_id
+    // (retail's sub-fighter design: every one of Nana's own move-scripts
+    // looks Popo up via Player_GetEntityAtIndex(nana_fp->player_id, 0),
+    // e.g. ftnanaspecials.c). Without this check, Nana's Fighter_GObj hits
+    // this same function every frame with the SAME team/role as Popo but a
+    // DIFFERENT gobj, and TagAssist_HandleNewMatch's "did the stored
+    // pointer change?" logic reads that as team->assist actually
+    // switching fighters every frame -- thrashing initialized/benched_once
+    // back to false continuously. Confirmed root cause of "Ice Climbers
+    // assist spawns in as a normal, never-benched CPU": the benching path
+    // below never gets to latch because initialized/benched_once are
+    // reset before they ever settle.
+    if (fp->is_sub_fighter) {
+        return;
+    }
+
+    teamIdx = fp->player_id % 2;
+    roleIdx = fp->player_id / 2; // 0 = point, 1 = assist
 
     if (roleIdx >= 2) {
         return; // only 4 ports (2 teams of point+assist) are handled
