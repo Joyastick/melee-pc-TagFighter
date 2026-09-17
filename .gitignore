@@ -27,6 +27,9 @@ docs/*
 !docs/screenshots/
 !docs/CODING_STYLE.md
 
+# Claude working notes stay local -- never commit these.
+CLAUDE.md
+
 # Android build outputs (CI builds these from source).
 platforms/android/.gradle/
 platforms/android/.idea/
