@@ -101,6 +101,43 @@ match starts.
   out.
 - Ice Climbers bench/unbench Popo and Nana together.
 
+### Character assist moves
+
+In v1, the aerial assist call is the same move as the grounded one for every
+character (tracked as a future refinement, not a limitation you need to work
+around). Kept in sync with
+[docs/tag_assist_roster.csv](docs/tag_assist_roster.csv) — update that file
+first if a mapping below goes stale.
+
+| Character | Grounded assist | Aerial assist |
+|---|---|---|
+| Mario | Neutral Special (Fireball) | Same as grounded |
+| Dr. Mario | Down Special (Tornado) | Same as grounded |
+| Fox | Up Smash | Same as grounded |
+| Falco | Neutral Special (Blaster) | Same as grounded |
+| Captain Falcon | Neutral Special (Falcon Punch) | Same as grounded |
+| Ganondorf | Down Special (Wizard's Foot) | Same as grounded |
+| Zelda | Up Smash | Same as grounded |
+| Sheik | Up Smash | Same as grounded |
+| Donkey Kong | Neutral Special (Giant Punch, released instantly uncharged) | Same as grounded |
+| Bowser | Up Special (Whirling Fortress) | Same as grounded |
+| Mr. Game & Watch | Neutral Special (Chef) | Same as grounded |
+| Ice Climbers | Down Special (Blizzard) | Same as grounded |
+| Luigi | Down Special (Luigi Cyclone) | Same as grounded |
+| Marth | Neutral Special (Shield Breaker) | Same as grounded |
+| Roy | Up Special (Blazer) | Same as grounded |
+| Yoshi | Up Special (Egg Throw) | Same as grounded |
+| Mewtwo | Side Special (Confusion) | Same as grounded |
+| Peach | Down Smash | Same as grounded |
+| Samus | Side Special (Missile) | Same as grounded |
+| Pikachu | Down Special (Thunder) | Same as grounded |
+| Pichu | Neutral Special (Thunder Jolt) | Same as grounded |
+| Jigglypuff | Side Special (Pound) | Same as grounded |
+| Kirby | Side Special (Hammer Flip) | Same as grounded |
+| Link | Up Special (Spin Attack) | Same as grounded |
+| Young Link | Side Special (Boomerang) | Same as grounded |
+| Ness | Side Special (PK Fire) | Same as grounded |
+
 ## Controls
 
 Keyboard: arrows = stick, IJKL = C-stick, X = A, Z = B, C = X, V = Y, Q/E = L/R,
