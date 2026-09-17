@@ -20,10 +20,10 @@ std::string s_textures_dir_str;
 bool s_initialized = false;
 
 std::filesystem::path resolve_texture_directory() {
-    // 1. On Linux/Windows, user data dir is SDL_GetPrefPath("", "melee-pc").
+    // 1. On Linux/Windows, user data dir is SDL_GetPrefPath("", "melee-pc_TagFighter").
     //    Use a "textures" subdirectory there: <prefPath>/textures
     std::filesystem::path user_dir;
-    char* pref = SDL_GetPrefPath("", "melee-pc");
+    char* pref = SDL_GetPrefPath("", "melee-pc_TagFighter");
     if (pref != nullptr) {
         user_dir = std::filesystem::path(pref) / "textures";
         SDL_free(pref);

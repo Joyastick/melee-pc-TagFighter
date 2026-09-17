@@ -33,19 +33,19 @@ static std::vector<std::filesystem::path> get_search_directories() {
     std::vector<std::filesystem::path> dirs;
     std::error_code ec;
 
-    // 1. User preferences directory: ~/.local/share/melee-pc/music/
-    char* pref = SDL_GetPrefPath("", "melee-pc");
+    // 1. User preferences directory: ~/.local/share/melee-pc_TagFighter/music/
+    char* pref = SDL_GetPrefPath("", "melee-pc_TagFighter");
     if (pref != nullptr) {
         dirs.push_back(std::filesystem::path(pref) / "music");
         SDL_free(pref);
     }
     const char* home = std::getenv("HOME");
     if (home != nullptr) {
-        dirs.push_back(std::filesystem::path(home) / ".local" / "share" / "melee-pc" / "music");
+        dirs.push_back(std::filesystem::path(home) / ".local" / "share" / "melee-pc_TagFighter" / "music");
     }
     const char* xdg = std::getenv("XDG_DATA_HOME");
     if (xdg != nullptr) {
-        dirs.push_back(std::filesystem::path(xdg) / "melee-pc" / "music");
+        dirs.push_back(std::filesystem::path(xdg) / "melee-pc_TagFighter" / "music");
     }
 
     // 2. Directory beside binary: <base>/music/

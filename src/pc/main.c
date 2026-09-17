@@ -293,8 +293,8 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
         /* appName doubles as the window title; the save/cache dirs stay
          * pinned so a renamed test window still uses the same memory card. */
         .appName = getenv("MELEE_WINDOW_TITLE") ? getenv("MELEE_WINDOW_TITLE") : "melee-pc",
-        .userPath = SDL_GetPrefPath(NULL, "melee-pc"),
-        .cachePath = SDL_GetPrefPath(NULL, "melee-pc"),
+        .userPath = SDL_GetPrefPath(NULL, "melee-pc_TagFighter"),
+        .cachePath = SDL_GetPrefPath(NULL, "melee-pc_TagFighter"),
         .msaa = 1,
         .maxTextureAnisotropy = 16,
         /* MELEE_VSYNC=0 picks Mailbox/Immediate instead of FifoRelaxed; some
