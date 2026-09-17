@@ -14,101 +14,28 @@ This repository is a fork of
 Melee built from [doldecomp/melee](https://github.com/doldecomp/melee) on top
 of [aurora](https://github.com/encounter/aurora) (GX/OS/PAD/DVD/CARD/THP
 compatibility layer with a WebGPU backend) and SDL3. Everything melee-pc
-provides — the native build, launcher, settings overlay, and so on — still
-applies here; this fork adds the Tag Fighter mod on top of it. Online play
-with rollback netcode is planned upstream and **not implemented yet**.
+provides — the native build, launcher, settings overlay, HD texture packs,
+custom soundtrack streaming, and so on — still applies here; this fork adds
+the Tag Fighter mod on top of it. For melee-pc's own feature list, porting
+notes, and contributing guide, see
+[the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md).
 
 You need your own disc image. No game data ships here.
 
-## Features
+## Tag Fighter roadmap
 
-- Native Linux, Windows and Android (arm64) builds, rendered through
-  Dawn/WebGPU (Vulkan, D3D12) and SDL3.
-- RmlUi launcher with disc selection and SHA-1 verification against the Redump
-  database before boot.
-- In-game settings overlay on **F1**, with the game paused underneath.
-- Internal resolution from Auto to 10x native (6400x4800).
-- Post-processing shaders: area sampling, CRT scanlines, vibrant.
-- 4x MSAA and anisotropic filtering up to 16x.
-- Gamepad remapping, including C-stick directions, saved per device.
-- Software AX audio mixer with multi-bus volume controls (Master, Music, SFX).
-- Custom soundtrack streaming (`.ogg` and `.wav` in `~/.local/share/melee-pc/music/`).
-- Dolphin-compatible `.gci` memory cards.
-- Custom HD texture pack replacements (`~/.local/share/melee-pc/textures/`).
-- "Unlock Everything" toggle (instant 26 characters, 11 secret stages, and All-Star mode).
-- Hazardless stages (Frozen Pokémon Stadium in permanent neutral mode).
-- Free / Unlocked pause camera (360° rotation and unlimited zoom) and Wide HUD anchoring.
+### Completed
 
-## Screenshots
+- [x] Grounded assist calls, implemented for every character.
+- [x] Air assist calls, implemented for every character.
 
-![Title screen](docs/screenshots/title.png)
+### Planned
 
-| | |
-|---|---|
-| ![Main menu](docs/screenshots/main-menu.png) | ![Character select](docs/screenshots/character-select.png) |
-| Main menu | Character select |
-| ![Stage select](docs/screenshots/stage-select.png) | ![Gameplay](docs/screenshots/gameplay-4p.png) |
-| Stage select | Four-player match |
-| ![Gameplay](docs/screenshots/gameplay-onett.png) | ![Settings](docs/screenshots/pc-settings.png) |
-| Onett | F1 settings overlay |
-
-![Launcher](docs/screenshots/launcher.png)
-
-## Development Roadmap
-
-See the complete architectural design document at [ROADMAP.md](ROADMAP.md).
-
-```mermaid
-flowchart LR
-    Phase1["Phase 1: Polish & Presentation"] --> Phase2["Phase 2: Competitive Parity"]
-    Phase2 --> Phase3["Phase 3: High-Refresh & Practice"]
-    Phase3 --> Phase4["Phase 4: Serverless Online Netcode"]
-```
-
-### Phase 1: Presentation Polish & System Integrations (Delivered)
-- [x] **Dolphin-Format Texture Replacements**: Full folder scanning (`.dds` / `.png`) with runtime reload.
-- [x] **Unlock All Toggle**: Bypass character/stage unlock grind; instant All-Star mode access.
-- [x] **Multi-Bus Audio Control**: Independent volume sliders for Music (BGM) vs. Sound Effects (SFX).
-- [x] **Wide HUD Anchoring**: Anchor damage percentages, stock icons, and timer to the 16:9 viewport boundaries.
-- [x] **Custom Soundtrack Streaming**: User-provided `.ogg` / `.wav` files in `music/` override stage BGM.
-- [x] **Free / Unlocked Pause Camera**: 360-degree rotation and unconstrained zoom for pause camera screenshots.
-- [ ] **Discord Rich Presence**: Real-time rich presence displaying mode, stage, fighter, and score (deferred until API credentials available).
-
-### Phase 2: Tournament & Competitive Parity (Upcoming)
-- [ ] **Direct 1000 Hz GameCube Controller Adapter Support**: Overclocked 1 ms polling via `libusb` / `WinUSB` for official Wii U and Mayflash adapters.
-- [ ] **UCF (Universal Controller Fix)**: Native 1.0 Dashback and Shield Drop angle standardization.
-- [ ] **Extended Hazardless Stages**: Whispy wind toggle, Randall cloud toggle, static FoD platforms.
-- [ ] **Controller Rumble & RGB Port Indicators**: Native haptics and player color LED matching.
-- [ ] **2-Player Keyboard Remapping**: Split-keyboard competitive support.
-
-### Phase 3: High-Refresh-Rate & Practice Suite
-- [ ] **High-Refresh-Rate Frame Interpolation (120 Hz / 144 Hz / 240 Hz)**: Smooth motion presentation with locked 60 Hz simulation and physics.
-- [ ] **Training & Practice Tools**: Hitbox/hurtbox visualizer, L-cancel flash indicators, frame advance / slow motion, training savestates.
-- [ ] **Replay Recording & Playback**: Export inputs and seeds to Slippi `.slp` files with native replay player.
-
-### Phase 4: Serverless Online Netcode (BitTorrent-Style P2P Matchmaking & Rollback)
-- [ ] **BitTorrent-Style Decentralized Matchmaking (Serverless P2P)**:
-  * **DHT / Kademlia Peer Discovery**: Mainline DHT peer discovery eliminating central matchmaking servers and hosting costs.
-  * **Decentralized Connect Codes**: Topic/infohash-based room matchmaking.
-  * **NAT Traversal & UDP Hole-Punching**: Direct P2P connectivity behind home routers.
-- [ ] **Native Rollback Netcode**: Sub-millisecond state snapshotting and restoration on native MEM1 memory blocks.
-- [ ] **macOS Support** (Apple Silicon / Metal).
-- [ ] **RetroAchievements Integration**: Native achievement tracking.
-
-## Status
-
-Works end to end:
-
-- Boot, opening movie, memory card create/load, title, attract demos.
-- Main menu, VS Mode, character and stage select; human vs CPU matches play.
-- 1-P Classic, Adventure, and All-Star run to completion, with results and score saved.
-- Training, Stadium (Target Test, Home-Run Contest, 10-Man Melee).
-- Trophy gallery, Event Match list, Icicle Mountain scrolling.
-- Music, sound effects, custom soundtrack overrides, saves.
-- Cheats menu: "Unlock Everything", Frozen Pokémon Stadium, Free pause camera.
-- Wide 16:9 combat camera and Wide HUD anchoring.
-
-In development: online play with rollback netcode & BitTorrent DHT peer matchmaking, 1000 Hz GameCube controller polling, UCF, practice mode hitboxes/savestates, and macOS.
+- [ ] Tagging between characters (swapping which fighter is point mid-match,
+  not just a timed assist call).
+- [ ] Duo play support (shared-team play in the style of *2XKO*).
+- [ ] A separate Tag mode selectable alongside vanilla Melee, so the base
+  game remains playable without any tag-mod behavior enabled.
 
 ## Building
 
@@ -145,7 +72,9 @@ build/melee <disc.iso|.gcm|.ciso|.rvz>
 Only **Melee USA revision 2 (NTSC-U 1.02, GALE01)** is supported. A valid disc
 path on the command line boots straight in; a missing or invalid one returns to
 the launcher. Settings and the selected path live in `launcher.cfg` in SDL's
-`melee-pc` preference directory (usually `~/.local/share/melee-pc`).
+`melee-pc_TagFighter` preference directory (usually
+`~/.local/share/melee-pc_TagFighter`) — namespaced separately from a vanilla
+melee-pc install so the two don't collide.
 
 Verification reads the disc through nod, compressed images included, and compares
 SHA-1 against the
@@ -156,6 +85,19 @@ still play.
 
 Keep `resources/` next to the binary when distributing. The bundled Liberation
 Sans fonts are covered by `resources/FONT-LICENSE.txt`.
+
+## Playing Tag Fighter
+
+Set up a 4-player VS match: Port 1 + Port 3 are Team A (point + assist),
+Port 2 + Port 4 are Team B. Set each slot's assist port to CPU on the
+character-select screen — the mod takes it over (benched, no CPU AI) once the
+match starts.
+
+- **Call an assist**: D-Pad Down. The assist spawns already performing its
+  assigned move (grounded or airborne, depending on the point character's own
+  state), then despawns after a few seconds or immediately if it's KO'd while
+  out.
+- Ice Climbers bench/unbench Popo and Nana together.
 
 ## Controls
 
@@ -203,101 +145,23 @@ per-device `.controller` files; everything else shares `launcher.cfg`.
 | `--dvd <image>` | Explicit form of the positional disc argument. |
 
 Diagnostics are off by default and cost nothing when unset. They measure or
-suppress only; none of them fixes anything.
-
-| Variable | Effect |
-|---|---|
-| `AURORA_LOG_UNTEX=1` | Report draws that bind no texture. |
-| `AURORA_SKIP_UNTEX=1` | Drop every untextured draw. |
-| `AURORA_SKIP_UNTEX_VTX=n` | Drop untextured draws with exactly n vertices. |
-| `AURORA_LOG_TEV=1` | Report what an untextured draw's TEV stages asked for. |
-| `MELEE_MOBJ_MARK=1` | Tag draws with whether the material had a texture. |
-| `MELEE_TEV_TREE=1` | Count compiled TEV stages and how many carry a texture. |
-| `MELEE_TEX_ASSIGN=1` | Count tobjs assigned a texmap vs forced to null. |
-| `MELEE_PS_TEXMISS=1` | Report particles that ask for a texture but resolve none. |
-| `MELEE_SFX_STATS=1` | Sound-effect request/accept/reject counts. |
-| `MELEE_AUDIO_STATS=1` | Per-0.5s voice census. |
-| `MELEE_AUDIO_ADDR=1` | Report voice sample addresses against the ARAM bounds. |
-| `MELEE_CPU_TRACE=1` | Per-CPU-player AI census every ~2s. |
-| `MELEE_EF_LOG=1`, `MELEE_EF_SKIP=a-b` | Report or suppress effect ids. |
-
-## Porting notes
-
-Disc data stays big-endian in memory and is described with `DISC_STRUCT` and
-`DISC_PTR` (see `src/pc/disc.h`). Structs mapping archive contents are byte-swapped
-on access by GCC, disc pointers are 32-bit slots relocated to host addresses, and
-MEM1 is mapped at `0x80000000` so those slots always fit. The whole 4 GB range is
-game-addressable through `-no-pie` with text at `0x10000000`.
-
-Bug classes that keep coming back when bringing up a new scene:
-
-- Runtime structs have 8-byte pointers, so any hard-coded GameCube offset
-  (`(u8*)gp + 0xD8`, `memzero(p, 0x74)`, padded overlay structs) has to become a
-  real field or `sizeof`.
-- Statics are not adjacent on x86-64. A cast to a bigger struct to reach the next
-  static must name the neighbour instead.
-- Bitfields are LSB-first. Unions overlaying bitfields with an integer view need
-  `DISC_STRUCT` on the union and every nested struct.
-- `UNK_T` is `void*`, so unnamed words are 8 bytes. Inside a union view that is a
-  layout change; retype numeric ones `u32`.
-- Motion-variable unions (`Fighter::mv`) have the same problem one level down: the
-  game writes one view and reads another, so a pointer inside a view shifts every
-  member below it. Where no position survives, move the field into `Fighter`.
-- Retail `GXEnd` is empty and the decomp omits it, but aurora's `GXEnd` submits
-  the draw. Every `GXBegin` needs one.
-- `Mtx` is 48 bytes and `Mtx44` is 64; `MTXOrtho` and `MTXPerspective` take `Mtx44`.
-- `bool` in a decomp signature usually means "int the decompiler could not name".
-  Under `_Bool` every value above 1 clamps, so an index or scene id silently
-  becomes 1.
-- Walking an object as `void**` and indexing by GameCube word number scales by 8,
-  so `p[0x14]` for byte 0x50 lands at byte 160. Index by name.
-- Japanese string literals are Shift-JIS at runtime; the build passes
-  `-fexec-charset=CP932`.
-
-Three harnesses find the next batch. Validate any sweep by re-introducing one
-known-true positive and checking the count moves by exactly one.
-
-- Whole-tree warning sweep: compile every TU for real (`-Wreturn-type` is not
-  emitted under `-fsyntax-only`), strip the build's `-Wno-all -Wno-extra`, pass
-  `-fdiagnostics-color=never`, and add `-Warray-bounds=2 -Wstringop-overflow=2
-  -Wformat-overflow=2 -Wbool-operation`.
-- `python3 tools/lint_sweep.py` compiles every game TU with `-m32 -DLINT`, which
-  turns `ASSERT_SIZE` and `ASSERT_OFFSET` into real checks against the GameCube
-  ABI. A failure means the struct reconstruction is wrong, not the port.
-- `python3 tools/compile_check.py <files|dirs>` syntax-checks with the build's
-  exact flags. Fast, so use it before a full build.
-
-For "does this union view still alias on LP64", build one probe TU of the real
-headers twice with the project's flags, native and `-m32`, then diff member
-offsets and sizes out of DWARF (`gdb -batch -ex 'ptype /o T'`). Compare byte-range
-intersections, not start offsets.
-
-## Tools
-
-- `tools/run.sh <disc>` runs under gdb and dumps all threads on a crash.
-- `tools/demo_run.sh <seed> [secs]` enters the attract demo and reports survival
-  or crash frames; `tools/demo_sweep.sh <seeds...>` batches it.
-- `tools/devctl.py key|hold|shot` drives and captures the game window under X11.
-- `tools/run_dbg.sh <disc>` adds a FIFO/PAD state dump on interrupt.
-
-`import -window` can keep returning the last composited frame under Xwayland while
-the game presents normally, which looks like a freeze and is not one. `devctl.py
-shot` detects two identical captures and nudges the window; when a screenshot and
-a backtrace disagree, believe the backtrace.
-
-## Contributing & Coding Style
-
-Please refer to [CODING_STYLE.md](CODING_STYLE.md) for architectural guidelines,
-formatting standards, 64-bit portability rules, and verification procedures. Run
-`python3 tools/check_style.py` before opening pull requests.
+suppress only; none of them fixes anything. See
+[the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md#environment-variables)
+for the full rendering/audio diagnostic variable list.
 
 ## Layout
 
+- `src/melee/mod` - the Tag Fighter mod itself.
 - `src/melee`, `src/sysdolphin` - game code from the decomp (upstream commit in
   `src/UPSTREAM_COMMIT`), adapted to the PC data model.
 - `src/pc` - platform layer: main, OS/VI/GX glue, keyboard, audio mixer, THP,
   vertex-array sizing.
 - `extern/aurora` - vendored aurora with local changes.
+
+For decomp porting notes, dev tools, and coding-style/contributing
+guidelines, see
+[the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md)
+and [CODING_STYLE.md](CODING_STYLE.md).
 
 ## License
 
