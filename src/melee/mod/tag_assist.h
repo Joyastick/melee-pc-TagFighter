@@ -33,6 +33,7 @@
  */
 
 #include <melee/ft/forward.h>
+#include <melee/pl/forward.h>
 
 /// Whether "Tag Battle" is currently toggled on from the CSS rules screen
 /// (see TagAssist_ToggleTagBattle). Off by default, so an un-toggled match
@@ -82,5 +83,37 @@ void TagAssist_Tick(void);
 /// still mapped), a reset frees the backing memory pools outright, so a
 /// stale Fighter_GObj* read afterward is a genuine use-after-free.
 void TagAssist_OnReset(void);
+
+/// Reverts every human+CPU team's control-role swap back to the original
+/// CSS-configured pairing (the human plays the CSS-designated point port,
+/// CPU AI plays the CSS-designated assist port) -- no-ops for a human+human
+/// team, or if Tag Battle was never on. Call once, as the very first thing
+/// in onExitVs (gmvsmode.c), before the match-end transition runs at all.
+///
+/// Without this, ending a match while tagged into an originally-CPU slot
+/// soft-locks the results screen: gm_DefaultVSGetPauser-style port/slot
+/// lookups and the results screen's own "wait for Start" gate
+/// (fn_80177920/fn_801791E4, gmresultplayer.c) both key off state this mod
+/// only ever meant to be swapped WHILE a match is live, never left swapped
+/// across the transition to results. See also
+/// TagAssist_GetOriginalPkindForMatchEnd -- reverting player_slots[] alone
+/// isn't enough, since the results screen actually reads an already-taken
+/// snapshot (MatchEnd.player_standings[].pkind) that isn't automatically
+/// re-derived at match end.
+void TagAssist_RevertControlRolesForMatchEnd(void);
+
+/// Returns the CSS-original Gm_PKind (Human or Cpu) for `player_id` (a
+/// player SLOT index, same meaning as Fighter->player_id and the `i` index
+/// into MatchEnd.player_standings[]) if it's currently part of a human+CPU
+/// team this mod has been swapping via tagging, or Gm_PKind_NA if this slot
+/// isn't managed by this mod at all (a human+human team, an unpaired port,
+/// or Tag Battle off). Call from onExitVs (gmvsmode.c) right after
+/// TagAssist_RevertControlRolesForMatchEnd, to directly patch
+/// MatchExitInfo->match_end.player_standings[player_id].pkind for any slot
+/// this returns a real value for -- that field is a snapshot taken during
+/// the match's own last live frame(s), not re-derived from player_slots[]
+/// at match end, so reverting player_slots[] alone arrives too late to fix
+/// what the results screen actually reads.
+Gm_PKind TagAssist_GetOriginalPkindForMatchEnd(int player_id);
 
 #endif

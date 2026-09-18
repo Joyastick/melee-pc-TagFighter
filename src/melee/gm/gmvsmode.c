@@ -12,6 +12,7 @@
 #include <melee/if/if_2FD9.h>
 #include <melee/lb/types.h>
 #include <melee/mn/types.h>
+#include <melee/mod/tag_assist.h>
 
 /* 1B13B8 */ static void onEnterDebugVs(GameModeState*);
 /* 1B14A0 */ static void onEnterCss(GameModeState*);
@@ -223,10 +224,24 @@ void onExitVs(GameModeState* state)
     MatchExitInfo* mei;
     ssize_t i;
 
+    // Tag Fighter: undo any human+CPU control-role swap left over from
+    // tagging before the match-end transition runs at all -- see
+    // TagAssist_RevertControlRolesForMatchEnd's own comment for why this
+    // needs to happen here specifically (leaving it swapped soft-locks the
+    // results screen's own "wait for Start" gate). player_slots[] alone
+    // isn't enough since MatchEnd.player_standings[].pkind below is
+    // already a stale snapshot by this point -- patched directly further
+    // down instead.
+    TagAssist_RevertControlRolesForMatchEnd();
+
     gmVsMelee_ExitVs(state, gmVsMode_State_Results,
                      gmVsMode_State_SuddenDeath);
     mei = gm_GetGameModeStateExitData(state);
     for (i = 0; i < GM_MAX_PLAYERS; i++) {
+        Gm_PKind original_pkind = TagAssist_GetOriginalPkindForMatchEnd((int) i);
+        if (original_pkind != Gm_PKind_NA) {
+            mei->match_end.player_standings[i].pkind = original_pkind;
+        }
         if (mei->match_end.player_standings[i].pkind != Gm_PKind_NA) {
             gm_80162A98(mei->match_end.player_standings[i].x20);
             gm_RecordSelfDestructs(

@@ -11,6 +11,7 @@
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
+#include <melee/ft/ft_0877.h>
 #include <melee/ft/inlines.h>
 #include <melee/ft/types.h>
 #include <melee/mp/forward.h>
@@ -62,7 +63,38 @@
 #include <melee/ft/kinds/ftYoshi/ftyoshispecialn.h>
 #include <melee/ft/kinds/ftZelda/ftzeldaspecialn.h>
 
-/// v3 design (assist-call only -- tagging deliberately out of scope for now):
+/// v4 design (adds tagging -- full point/assist role swap):
+///
+/// Point's D-Pad Down while the assist is already out swaps which of the two
+/// is "point" (TagAssist_TryTag) -- unlike a call, this never forces a move
+/// Enter or repositions anyone, since both fighters are already mid-match
+/// wherever they actually are; it's a pure role handoff. The newly-demoted
+/// fighter keeps fighting, visible and active, subject to the exact same
+/// ASSIST_DURATION_FRAMES cameo timer TagAssist_UpdateTimer already runs for
+/// an ordinary call (reused as-is, not a new mechanism).
+///
+/// Who can trigger a call in the first place now depends on whether the
+/// assist is CPU or a second real player (TagAssist_InitControlRoles,
+/// captured once when the team's roster settles): a CPU assist is still
+/// called in by point's own input, same as before; a real second player
+/// calls themself in on their own input instead -- point's job is only ever
+/// to decide whether to tag once that assist is out, never to call in
+/// another real player.
+///
+/// For a human+CPU team, tagging also has to move which physical controller
+/// drives which entity, since "point" can now be the fighter CSS originally
+/// configured as CPU (TagAssist_ApplyControlRoles): the newly-point fighter
+/// gets fp->cpu.kind forced to CpuKind_5 (defeats ftCo_IsCpuControlled the
+/// same way TagAssist_SetBenched already does, just for input routing this
+/// time, not benching) plus its own fp->x618_player_id repointed at the
+/// team's one real controller port; the newly-assist fighter gets its own
+/// player_slots[].pkind flipped to Gm_PKind_Cpu (Player_SetSlottype) and a
+/// real fp->cpu.kind restored, so retail's own Fighter_Spaghetti_8006AD10
+/// picks it up as genuinely CPU-driven from the very next frame, no
+/// per-frame copying needed. A human+human team needs none of this --
+/// fp->x618_player_id and player_slots[].pkind never move away from each
+/// player's own real port/Human designation in the first place, so each
+/// player already always drives their own fighter regardless of role.
 ///
 /// Team pairing and point/assist roles are read from the CSS's own Red/Blue
 /// team-color selection and its per-team point-character choice (see
@@ -89,8 +121,6 @@
 /// not just a fighter we're racing against its own AI.
 ///
 /// Explicitly out of scope for this pass:
-///  - Tagging (swapping which of point/assist is "active") -- come back to
-///    this once assist-calling alone is solid.
 ///  - A dedicated menu/game-mode entry -- this still rides on a normal
 ///    4-player VS match; surfacing it as its own mode is a separate,
 ///    larger menu/scene-table change for later.
@@ -123,10 +153,33 @@
 /// frame it's seen.
 #define INITIAL_SETTLE_FRAMES 0
 
+/// Minimum frames after a call before point's next D-Pad Down is honored as
+/// a tag instead of just being ignored -- without this, point could call an
+/// assist and tag on the very next frame, converting the cameo into a full
+/// swap before it's ever actually visible on screen. Purely a gate on the
+/// TAG *input*: doesn't touch assist_timer/despawn_grace at all, so once a
+/// tag does go through, the newly-demoted fighter still rides out the same
+/// full ASSIST_DURATION_FRAMES cameo window as ever before benching --
+/// nothing here shortens that.
+#define TAG_MIN_CALL_TO_TAG_FRAMES 15
+
 typedef struct TeamState {
-    Fighter_GObj* point;  ///< Port 1 or Port 2: always human, never touched
-    Fighter_GObj* assist; ///< Port 3 or Port 4: CPU in CSS, benched by
-                           ///< default, this module owns its behavior
+    Fighter_GObj* port_gobj[2]; ///< [0] = whichever gobj currently sits at
+                                 ///< this team's CSS-designated point PORT,
+                                 ///< [1] = its assist port -- fixed physical
+                                 ///< identity (TagAssist_IsPortPoint's
+                                 ///< static, CSS-time mapping), used only by
+                                 ///< TagAssist_HandleNewMatch to detect a
+                                 ///< genuinely new match (a port's gobj
+                                 ///< pointer actually changed). A tag never
+                                 ///< touches this -- only point/assist below.
+    Fighter_GObj* point;  ///< Whichever of port_gobj[0]/[1] is CURRENTLY
+                           ///< playing "point" -- starts equal to
+                           ///< port_gobj[0], and TagAssist_TryTag is the
+                           ///< only thing that ever reassigns it afterward.
+    Fighter_GObj* assist; ///< The other one -- benched by default, this
+                           ///< module owns its behavior while it isn't
+                           ///< "point".
     bool initialized;     ///< true once both members have been seen
     bool benched_once;    ///< true once the initial (post-settle) bench has
                            ///< actually been applied
@@ -140,6 +193,60 @@ typedef struct TeamState {
     u32 ready_frame;      ///< sFrameCounter value at which the first-ever
                            ///< TryCallAssist is allowed to proceed -- see
                            ///< TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
+    u32 tag_ready_frame;  ///< sFrameCounter value at which TagAssist_TryTag's
+                           ///< input starts being honored -- set to
+                           ///< sFrameCounter + TAG_MIN_CALL_TO_TAG_FRAMES on
+                           ///< every successful call (not just the first).
+    bool tagged_this_call; ///< true once TagAssist_TryTag has already
+                            ///< succeeded once for the CURRENT call -- reset
+                            ///< to false on every successful call, checked
+                            ///< (and set) by TagAssist_TryTag so only one tag
+                            ///< is allowed per assist call, not a repeated
+                            ///< back-and-forth within the same cameo window.
+    bool is_cpu_team;      ///< true if this team is one human point + one CPU
+                            ///< assist, as opposed to two real players --
+                            ///< captured once in TagAssist_InitControlRoles
+                            ///< and never touched again (player_id/pkind
+                            ///< identity doesn't move between GObjs, only
+                            ///< which GObj is currently "point" does). Drives
+                            ///< TagAssist_TryCallAssist's trigger source and
+                            ///< whether TagAssist_ApplyControlRoles does
+                            ///< anything at all.
+    u8 human_pad_port;      ///< The real controller port (fp->x618_player_id)
+                             ///< of whichever fighter started out human,
+                             ///< captured before any tag ever touches it.
+                             ///< Reapplied to whichever fighter is currently
+                             ///< "point" so the same physical controller
+                             ///< always drives point, even after point
+                             ///< becomes the originally-CPU fighter.
+    u8 cpu_pad_port;        ///< The ORIGINAL fp->x618_player_id of whichever
+                             ///< fighter started out CPU, captured before any
+                             ///< tag ever touches it. Reapplied to whichever
+                             ///< fighter is currently "assist" so a fighter
+                             ///< that has previously played point (and so had
+                             ///< its own x618_player_id repointed at
+                             ///< human_pad_port) doesn't keep reading the
+                             ///< human's real controller as a fallback if
+                             ///< ftCo_IsCpuControlled ever misreads it as not
+                             ///< CPU-controlled for any reason -- belt and
+                             ///< suspenders alongside the CpuKind_5 collision
+                             ///< guard below.
+    CpuKind saved_cpu_kind; ///< The original AI profile
+                             ///< (fp->cpu.kind) of whichever fighter started
+                             ///< out as the CPU assist, captured before any
+                             ///< tag ever touches it (that fighter's own
+                             ///< cpu.kind gets forced to CpuKind_5 whenever
+                             ///< it's playing point -- see
+                             ///< TagAssist_ApplyControlRoles). Reapplied to
+                             ///< whichever fighter currently needs to act as
+                             ///< real CPU so it always gets a legitimate
+                             ///< profile, not whatever garbage an
+                             ///< originally-human fighter's own never-used
+                             ///< cpu.kind field happens to hold. Never
+                             ///< actually CpuKind_5 -- TagAssist_InitControlRoles
+                             ///< substitutes a fallback if the real captured
+                             ///< value happens to collide with that sentinel
+                             ///< (see its own comment).
 } TeamState;
 
 /// If the assist gets KO'd for real while called out, forcing our bench
@@ -715,13 +822,32 @@ static void TagAssist_TryCallAssist(TeamState* team)
     Fighter* assistFp = GET_FIGHTER(team->assist);
     TagAssistMoveFn enterFn;
     bool pointGrounded;
+    bool triggerPressed;
     Vec3 groundPos;
     SurfaceData groundFloor;
 
     if (team->assist_out) {
         return; // already out
     }
-    if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
+    if (team->is_cpu_team) {
+        // CPU partner: point decides when to call it in, same as ever.
+        triggerPressed = (pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED) != 0;
+    } else {
+        // Real second player: only their own button calls them in. Can't
+        // read assistFp->input for this -- TagAssist_SetBenched's freeze
+        // (fp->x221F_b3) makes Fighter_Spaghetti_8006AD10 skip its entire
+        // input-population block for a benched fighter (the same `if
+        // (!fp->x221F_b3)` gate that wraps the call into this module's own
+        // per-frame hook), so a benched player's real button press never
+        // reaches assistFp->input at all. Read the raw controller state
+        // directly instead -- a plain "currently held" check (not
+        // edge-detected) is fine, since the assist_out guard above already
+        // makes this a one-shot trigger no matter how many frames the
+        // button stays held.
+        triggerPressed = (HSD_PadGameStatus[assistFp->x618_player_id].button &
+                          TAG_ASSIST_PRESSED) != 0;
+    }
+    if (!triggerPressed) {
         return;
     }
     if (sFrameCounter < team->ready_frame) {
@@ -764,33 +890,41 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
+    team->tag_ready_frame = sFrameCounter + TAG_MIN_CALL_TO_TAG_FRAMES;
+    team->tagged_this_call = false;
+    OSReport("[TagAssist] call: assist kind=%d player_id=%d is_cpu_team=%d "
+             "tag_ready_frame=%u\n",
+             assistFp->kind, assistFp->player_id, team->is_cpu_team,
+             team->tag_ready_frame);
 }
 
-/// gfx_ids 22 and 24, captured live via MELEE_EF_LOG=1 firing together on
-/// the exact frame Zelda's Down-B transform triggered (after standing
-/// completely idle for 7s first, ruling out any spawn/landing effect as
-/// contamination this time). Two earlier captures each turned out to be
-/// polluted by something else in-frame with the transform -- gfx_id 5
-/// visibly looked like a jump-dust puff, and a {2, 24} pairing visibly
-/// looked like ground-landing wind, not a sparkle burst; 24 shows up in
-/// both of those AND here, so it's likely a generic ground-impact dust
-/// riding along rather than something transform-specific, kept here on
-/// the assumption it's still part of the intended look (drop it if the
-/// visual still reads as "landing wind" rather than sparkle -- 22 alone
-/// would be the next thing to try). Both ids are < 1000, i.e.
-/// gfx_id/1000 == 0 in efLib_Create's efAsync_DatEntries[gfx_id / 1000]
-/// bank lookup -- the shared/common effect bank that's always loaded, not
-/// a per-character one gated on which fighters happen to be in this
-/// match. Safe to spawn regardless of whether Zelda is even one of the
-/// characters this mod supports as an assist.
+/// gfx_ids 22 and 24. NOT confirmed to be Zelda's sparkle/glimmer transform
+/// effect -- confirmed, via MELEE_EF_LOG_REPEAT gobj-attributed captures,
+/// that this pairing is actually wrong on that front: 22 never spawns
+/// during Zelda's Down-B at all, and 24 also spawns on unrelated gobjs
+/// (likely generic ground-impact dust, not transform-specific). A
+/// gfx_id-2-alone attempt was tried next (the one id that DID spawn
+/// exclusively on Zelda's own gobj during the transform) but read as too
+/// subtle in practice (closer to a double-jump puff than a sparkle burst).
+/// Back on {22, 24} for now on the user's own call after comparing both in
+/// game -- it's more visually prominent even though neither has been
+/// confirmed to actually BE the transform sparkle. Revisit if a real
+/// capture of the sparkle turns up later (see MELEE_EF_LOG_REPEAT in
+/// eflib.c, added specifically to help re-attempt this). Both ids are <
+/// 1000, i.e. gfx_id/1000 == 0 in efLib_Create's
+/// efAsync_DatEntries[gfx_id / 1000] bank lookup -- the shared/common
+/// effect bank that's always loaded, not a per-character one gated on
+/// which fighters happen to be in this match. Safe to spawn regardless of
+/// whether Zelda is even one of the characters this mod supports as an
+/// assist.
 static const u32 kDespawnEffectGfxIds[2] = { 22, 24 };
 
-/// Star/sparkle burst (Zelda's transform effect, see kDespawnEffectGfxIds)
-/// at `gobj`'s current position. Each spawns with its own baked-in
-/// animation/lifetime from its EF_EffectDesc, same as retail's own call
-/// would -- no custom update callback or params needed. Purely cosmetic:
-/// no gameplay effect, just a visible marker for the moment the assist
-/// actually leaves.
+/// Visual burst (see kDespawnEffectGfxIds's own comment on why this isn't
+/// confirmed to be Zelda's actual transform sparkle) at `gobj`'s current
+/// position. Each spawns with its own baked-in animation/lifetime from its
+/// EF_EffectDesc, same as retail's own call would -- no custom update
+/// callback or params needed. Purely cosmetic: no gameplay effect, just a
+/// visible marker for the moment the assist actually leaves.
 static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
@@ -800,6 +934,38 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
     for (i = 0; i < 2; i++) {
         efLib_Create_Attach_Pos(kDespawnEffectGfxIds[i], gobj, &pos);
     }
+}
+
+/// Fighter-side generic hit-impact "thwack" (weak/mid/strong severity
+/// table, ftColl_803C0C40 = {141, 142, 143} in ftcoll.c, played via
+/// ft_PlaySFX same as any normal attack's hit sound) -- picked as the tag
+/// cue after confirming the actual Fan/Harisen item hit sound the request
+/// was for isn't reachable this way at all: it's resolved through a
+/// completely different audio path (lbColl_80005BB0/raw AX handles baked
+/// into the item's own .dat animcmd data, with no C-level id), not
+/// ft_PlaySFX's fighter-side sound table. Mid severity (142): always
+/// resident in the fighter-common bank regardless of which items/
+/// characters are in the match, and audibly close enough to a hit-based
+/// cue to read as "something just connected" without being tied to any
+/// one character's own voice/effect bank.
+#define TAG_EFFECT_SFX_ID 142
+
+/// Same sparkle burst as TagAssist_SpawnDespawnEffect, reused as-is (same
+/// confirmed-safe, shared-bank gfx ids -- see kDespawnEffectGfxIds) at BOTH
+/// fighters' positions the moment a tag actually swaps them, so the moment
+/// reads clearly on screen regardless of which two characters are involved
+/// or which one the camera happens to be favoring. Called from
+/// TagAssist_TryTag right after the swap, so `newPoint`/`newAssist` are
+/// already at their real, current positions -- no repositioning happens on
+/// a tag (unlike a call), so this is purely a visual marker, no physics
+/// implications. Plays TAG_EFFECT_SFX_ID once (not twice) -- attributed to
+/// the new point, but audible either way since it's not spatialized by
+/// distance the way the sparkle's position is.
+static void TagAssist_SpawnTagEffect(Fighter_GObj* newPoint, Fighter_GObj* newAssist)
+{
+    TagAssist_SpawnDespawnEffect(newPoint);
+    TagAssist_SpawnDespawnEffect(newAssist);
+    ft_PlaySFX(GET_FIGHTER(newPoint), TAG_EFFECT_SFX_ID, 127, 64);
 }
 
 /// True while `gobj`'s fighter is anywhere in the common death->respawn
@@ -897,6 +1063,207 @@ static void TagAssist_UpdateTimer(TeamState* team)
     team->assist_out = false;
 }
 
+/// Captures whether this team is one human point + one CPU assist, as
+/// opposed to two real players, plus (only for the CPU case) the one real
+/// controller port and the CPU's own AI profile -- once, right as the team
+/// first becomes initialized, before any tag has ever touched either
+/// fighter's cpu.kind/x618_player_id/player_slots[].pkind. See the v4 design
+/// comment above and TagAssist_ApplyControlRoles for why these need to
+/// survive independent of which GObj currently holds "point".
+static void TagAssist_InitControlRoles(TeamState* team)
+{
+    Fighter* pointFp = GET_FIGHTER(team->point);
+    Fighter* assistFp = GET_FIGHTER(team->assist);
+    bool pointIsCpu = Player_8003248C(pointFp->player_id, pointFp->is_sub_fighter) == Gm_PKind_Cpu;
+    bool assistIsCpu = Player_8003248C(assistFp->player_id, assistFp->is_sub_fighter) == Gm_PKind_Cpu;
+
+    team->is_cpu_team = assistIsCpu && !pointIsCpu;
+    if (team->is_cpu_team) {
+        team->human_pad_port = pointFp->x618_player_id;
+        team->cpu_pad_port = assistFp->x618_player_id;
+        // CpuKind_5 is both a real, ordinary AI profile AND the sentinel
+        // TagAssist_ApplyControlRoles/TagAssist_SetBenched use elsewhere to
+        // mean "not really CPU-controlled" (ftCo_IsCpuControlled special-
+        // cases exactly that value). If the CPU fighter's own real,
+        // CSS-assigned cpu.kind happens to BE 5, restoring it verbatim onto
+        // the demoted fighter would silently defeat ftCo_IsCpuControlled
+        // for real, and Fighter_Spaghetti_8006AD10 would fall through to
+        // reading fp->x618_player_id instead -- which, without the
+        // cpu_pad_port fix above, used to still be pointed at the human's
+        // real controller from an earlier tag, driving both fighters off
+        // one controller at once. Confirmed via real playtesting. Substitute
+        // any other valid kind when this collision happens; which one
+        // doesn't matter; the collision is what matters.
+        team->saved_cpu_kind = (assistFp->cpu.kind == CpuKind_5)
+                                    ? CpuKind_4 : assistFp->cpu.kind;
+    }
+    OSReport("[TagAssist] team init: point kind=%d player_id=%d, assist kind=%d "
+             "player_id=%d, is_cpu_team=%d\n",
+             pointFp->kind, pointFp->player_id, assistFp->kind,
+             assistFp->player_id, team->is_cpu_team);
+}
+
+/// No-ops for a human+human team (each player's fp->x618_player_id and
+/// player_slots[].pkind never move away from their own real port/Human
+/// designation, so they already always drive their own fighter regardless
+/// of role). For a human+CPU team, moves real control to whichever of
+/// `newPoint`/`newAssist` needs it after a tag:
+///  - newPoint gets fp->cpu.kind forced to CpuKind_5, which defeats
+///    ftCo_IsCpuControlled on its own (same trick TagAssist_SetBenched
+///    already uses, just for input routing here instead of benching) --
+///    its own player_slots[].pkind never needs touching, since
+///    ftCo_IsCpuControlled only reaches the cpu.kind check at all when
+///    pkind == Gm_PKind_Cpu, which stays true for the originally-CPU
+///    fighter regardless of which role it's playing. Its
+///    fp->x618_player_id is repointed at the team's one real controller
+///    port (team->human_pad_port) so Fighter_Spaghetti_8006AD10 reads the
+///    right physical pad from the very next frame -- no per-frame copying,
+///    same analog/deadzone/edge-detection path retail already runs.
+///  - newAssist gets its own player_slots[].pkind flipped to Gm_PKind_Cpu
+///    (Player_SetSlottype) -- needed because ftCo_IsCpuControlled
+///    short-circuits false on pkind before it would ever reach a cpu.kind
+///    check for a fighter CSS originally configured as human -- plus a
+///    real cpu.kind restored from team->saved_cpu_kind (its own cpu.kind
+///    field was never meaningfully set by CSS for a human port, and may
+///    have been overwritten to CpuKind_5 by an earlier tag if it has
+///    already played point once).
+/// Called unconditionally every tag, including the case where newPoint
+/// already happens to be the originally-human fighter -- each write is a
+/// no-op in that case, not worth special-casing.
+static void TagAssist_ApplyControlRoles(TeamState* team, Fighter_GObj* newPoint,
+                                        Fighter_GObj* newAssist)
+{
+    Fighter* newPointFp;
+    Fighter* newAssistFp;
+
+    if (!team->is_cpu_team) {
+        return;
+    }
+
+    newPointFp = GET_FIGHTER(newPoint);
+    newAssistFp = GET_FIGHTER(newAssist);
+
+    Player_SetSlottype(newPointFp->player_id, Gm_PKind_Human);
+    newPointFp->cpu.kind = CpuKind_5;
+    newPointFp->x618_player_id = team->human_pad_port;
+    // Pause gating (gm_DefaultVSGetPauser, gmvs.c) doesn't read
+    // x618_player_id or pkind at all -- it brute-forces every hardware
+    // port against every slot looking for HSD_PAD_START, and only accepts
+    // a match where `mpPlayerId == Player_GetPlayerId(slot)`, i.e.
+    // player_slots[slot].player_id (a SEPARATE field from both of the
+    // above, fixed at CSS time and otherwise never touched by this mod).
+    // Without this, tagging into an originally-CPU slot silently breaks
+    // Start/pause for the real controller now driving it -- confirmed via
+    // playtesting. Keep it in sync with x618_player_id so the slot's
+    // registered hardware port always matches whichever real controller is
+    // actually driving it right now.
+    Player_SetPlayerId(newPointFp->player_id, team->human_pad_port);
+
+    // Seed newPointFp's own button-edge history to match what the real
+    // controller is holding RIGHT NOW, not whatever this fighter's own
+    // held_buttons[1]/[2] last held (stale CPU-synthesized state, likely
+    // all zero for a button like D-Pad Down the CPU AI never presses).
+    // Without this, Fighter_Spaghetti_8006AD10's edge detection compares
+    // the fresh real read against that stale history on the very next
+    // frame -- if the player is still physically holding the tag button
+    // down (completely normal; a press isn't released instantaneously),
+    // this fighter sees a brand-new rising edge on an already-held button,
+    // synthesizing a SECOND tag input one frame after the first and
+    // immediately swapping back. Confirmed via [TagAssist] logs: every
+    // tag fired twice in a row and canceled itself out, invisible to the
+    // player. Seeding all three held_buttons slots (matching whichever of
+    // Fighter_Spaghetti_8006AD10's two rotation branches runs next) means
+    // the first frame reading real input sees no discontinuity, so no
+    // spurious edge -- same defensive pattern TagAssist_Unbench already
+    // uses when handing a fighter's input back to a live, non-stale
+    // source after a freeze.
+    newPointFp->input.held_buttons[0] = HSD_PadGameStatus[team->human_pad_port].button;
+    newPointFp->input.held_buttons[1] = newPointFp->input.held_buttons[0];
+    newPointFp->input.held_buttons[2] = newPointFp->input.held_buttons[0];
+
+    Player_SetSlottype(newAssistFp->player_id, Gm_PKind_Cpu);
+    newAssistFp->cpu.kind = team->saved_cpu_kind;
+    // Restore newAssistFp's own ORIGINAL pad port too, not just its pkind/
+    // cpu.kind -- if this fighter has previously played point, its
+    // x618_player_id is still left pointed at team->human_pad_port from
+    // that promotion (nothing else ever moves it back). That's normally
+    // harmless (ftCo_IsCpuControlled's human/CPU branch never reads
+    // x618_player_id for a genuinely CPU-controlled fighter), but it turns
+    // into "both fighters respond to the same controller" the instant
+    // ftCo_IsCpuControlled misreads this fighter as not CPU-controlled for
+    // ANY reason -- confirmed in practice via the CpuKind_5 collision this
+    // same tag guards against above. Belt and suspenders: even if that
+    // check is ever wrong again for some other reason, this fighter falls
+    // back to its own real CPU pad port, never the human's.
+    newAssistFp->x618_player_id = team->cpu_pad_port;
+    // Mirror the point-side Player_SetPlayerId fix -- restore this slot's
+    // registered hardware port back to the CPU's own (no-controller) port
+    // too, so pause's port<->slot lookup doesn't keep pointing at the
+    // human's real port for a slot the human isn't driving anymore.
+    Player_SetPlayerId(newAssistFp->player_id, team->cpu_pad_port);
+
+    OSReport("[TagAssist] control roles applied: point player_id=%d now pad_port=%d "
+             "cpu.kind=%d; assist player_id=%d now pad_port=%d cpu.kind=%d\n",
+             newPointFp->player_id, newPointFp->x618_player_id, newPointFp->cpu.kind,
+             newAssistFp->player_id, newAssistFp->x618_player_id, newAssistFp->cpu.kind);
+}
+
+/// Point's own D-Pad Down while the assist is already out: a full role
+/// swap, not another call. Unlike TagAssist_TryCallAssist, this never
+/// forces a move Enter or repositions anyone -- both fighters are already
+/// mid-match wherever they actually are, so this is a pure handoff of the
+/// "point" label (and, for a human+CPU team, of real control -- see
+/// TagAssist_ApplyControlRoles). The newly-demoted fighter is left exactly
+/// as active/visible as it already was and simply starts counting down the
+/// same cameo timer TagAssist_UpdateTimer already runs for an ordinary
+/// call, so it benches itself the same way once that runs out (or sooner,
+/// if it gets KO'd -- TagAssist_HasReachedRebirth handles that path
+/// already, unchanged).
+static void TagAssist_TryTag(TeamState* team)
+{
+    Fighter* pointFp = GET_FIGHTER(team->point);
+    Fighter_GObj* newPoint;
+    Fighter_GObj* newAssist;
+
+    if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
+        return;
+    }
+    if (team->tagged_this_call) {
+        // Only one tag allowed per assist call -- a second (or third...)
+        // press within the same cameo window is ignored, not treated as
+        // another swap back and forth. Resets on the next real call (see
+        // TagAssist_TryCallAssist).
+        OSReport("[TagAssist] tag input BLOCKED: already tagged once this "
+                 "call\n");
+        return;
+    }
+    if (sFrameCounter < team->tag_ready_frame) {
+        // see TAG_MIN_CALL_TO_TAG_FRAMES -- too soon after the call. This
+        // only fires on an actual button press (pressed_buttons is
+        // edge-triggered), so it's a one-shot log per rejected attempt, not
+        // per-frame spam.
+        OSReport("[TagAssist] tag input BLOCKED: %u frame(s) left on the "
+                 "call-to-tag delay\n", team->tag_ready_frame - sFrameCounter);
+        return;
+    }
+
+    newPoint = team->assist;
+    newAssist = team->point;
+    TagAssist_ApplyControlRoles(team, newPoint, newAssist);
+
+    team->point = newPoint;
+    team->assist = newAssist;
+    team->assist_out = true;
+    team->assist_timer = ASSIST_DURATION_FRAMES;
+    team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
+    team->tagged_this_call = true;
+    TagAssist_SpawnTagEffect(newPoint, newAssist);
+    OSReport("[TagAssist] tag OK: new point kind=%d player_id=%d, new assist "
+             "kind=%d player_id=%d\n",
+             GET_FIGHTER(newPoint)->kind, GET_FIGHTER(newPoint)->player_id,
+             GET_FIGHTER(newAssist)->kind, GET_FIGHTER(newAssist)->player_id);
+}
+
 /// Detects a new match starting: our module-level TeamState is a plain C
 /// static that lives for the whole process, but every match creates fresh
 /// Fighter_GObj instances -- without this, a second match in the same
@@ -905,33 +1272,46 @@ static void TagAssist_UpdateTimer(TeamState* team)
 /// over from however the last match ended, etc.), which is exactly what
 /// produced the "next match started with the assist moving around, then
 /// randomly went invisible" symptom. Resets THIS team's state the moment
-/// either role's gobj changes out from under it; converges correctly
-/// regardless of which of point/assist's frame call notices first (see the
-/// inline comments below).
+/// either PORT's gobj changes out from under it; converges correctly
+/// regardless of which port's frame call notices first (see the inline
+/// comments below).
+///
+/// Deliberately keyed on port_gobj[], not point/assist: point/assist are
+/// current-ROLE labels a tag can swap at any time (TagAssist_TryTag), while
+/// `roleIdx` here is always the fixed, CSS-time PORT role
+/// (TagAssist_IsPortPoint), recomputed fresh every single frame from the
+/// CSS's own team/point selection. Comparing that against point/assist
+/// directly (an earlier version of this function did) meant a tag's own
+/// swap looked identical to a new match starting -- port_gobj[roleIdx]
+/// hadn't actually changed, but team->point/assist had, so every frame
+/// immediately reset the whole team back to the CSS-original pairing,
+/// silently undoing every tag the instant it happened. Confirmed root
+/// cause of "tagging doesn't work" / "CPU keeps ending up controlling the
+/// swapped-to character forever, can't tag back": port_gobj[] never moves
+/// with a tag, so it can't ever be fooled by one.
 static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
                                      Fighter_GObj* gobj)
 {
-    if (roleIdx == 0) {
-        if (team->point != NULL && team->point != gobj) {
-            team->initialized = false;
-            team->benched_once = false;
-            team->settle_timer = 0;
-            team->assist_out = false;
-            team->assist_timer = 0;
-            team->assist = NULL; // let the assist's own call re-set this
-        }
-        team->point = gobj;
-    } else {
-        if (team->assist != NULL && team->assist != gobj) {
-            team->initialized = false;
-            team->benched_once = false;
-            team->settle_timer = 0;
-            team->assist_out = false;
-            team->assist_timer = 0;
-            team->point = NULL; // let the point's own call re-set this
-        }
-        team->assist = gobj;
+    int otherIdx = roleIdx ^ 1;
+    if (team->port_gobj[roleIdx] != NULL && team->port_gobj[roleIdx] != gobj) {
+        // If this ever fires mid-match (not right after a real match
+        // start/reset), that's a real bug -- it means something made a
+        // port's own gobj pointer look like it changed when it shouldn't
+        // have, which silently wipes assist_out/point/assist. Loud on
+        // purpose: this should be rare.
+        OSReport("[TagAssist] NEW MATCH DETECTED for roleIdx=%d (was "
+                 "port_gobj[%d]=%p, now gobj=%p) -- resetting team state\n",
+                 roleIdx, roleIdx, (void*) team->port_gobj[roleIdx], (void*) gobj);
+        team->initialized = false;
+        team->benched_once = false;
+        team->settle_timer = 0;
+        team->assist_out = false;
+        team->assist_timer = 0;
+        team->point = NULL;
+        team->assist = NULL;
+        team->port_gobj[otherIdx] = NULL; // let the other port's own call re-set this
     }
+    team->port_gobj[roleIdx] = gobj;
 }
 
 bool TagAssist_IsTagBattleOn(void)
@@ -1032,12 +1412,15 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
     TagAssist_HandleNewMatch(team, roleIdx, gobj);
 
     if (!team->initialized) {
-        if (team->point == NULL || team->assist == NULL) {
+        if (team->port_gobj[0] == NULL || team->port_gobj[1] == NULL) {
             return; // waiting on both point and assist to (re)spawn
         }
         team->initialized = true;
+        team->point = team->port_gobj[0];
+        team->assist = team->port_gobj[1];
         team->settle_timer = INITIAL_SETTLE_FRAMES;
         team->ready_frame = sFrameCounter + TAG_ASSIST_FIRST_CALL_GRACE_FRAMES;
+        TagAssist_InitControlRoles(team);
     }
 
     if (gobj == team->assist) {
@@ -1094,7 +1477,11 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
         return;
     }
 
-    TagAssist_TryCallAssist(team);
+    if (team->assist_out) {
+        TagAssist_TryTag(team);
+    } else {
+        TagAssist_TryCallAssist(team);
+    }
     TagAssist_UpdateTimer(team);
 }
 
@@ -1110,6 +1497,8 @@ void TagAssist_OnReset(void)
 {
     int i;
     for (i = 0; i < 2; i++) {
+        sTeams[i].port_gobj[0] = NULL;
+        sTeams[i].port_gobj[1] = NULL;
         sTeams[i].point = NULL;
         sTeams[i].assist = NULL;
         sTeams[i].initialized = false;
@@ -1119,4 +1508,40 @@ void TagAssist_OnReset(void)
         sTeams[i].assist_timer = 0;
         sTeams[i].despawn_grace = 0;
     }
+}
+
+void TagAssist_RevertControlRolesForMatchEnd(void)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        TeamState* team = &sTeams[i];
+        if (!team->initialized || !team->is_cpu_team) {
+            continue;
+        }
+        // port_gobj[0]/[1] are the CSS-original point/assist identities --
+        // always human/CPU respectively, never touched by any tag (see
+        // TagAssist_HandleNewMatch's own comment) -- so handing them
+        // straight to ApplyControlRoles as "new point"/"new assist"
+        // restores exactly the pre-match-start pairing, regardless of how
+        // many times team->point/assist have actually swapped since.
+        TagAssist_ApplyControlRoles(team, team->port_gobj[0], team->port_gobj[1]);
+    }
+}
+
+Gm_PKind TagAssist_GetOriginalPkindForMatchEnd(int player_id)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        TeamState* team = &sTeams[i];
+        if (!team->initialized || !team->is_cpu_team) {
+            continue;
+        }
+        if (GET_FIGHTER(team->port_gobj[0])->player_id == player_id) {
+            return Gm_PKind_Human;
+        }
+        if (GET_FIGHTER(team->port_gobj[1])->player_id == player_id) {
+            return Gm_PKind_Cpu;
+        }
+    }
+    return Gm_PKind_NA;
 }

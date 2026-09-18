@@ -35,11 +35,13 @@ You need your own disc image. No game data ships here.
   unaffected until it's turned on.
 - [x] Player-driven Red/Blue team pairing and point-character selection,
   replacing the old fixed Port1+3/Port2+4 layout.
+- [x] Tagging between characters (swapping which fighter is point mid-match,
+  not just a timed assist call) -- including control handoff for a
+  human+CPU team, so the human always ends up playing whichever fighter is
+  currently point.
 
 ### Planned
 
-- [ ] Tagging between characters (swapping which fighter is point mid-match,
-  not just a timed assist call).
 - [ ] Duo play support (shared-team play in the style of *2XKO*).
 - [ ] Dedicated Tag Battle art/UI in the character-select screen (currently
   reuses Team Battle's own banner and team-color icons, since there's no

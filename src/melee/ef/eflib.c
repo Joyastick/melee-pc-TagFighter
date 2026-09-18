@@ -49,6 +49,25 @@ static int pc_dbg_ef_log(void)
     return cached;
 }
 
+/* MELEE_EF_LOG_REPEAT=1: also report every REPEAT spawn of a gfx_id, not
+ * just its first-ever spawn this process. Plain MELEE_EF_LOG dedupes hard
+ * (see `seen[]` below), which is great for "what gfx_ids exist at all" but
+ * useless for "which of these fires at the exact moment I do X" once
+ * something else has already spawned the same id earlier in the session
+ * (e.g. spawn-in/landing dust reusing the same id as a later transform
+ * effect) -- that id goes silent for good under plain MELEE_EF_LOG, even
+ * though it's still firing. With this on, watch the terminal live while
+ * triggering a specific action and every gfx_id printed right at that
+ * instant is real signal, "(repeat)" or not. */
+static int pc_dbg_ef_log_repeat(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = getenv("MELEE_EF_LOG_REPEAT") != NULL;
+    }
+    return cached;
+}
+
 // externs
 
 extern EF_DAT_Entry efAsync_DatEntries[51];
@@ -458,18 +477,30 @@ EF_Effect* efLib_Create(int gfx_id, HSD_GObj* parent_gobj)
     u8 p_link;
 
     /* Effect diagnostics:
-     *   MELEE_EF_LOG=1     report each distinct gfx_id the first time it spawns
-     *   MELEE_EF_SKIP=a-b  do not spawn effects with gfx_id in [a,b]
-     * Used to bisect which effect draws the untextured white quad. */
+     *   MELEE_EF_LOG=1        report each distinct gfx_id the first time it
+     *                         spawns, plus which gobj it's attached to
+     *   MELEE_EF_LOG_REPEAT=1 also report every later repeat spawn of a
+     *                         gfx_id already seen -- see that flag's own
+     *                         comment for why plain MELEE_EF_LOG alone can
+     *                         go silent on an id that's still actually
+     *                         firing
+     *   MELEE_EF_SKIP=a-b     do not spawn effects with gfx_id in [a,b]
+     * Used to bisect which effect draws the untextured white quad, and to
+     * pin down which gfx_id(s) a specific in-game action actually spawns. */
     {
         static const char* skip;
         static int skip_done;
         if (!skip_done) { skip = getenv("MELEE_EF_SKIP"); skip_done = 1; }
         if (pc_dbg_ef_log()) {
             static u8 seen[16384];
-            if (gfx_id >= 0 && gfx_id < (int) sizeof(seen) && !seen[gfx_id]) {
+            bool is_new = gfx_id >= 0 && gfx_id < (int) sizeof(seen) &&
+                          !seen[gfx_id];
+            if (is_new) {
                 seen[gfx_id] = 1;
-                OSReport("ef: gfx_id %d (0x%X)\n", gfx_id, gfx_id);
+            }
+            if (is_new || pc_dbg_ef_log_repeat()) {
+                OSReport("ef: gfx_id %d (0x%X)%s gobj=%p\n", gfx_id, gfx_id,
+                         is_new ? "" : " (repeat)", (void*) parent_gobj);
             }
         }
         if (skip != NULL) {

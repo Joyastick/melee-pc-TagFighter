@@ -3776,6 +3776,37 @@ void fn_80262F44(HSD_GObj* gobj)
                 if (red_count != 2 || blue_count != 2) {
                     goto hide;
                 }
+                {
+                    // A mixed human+CPU team must have the human as point.
+                    // TagAssist_ApplyControlRoles hands the team's one real
+                    // controller between whichever fighter is currently
+                    // point -- if the CPU port started as point instead,
+                    // there'd be no real controller to redirect onto it in
+                    // the first place. A CPU+CPU or human+human team has no
+                    // such constraint (nothing to redirect either way).
+                    int colorIdx;
+                    for (colorIdx = 0; colorIdx < 2; colorIdx++) {
+                        int humanPort = -1;
+                        int cpuPort = -1;
+                        for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
+                            if (mnCharSel_803F0DFC.doors[i].p_kind == 3 ||
+                                mnCharSel_803F0DFC.doors[i].team != colorIdx)
+                            {
+                                continue;
+                            }
+                            if (mnCharSel_803F0DFC.doors[i].p_kind == 0) {
+                                humanPort = i;
+                            } else if (mnCharSel_803F0DFC.doors[i].p_kind == 1) {
+                                cpuPort = i;
+                            }
+                        }
+                        if (humanPort >= 0 && cpuPort >= 0 &&
+                            !TagAssist_IsPortPoint(humanPort))
+                        {
+                            goto hide;
+                        }
+                    }
+                }
             }
             if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                 for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
