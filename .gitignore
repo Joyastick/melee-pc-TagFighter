@@ -3,6 +3,7 @@ build-win/
 build-pc/
 build-win-arm64/
 build-ios/
+build-release/
 dist/
 build_vanilla/
 iso_build/
