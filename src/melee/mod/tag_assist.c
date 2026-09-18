@@ -136,8 +136,8 @@
 #define TAG_ASSIST_PRESSED HSD_PAD_DPADDOWN
 
 /// How long a called assist stays out before auto-benching.
-/// 180 = 3 seconds at 60fps.
-#define ASSIST_DURATION_FRAMES 180
+/// 240 = 4 seconds at 60fps.
+#define ASSIST_DURATION_FRAMES 240
 
 /// Frames to let a freshly-spawned assist run completely untouched before
 /// we freeze it for the first time.
@@ -164,6 +164,16 @@
 /// full ASSIST_DURATION_FRAMES cameo window as ever before benching --
 /// nothing here shortens that.
 #define TAG_MIN_CALL_TO_TAG_FRAMES 15
+
+/// Max number of tags (role swaps) allowed within a single assist call --
+/// once TagAssist_TryTag has succeeded this many times, further D-Pad Down
+/// presses are ignored until the next real call resets the count.
+#define TAG_MAX_TAGS_PER_CALL 3
+
+/// Minimum frames between one successful tag and the next being honored --
+/// same idea as TAG_MIN_CALL_TO_TAG_FRAMES (avoids an instant, invisible
+/// swap-back), just applied between tags instead of after the initial call.
+#define TAG_COOLDOWN_FRAMES 20
 
 typedef struct TeamState {
     Fighter_GObj* port_gobj[2]; ///< [0] = whichever gobj currently sits at
@@ -214,15 +224,17 @@ typedef struct TeamState {
                            ///< TryCallAssist is allowed to proceed -- see
                            ///< TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
     u32 tag_ready_frame;  ///< sFrameCounter value at which TagAssist_TryTag's
-                           ///< input starts being honored -- set to
+                           ///< input next starts being honored -- set to
                            ///< sFrameCounter + TAG_MIN_CALL_TO_TAG_FRAMES on
-                           ///< every successful call (not just the first).
-    bool tagged_this_call; ///< true once TagAssist_TryTag has already
-                            ///< succeeded once for the CURRENT call -- reset
-                            ///< to false on every successful call, checked
-                            ///< (and set) by TagAssist_TryTag so only one tag
-                            ///< is allowed per assist call, not a repeated
-                            ///< back-and-forth within the same cameo window.
+                           ///< every successful call, and again to
+                           ///< sFrameCounter + TAG_COOLDOWN_FRAMES on every
+                           ///< successful tag, so each tag gets its own
+                           ///< cooldown before the next one is honored.
+    u8 tags_this_call;    ///< Number of times TagAssist_TryTag has already
+                           ///< succeeded for the CURRENT call -- reset to 0
+                           ///< on every successful call, incremented (and
+                           ///< capped at TAG_MAX_TAGS_PER_CALL) by
+                           ///< TagAssist_TryTag.
     bool is_cpu_team;      ///< true if this team is one human point + one CPU
                             ///< assist, as opposed to two real players --
                             ///< captured once in TagAssist_InitControlRoles
@@ -956,7 +968,7 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->assist_timer = ASSIST_DURATION_FRAMES;
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
     team->tag_ready_frame = sFrameCounter + TAG_MIN_CALL_TO_TAG_FRAMES;
-    team->tagged_this_call = false;
+    team->tags_this_call = 0;
     OSReport("[TagAssist] call: assist kind=%d player_id=%d is_cpu_team=%d "
              "tag_ready_frame=%u\n",
              assistFp->kind, assistFp->player_id, team->is_cpu_team,
@@ -1293,22 +1305,22 @@ static void TagAssist_TryTag(TeamState* team)
     if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
         return;
     }
-    if (team->tagged_this_call) {
-        // Only one tag allowed per assist call -- a second (or third...)
-        // press within the same cameo window is ignored, not treated as
-        // another swap back and forth. Resets on the next real call (see
-        // TagAssist_TryCallAssist).
-        OSReport("[TagAssist] tag input BLOCKED: already tagged once this "
-                 "call\n");
+    if (team->tags_this_call >= TAG_MAX_TAGS_PER_CALL) {
+        // TAG_MAX_TAGS_PER_CALL tags allowed per assist call -- further
+        // presses within the same cameo window are ignored. Resets on the
+        // next real call (see TagAssist_TryCallAssist).
+        OSReport("[TagAssist] tag input BLOCKED: already tagged %u time(s) "
+                 "this call (max %u)\n", team->tags_this_call,
+                 TAG_MAX_TAGS_PER_CALL);
         return;
     }
     if (sFrameCounter < team->tag_ready_frame) {
-        // see TAG_MIN_CALL_TO_TAG_FRAMES -- too soon after the call. This
-        // only fires on an actual button press (pressed_buttons is
-        // edge-triggered), so it's a one-shot log per rejected attempt, not
-        // per-frame spam.
+        // see TAG_MIN_CALL_TO_TAG_FRAMES / TAG_COOLDOWN_FRAMES -- too soon
+        // after the call or the last tag. This only fires on an actual
+        // button press (pressed_buttons is edge-triggered), so it's a
+        // one-shot log per rejected attempt, not per-frame spam.
         OSReport("[TagAssist] tag input BLOCKED: %u frame(s) left on the "
-                 "call-to-tag delay\n", team->tag_ready_frame - sFrameCounter);
+                 "tag cooldown\n", team->tag_ready_frame - sFrameCounter);
         return;
     }
 
@@ -1319,9 +1331,13 @@ static void TagAssist_TryTag(TeamState* team)
     team->point = newPoint;
     team->assist = newAssist;
     team->assist_out = true;
-    team->assist_timer = ASSIST_DURATION_FRAMES;
-    team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
-    team->tagged_this_call = true;
+    // Deliberately NOT resetting assist_timer/despawn_grace here -- unlike
+    // a call, a tag doesn't restart the cameo clock, it just hands the
+    // same already-ticking one to whoever is now "assist". So the full
+    // ASSIST_DURATION_FRAMES window is measured from the original call,
+    // not from each tag.
+    team->tags_this_call++;
+    team->tag_ready_frame = sFrameCounter + TAG_COOLDOWN_FRAMES;
     TagAssist_SpawnTagEffect(newPoint, newAssist);
     OSReport("[TagAssist] tag OK: new point kind=%d player_id=%d, new assist "
              "kind=%d player_id=%d\n",
