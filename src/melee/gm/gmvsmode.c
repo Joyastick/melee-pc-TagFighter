@@ -249,6 +249,23 @@ void onExitVs(GameModeState* state)
             gm_80162A4C(mei->match_end.player_standings[i].x44);
         }
     }
+
+    // Tag Fighter: forget this match's point/assist GObj pointers now that
+    // the VS match is actually ending (natural end, Sudden Death handoff,
+    // or an LRA+Start retry -- onExitVs fires for all of them). Confirmed
+    // via a real crash: TagAssist_Tick's own per-frame elimination check
+    // (TagAssist_CheckPointElimination) runs unconditionally every scene,
+    // not just during a live VS match, so on the very next frame after
+    // this scene exits it would otherwise keep dereferencing team->point/
+    // assist -- pointers into GObj pool slots this scene transition is
+    // free to recycle for something else entirely (same "stale
+    // Fighter_GObj*" hazard TagAssist_OnReset's own comment already
+    // describes for a hardware reset, just triggered by an ordinary scene
+    // change instead). Reusing TagAssist_OnReset here is safe: the next
+    // match's fighters re-initialize everything from scratch via
+    // TagAssist_HandleNewMatch regardless, the same way a genuinely new
+    // match after a hardware reset already does.
+    TagAssist_OnReset();
 }
 
 void onEnterSuddenDeath(GameModeState* state)

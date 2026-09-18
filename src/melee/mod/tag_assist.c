@@ -8,6 +8,8 @@
 #include <melee/cm/types.h>
 #include <melee/ef/eflib.h>
 #include <melee/ef/types.h>
+#include <melee/gm/gm_1601.h>
+#include <melee/gm/gmvs.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
@@ -173,6 +175,24 @@ typedef struct TeamState {
                                  ///< genuinely new match (a port's gobj
                                  ///< pointer actually changed). A tag never
                                  ///< touches this -- only point/assist below.
+    u8 port_player_id[2]; ///< GET_FIGHTER(port_gobj[N])->player_id, cached
+                           ///< once at team-init time (when both GObjs are
+                           ///< guaranteed freshly valid, since this only
+                           ///< runs from their own live per-frame hook) --
+                           ///< [0]/[1] line up with port_gobj[0]/[1]. Lets
+                           ///< TagAssist_RevertControlRolesForMatchEnd and
+                           ///< TagAssist_GetOriginalPkindForMatchEnd
+                           ///< restore the CSS-original human/cpu
+                           ///< player_id<->pkind/pad-port mapping the
+                           ///< results screen's own "wait for Start" gate
+                           ///< expects, purely via Player_id-keyed calls,
+                           ///< without ever dereferencing port_gobj[]
+                           ///< itself -- confirmed via a real crash that
+                           ///< port_gobj[0] (the CSS-original point door)
+                           ///< can already be a stale GObj pointer by match
+                           ///< end once a permanent point/assist promotion
+                           ///< has happened (see
+                           ///< TagAssist_PromoteAssistToPoint).
     Fighter_GObj* point;  ///< Whichever of port_gobj[0]/[1] is CURRENTLY
                            ///< playing "point" -- starts equal to
                            ///< port_gobj[0], and TagAssist_TryTag is the
@@ -247,6 +267,37 @@ typedef struct TeamState {
                              ///< substitutes a fallback if the real captured
                              ///< value happens to collide with that sentinel
                              ///< (see its own comment).
+    bool point_eliminated; ///< true once the point character has
+                             ///< permanently run out of stocks and been
+                             ///< promoted from the assist (see
+                             ///< TagAssist_PromoteAssistToPoint) -- once
+                             ///< set, TagAssist_OnFighterInputFrame skips
+                             ///< every call/tag/bench code path for this
+                             ///< team for the rest of the match. Without
+                             ///< this, a benched assist can never end up
+                             ///< promoted at all: it's intangible
+                             ///< (x2219_b1, set by TagAssist_SetBenched)
+                             ///< specifically so it can never lose a
+                             ///< stock while frozen, so once point is
+                             ///< permanently gone there would be nothing
+                             ///< left able to trigger a stock loss for
+                             ///< this team ever again -- a real, confirmed
+                             ///< softlock (Sudden Death, or any stock
+                             ///< match, simply never ends for that team).
+    Fighter_GObj* eliminated_partner; ///< The old point's own GObj,
+                             ///< captured by TagAssist_PromoteAssistToPoint
+                             ///< at the moment of promotion -- only
+                             ///< meaningful while point_eliminated is true.
+                             ///< Lets the sole survivor manually revive
+                             ///< their fallen teammate later (see
+                             ///< TagAssist_TryReviveFallenPartner) by
+                             ///< donating one of their own spare stocks,
+                             ///< retail's own Team Battle stock-share
+                             ///< mechanic (fn_8016B918 in gmvs.c) applied
+                             ///< manually since the fallen character's own
+                             ///< controller port no longer has a real pad
+                             ///< behind it to press Start with (see
+                             ///< TagAssist_ApplyControlRoles).
 } TeamState;
 
 /// If the assist gets KO'd for real while called out, forcing our bench
@@ -1278,6 +1329,170 @@ static void TagAssist_TryTag(TeamState* team)
              GET_FIGHTER(newAssist)->kind, GET_FIGHTER(newAssist)->player_id);
 }
 
+/// Called once TagAssist_CheckPointElimination confirms the point
+/// character has permanently run out of stocks with no way back (see
+/// that function). Without this, the team would be stuck forever: the
+/// assist is intangible while benched (x2219_b1, set by
+/// TagAssist_SetBenched) specifically so it can never lose a stock while
+/// frozen, and nothing else could ever call it back in once its only
+/// point-side input path is gone -- confirmed via playtesting as a real
+/// softlock (Sudden Death, or any stock match, simply never ends for that
+/// team). Promotes the assist into point instead, same label handoff
+/// TagAssist_TryTag already does, except there's no living old point left
+/// to hand anything back to -- this team now plays on as a single fighter
+/// for the rest of the match, the same way vanilla Team Battle already
+/// works once one teammate is eliminated.
+static void TagAssist_PromoteAssistToPoint(TeamState* team)
+{
+    Fighter_GObj* newPoint = team->assist;
+    Fighter_GObj* oldPoint = team->point;
+    Fighter* newPointFp = GET_FIGHTER(newPoint);
+
+    if (newPointFp->x221F_b3) {
+        // Still actually benched -- wake it up. Self-referencing nearGobj:
+        // there's no "point" left to reposition next to the way a normal
+        // call does, so this just uses the assist's own last-known
+        // position/floor instead of teleporting anywhere.
+        TagAssist_Unbench(newPoint, newPoint, NULL, NULL);
+    }
+    // else: point died while the assist's own cameo was already out (mid
+    // call) -- it's already live and visible, nothing to unbench.
+
+    // Same control handoff TagAssist_TryTag already does for every
+    // ordinary tag (a no-op for a Duo/human+human team). oldPoint won't be
+    // controlled or respawned again UNLESS the new point later donates it
+    // a spare stock (see TagAssist_TryReviveFallenPartner), so handing its
+    // own player_id's pkind/cpu.kind back to "CPU" here is either inert
+    // (never revived) or exactly the state a revived assist needs anyway.
+    TagAssist_ApplyControlRoles(team, newPoint, oldPoint);
+
+    team->point = newPoint;
+    team->assist = NULL;
+    team->assist_out = false;
+    team->point_eliminated = true;
+    team->eliminated_partner = oldPoint;
+    OSReport("[TagAssist] point eliminated: promoting assist kind=%d "
+             "player_id=%d to point -- team now plays solo\n",
+             newPointFp->kind, newPointFp->player_id);
+}
+
+/// Called from TagAssist_OnFighterInputFrame's point branch while
+/// team->point_eliminated is true -- the sole survivor pressing the same
+/// D-Pad Down assist-call input can donate one of their OWN spare stocks
+/// to bring their fallen teammate back, rather than the team staying down
+/// to one fighter for the rest of the match.
+///
+/// This is retail's own Team Battle stock-share feature (fn_8016B918 in
+/// gmvs.c) applied manually instead of automatically: that feature is
+/// keyed on the DYING player's own controller port pressing Start
+/// (`HSD_PadCopyStatus[Player_GetPlayerId(i)]`), but
+/// TagAssist_PromoteAssistToPoint already repointed the fallen
+/// character's own registered port at team->cpu_pad_port (no real pad
+/// behind it) as part of the promotion -- so retail's own automatic
+/// donation can never fire for them again on its own. Mirrors the same
+/// primitive (Player_LoseStock/Player_SetStocks/gm_GetMatchEndPlayerScore/
+/// fn_8016719C, the exact sequence fn_8016B918 itself runs) rather than
+/// calling into fn_8016B918 directly, since that function's own trigger
+/// condition (the dying player's Start press) is exactly what doesn't
+/// apply here.
+///
+/// Forces a known-good ftCo_MS_Wait baseline before benching the revived
+/// fighter, same as the very first bench of a fresh match does (see
+/// benched_once's own comment) -- fn_8016719C's respawn drops them onto a
+/// spawn platform mid-animation, and freezing (x221F_b3) straight out of
+/// that ad-hoc, not-yet-resolved state is exactly the "sliding on first
+/// call" bug class the module already fixed once for the normal spawn-in
+/// case. Skipping straight to ftCo_MS_Wait sidesteps needing to see that
+/// animation at all, since the revived fighter goes straight to being an
+/// invisible, benched reserve assist anyway.
+static void TagAssist_TryReviveFallenPartner(TeamState* team, Fighter* pointFp)
+{
+    Fighter_GObj* fallen;
+    Fighter* fallenFp;
+
+    if (!(pointFp->input.pressed_buttons & TAG_ASSIST_PRESSED)) {
+        return;
+    }
+    if (Player_GetStocks(pointFp->player_id) <= 1) {
+        // Can't donate your own last stock -- same `> 1` eligibility rule
+        // retail's own fn_8016B918_inline uses for a donor.
+        return;
+    }
+
+    fallen = team->eliminated_partner;
+    fallenFp = GET_FIGHTER(fallen);
+
+    Player_LoseStock(pointFp->player_id);
+    Player_SetStocks(fallenFp->player_id, Player_GetStocks(fallenFp->player_id) + 1);
+    gm_GetMatchEndPlayerScore(fallenFp->player_id);
+    fn_8016719C(fallenFp->player_id, 0);
+
+    Fighter_ChangeMotionState(fallen, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f, NULL);
+    TagAssist_ApplyControlRoles(team, team->point, fallen);
+    TagAssist_SetBenched(fallen);
+
+    team->assist = fallen;
+    team->assist_out = false;
+    team->benched_once = true;
+    team->point_eliminated = false;
+    team->eliminated_partner = NULL;
+    OSReport("[TagAssist] partner revived: donor player_id=%d, revived "
+             "kind=%d player_id=%d back to reserve\n",
+             pointFp->player_id, fallenFp->kind, fallenFp->player_id);
+}
+
+/// Checked every frame from TagAssist_Tick -- unconditional, independent
+/// of any particular fighter's own per-frame hook -- rather than from
+/// TagAssist_OnFighterInputFrame's point branch. Confirmed via playtesting
+/// that the latter can't work: retail's OWN "press Start to borrow a stock
+/// from a teammate" Team Battle continue feature
+/// (fn_8016B918/Player_8003219C in gmvs.c/player.c) freezes a 0-stock
+/// fighter with the exact same fp->x221F_b3 flag TagAssist_SetBenched
+/// uses for benching, and that's the very flag
+/// Fighter_Spaghetti_8006AD10 checks before it will call
+/// TagAssist_OnFighterInputFrame at all (fighter.c) -- so the point's own
+/// hook stops firing the instant they run out of stocks, whether or not a
+/// teammate is actually available to revive them. A promotion check tied
+/// to that hook would simply never run for the exact case it needs to
+/// catch.
+///
+/// Deliberately promotes the INSTANT point's own stock hits 0, without
+/// waiting to see whether retail's own donor-borrow Continue could have
+/// kept the SAME character alive instead (confirmed via playtesting: an
+/// earlier version deferred here whenever the assist had a surplus
+/// stock, mirroring fn_8016B918_inline's own `> 1` eligibility check --
+/// but that's the wrong fantasy for a tag game. It meant point kept
+/// getting resurrected as ITSELF by draining the assist's own separate
+/// stock pool one life at a time, never actually handing control to the
+/// assist at all until that pool ran dry -- confusing, and not what
+/// "tag out" should mean here). Promoting this early is also the safest
+/// timing pointer-wise: it runs on the very same frame the fatal blow
+/// lands (Player_LoseStock is synchronous), before any later "won't
+/// respawn" cleanup on the old point's own GObj could even begin.
+///
+/// This also neutralizes retail's own Continue prompt for the now-
+/// abandoned old point slot as a side effect: TagAssist_PromoteAssistToPoint's
+/// call into TagAssist_ApplyControlRoles repoints the old point's own
+/// x618_player_id/Player_SetPlayerId at team->cpu_pad_port (no real
+/// controller), so even though retail's own per-frame donor-check keeps
+/// running for that abandoned slot, nothing physically presses Start on
+/// the port it's now listening on.
+static void TagAssist_CheckPointElimination(TeamState* team)
+{
+    Fighter* pointFp;
+
+    if (!team->initialized || team->point_eliminated) {
+        return;
+    }
+
+    pointFp = GET_FIGHTER(team->point);
+    if (Player_GetStocks(pointFp->player_id) > 0) {
+        return; // still alive
+    }
+
+    TagAssist_PromoteAssistToPoint(team);
+}
+
 /// Detects a new match starting: our module-level TeamState is a plain C
 /// static that lives for the whole process, but every match creates fresh
 /// Fighter_GObj instances -- without this, a second match in the same
@@ -1323,6 +1538,8 @@ static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
         team->assist_timer = 0;
         team->point = NULL;
         team->assist = NULL;
+        team->point_eliminated = false;
+        team->eliminated_partner = NULL;
         team->port_gobj[otherIdx] = NULL; // let the other port's own call re-set this
     }
     team->port_gobj[roleIdx] = gobj;
@@ -1432,9 +1649,26 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
         team->initialized = true;
         team->point = team->port_gobj[0];
         team->assist = team->port_gobj[1];
+        team->port_player_id[0] = GET_FIGHTER(team->port_gobj[0])->player_id;
+        team->port_player_id[1] = GET_FIGHTER(team->port_gobj[1])->player_id;
         team->settle_timer = INITIAL_SETTLE_FRAMES;
         team->ready_frame = sFrameCounter + TAG_ASSIST_FIRST_CALL_GRACE_FRAMES;
         TagAssist_InitControlRoles(team);
+    }
+
+    if (team->point_eliminated) {
+        // Point has already been permanently promoted from the assist (see
+        // TagAssist_PromoteAssistToPoint) -- team->assist is NULL now, so
+        // none of the call/tag/bench paths below are safe to run anymore.
+        // The sole survivor can still press the same assist-call input to
+        // donate a spare stock and bring their fallen teammate back (see
+        // TagAssist_TryReviveFallenPartner) -- only meaningful on their own
+        // per-frame hook, so gated on gobj == team->point the same way the
+        // ordinary call/tag dispatch below is.
+        if (gobj == team->point) {
+            TagAssist_TryReviveFallenPartner(team, fp);
+        }
+        return;
     }
 
     if (gobj == team->assist) {
@@ -1502,9 +1736,16 @@ void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
 /// Advances sFrameCounter once per frame, unconditionally, every scene --
 /// call once per frame from a scene-independent hook (see gmscene.c). Drives
 /// TAG_ASSIST_FIRST_CALL_GRACE_FRAMES gating in TagAssist_TryCallAssist.
+///
+/// Also runs TagAssist_CheckPointElimination for both teams here rather
+/// than from TagAssist_OnFighterInputFrame -- see that function's own
+/// comment for why it has to be checked from an unconditional, per-frame
+/// hook instead of any particular fighter's own.
 void TagAssist_Tick(void)
 {
     sFrameCounter++;
+    TagAssist_CheckPointElimination(&sTeams[0]);
+    TagAssist_CheckPointElimination(&sTeams[1]);
 }
 
 void TagAssist_OnReset(void)
@@ -1521,6 +1762,8 @@ void TagAssist_OnReset(void)
         sTeams[i].assist_out = false;
         sTeams[i].assist_timer = 0;
         sTeams[i].despawn_grace = 0;
+        sTeams[i].point_eliminated = false;
+        sTeams[i].eliminated_partner = NULL;
     }
 }
 
@@ -1532,13 +1775,33 @@ void TagAssist_RevertControlRolesForMatchEnd(void)
         if (!team->initialized || !team->is_cpu_team) {
             continue;
         }
-        // port_gobj[0]/[1] are the CSS-original point/assist identities --
-        // always human/CPU respectively, never touched by any tag (see
-        // TagAssist_HandleNewMatch's own comment) -- so handing them
-        // straight to ApplyControlRoles as "new point"/"new assist"
-        // restores exactly the pre-match-start pairing, regardless of how
-        // many times team->point/assist have actually swapped since.
-        TagAssist_ApplyControlRoles(team, team->port_gobj[0], team->port_gobj[1]);
+        // Pure player_id-keyed bookkeeping (Player_SetSlottype/
+        // Player_SetPlayerId) -- deliberately NOT going through
+        // TagAssist_ApplyControlRoles here, since that also writes
+        // directly into each GObj's own Fighter struct
+        // (cpu.kind/x618_player_id/input.held_buttons), which needs a
+        // still-valid, non-freed GObj. port_gobj[0] (the CSS-original
+        // point door) can already be a stale pointer by match end once a
+        // permanent point/assist promotion has happened (see
+        // TagAssist_PromoteAssistToPoint) -- confirmed via a real crash
+        // going to the results screen when it was dereferenced here.
+        //
+        // But the results screen's own "wait for Start" gate only cares
+        // about the player_id-level mapping (same gm_DefaultVSGetPauser
+        // port<->slot lookup TagAssist_ApplyControlRoles's own comment
+        // describes), not the Fighter struct at all -- match gameplay is
+        // over by now, nothing reads a dead fighter's cpu.kind again.
+        // Restoring just that mapping via the cached port_player_id[]
+        // (safe regardless of whether either door's GObj is still alive)
+        // is enough to fix the same "soft-locks the results screen"
+        // problem this function always existed for, without needing
+        // either GObj to still exist -- confirmed via a real softlock
+        // (couldn't press Start) once a point/assist promotion had left
+        // control on the CSS-original CPU door without this restore.
+        Player_SetSlottype(team->port_player_id[0], Gm_PKind_Human);
+        Player_SetPlayerId(team->port_player_id[0], team->human_pad_port);
+        Player_SetSlottype(team->port_player_id[1], Gm_PKind_Cpu);
+        Player_SetPlayerId(team->port_player_id[1], team->cpu_pad_port);
     }
 }
 
@@ -1550,10 +1813,13 @@ Gm_PKind TagAssist_GetOriginalPkindForMatchEnd(int player_id)
         if (!team->initialized || !team->is_cpu_team) {
             continue;
         }
-        if (GET_FIGHTER(team->port_gobj[0])->player_id == player_id) {
+        // See TagAssist_RevertControlRolesForMatchEnd's own comment --
+        // port_player_id[] instead of dereferencing port_gobj[] directly,
+        // since that GObj may no longer exist by match end.
+        if (team->port_player_id[0] == player_id) {
             return Gm_PKind_Human;
         }
-        if (GET_FIGHTER(team->port_gobj[1])->player_id == player_id) {
+        if (team->port_player_id[1] == player_id) {
             return Gm_PKind_Cpu;
         }
     }
