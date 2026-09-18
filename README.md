@@ -41,6 +41,10 @@ You need your own disc image. No game data ships here.
   not just a timed assist call) -- including control handoff for a Solo
   Play (human+CPU) team, so the human always ends up playing whichever
   fighter is currently point.
+- [x] Point-elimination promotion: if point runs out of stocks, the assist
+  is promoted to point instead of softlocking the team, with a manual
+  stock-share revival to bring a permanently-eliminated teammate back once
+  the survivor has a spare stock.
 
 ### Planned
 
@@ -133,6 +137,10 @@ nobody presses Z, the lower port number on each team is point by default.
   state), then despawns after a few seconds or immediately if it's KO'd while
   out.
 - Ice Climbers bench/unbench Popo and Nana together.
+- **Point runs out of stocks**: the assist is promoted to point instead of
+  ending the team's run. If the sole survivor has more than one stock left,
+  pressing **D-Pad Down** (the same assist-call input) donates one of their
+  own stocks to revive the eliminated teammate back in as the assist.
 
 ### Character assist moves
 
