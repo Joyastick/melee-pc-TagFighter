@@ -4,7 +4,9 @@
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
 a partner "assist" fighter mid-match, similar to *Marvel vs. Capcom* switching
 or *2XKO*-style assist calls, instead of Melee's normal
-1-life-per-slot model. The mod lives almost entirely in
+1-life-per-slot model. Each team can be **Solo Play** (one human point
+character with a CPU assist) or **Duo Play** (two humans sharing a team, each
+on their own controller). The mod lives almost entirely in
 [`src/melee/mod/`](src/melee/mod), layered as a thin, largely non-matching
 addition on top of the real, already-decompiled game code rather than a fork
 of the engine itself.
@@ -36,13 +38,15 @@ You need your own disc image. No game data ships here.
 - [x] Player-driven Red/Blue team pairing and point-character selection,
   replacing the old fixed Port1+3/Port2+4 layout.
 - [x] Tagging between characters (swapping which fighter is point mid-match,
-  not just a timed assist call) -- including control handoff for a
-  human+CPU team, so the human always ends up playing whichever fighter is
-  currently point.
+  not just a timed assist call) -- including control handoff for a Solo
+  Play (human+CPU) team, so the human always ends up playing whichever
+  fighter is currently point.
 
 ### Planned
 
-- [ ] Duo play support (shared-team play in the style of *2XKO*).
+- [ ] Further Duo Play (human+human team) polish -- the same team-pairing
+  and tag mechanic already covers two humans sharing a team today, but this
+  hasn't seen as much testing as Solo Play (human+CPU) has.
 - [ ] Dedicated Tag Battle art/UI in the character-select screen (currently
   reuses Team Battle's own banner and team-color icons, since there's no
   Tag Battle-specific art yet).
@@ -112,7 +116,10 @@ Red/Blue/Green team-color picker.
 **Pick your team**: with Tag Battle on, each door's team-color button only
 cycles between Red and Blue (Green is unavailable — a 2v2 mode has no room
 for a third team). Whoever picks Red plays together, whoever picks Blue plays
-together — team pairing is no longer tied to which port you're in.
+together — team pairing is no longer tied to which port you're in. A team is
+**Solo Play** if only one of its two doors is human (the other stays CPU),
+or **Duo Play** if both are human, sharing the team on their own
+controllers.
 
 **Pick your point character**: hover a door's team-color button and press
 **Z**. That player becomes their team's point (human-controlled) character,

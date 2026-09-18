@@ -812,7 +812,21 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj,
     fp->x221E_b2 = 0;
     fp->x221F_b1 = 0;
     if (fp->x890_cameraBox != NULL) {
-        Camera_80028F5C(fp->x890_cameraBox, CmSubjectState_Auto);
+        // CmSubjectState_Active, not _Auto: retail itself only ever puts a
+        // real player/CPU fighter's own camera box in _Active (see
+        // ftCamera_80076064, called on every respawn) -- "always framed by
+        // a camera," matching how the point character already behaves.
+        // _Auto ("framed only when inside the camera bounds" -- see
+        // Camera_8002928C in camera.c) is for something that's fine to
+        // lose track of near screen edges, which is exactly backwards for
+        // a fighter the camera should be actively keeping in frame. This
+        // state also isn't touched again by a tag (TagAssist_TryTag only
+        // swaps the point/assist labels, never camera state), so whichever
+        // fighter was ever unbenched here keeps carrying this same state
+        // afterward even once it becomes point -- confirmed root cause of
+        // "camera stops following me after a tag" for anyone who was ever
+        // the CPU assist first.
+        Camera_80028F5C(fp->x890_cameraBox, CmSubjectState_Active);
     }
 }
 
