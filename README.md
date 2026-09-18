@@ -45,12 +45,14 @@ You need your own disc image. No game data ships here.
   is promoted to point instead of softlocking the team, with a manual
   stock-share revival to bring a permanently-eliminated teammate back once
   the survivor has a spare stock.
+- [x] Duo Play (human+human team) confirmed working -- the same
+  team-pairing and tag mechanic Solo Play uses covers two humans sharing a
+  team with no CPU-specific control-handoff code path involved. The assist
+  cameo now runs 4 seconds (up from 3) and allows up to 3 tags per call
+  (each on its own 20-frame cooldown) instead of one tag ending the cameo.
 
 ### Planned
 
-- [ ] Further Duo Play (human+human team) polish -- the same team-pairing
-  and tag mechanic already covers two humans sharing a team today, but this
-  hasn't seen as much testing as Solo Play (human+CPU) has.
 - [ ] Dedicated Tag Battle art/UI in the character-select screen (currently
   reuses Team Battle's own banner and team-color icons, since there's no
   Tag Battle-specific art yet).
