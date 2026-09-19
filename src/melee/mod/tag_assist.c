@@ -14,6 +14,7 @@
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
 #include <melee/ft/ft_0877.h>
+#include <melee/ft/ft_0D4D.h>
 #include <melee/ft/inlines.h>
 #include <melee/ft/types.h>
 #include <melee/mp/forward.h>
@@ -1403,16 +1404,52 @@ static void TagAssist_PromoteAssistToPoint(TeamState* team)
     Fighter_GObj* newPoint = team->assist;
     Fighter_GObj* oldPoint = team->point;
     Fighter* newPointFp = GET_FIGHTER(newPoint);
+    s32 keptPercent = Player_GetDamage(newPointFp->player_id);
 
-    if (newPointFp->x221F_b3) {
-        // Still actually benched -- wake it up. Self-referencing nearGobj:
-        // there's no "point" left to reposition next to the way a normal
-        // call does, so this just uses the assist's own last-known
-        // position/floor instead of teleporting anywhere.
-        TagAssist_Unbench(newPoint, newPoint, NULL, NULL);
+    // Bring the promoted assist in riding the angel platform, briefly
+    // invulnerable, exactly like a real death/respawn -- rather than
+    // TagAssist_Unbench's ordinary silent "just stand there controllable"
+    // wake-up. fn_8016719C primes the exact per-player storage
+    // (Player_SetSpawnPlatformPos, and via Player_80032768 the same
+    // player_poses slot Player_LoadPlayerCoords reads) that ftCo_800D4FF4
+    // itself reads right back out -- the same pairing
+    // TagAssist_TryReviveFallenPartner already trusts for a real mid-match
+    // respawn. ftCo_800D4FF4 is the actual function retail's own death
+    // chain calls (ft_0D4D.c) right after the fall-as-a-star sequence
+    // finishes, to reset percent/flags, attach the platform's visual
+    // accessory, and enter ftCo_MS_Rebirth -- not a hand-rolled imitation
+    // of it. Applied unconditionally (even if the assist's own cameo
+    // happened to still be live/visible, not benched, the instant point
+    // died): the promotion itself is the dramatic moment this is meant to
+    // sell, not just "still frozen vs. already out."
+    fn_8016719C(newPointFp->player_id, 0);
+    // fn_8016719C's own Player_SetHPByIndex call just reset this player's
+    // tracked damage to the match's starting percent (correct for a real
+    // stock loss, which actually zeroes it) -- but a promotion isn't a
+    // real stock loss for THIS fighter, so restore what they actually had
+    // before ftCo_800D4FF4 reads it back out below (Fighter_UnkInitReset_
+    // 80067C98 copies fp->dmg.x1830_percent straight from Player_GetDamage).
+    // Confirmed requested behavior: keep current %, don't reset to 0%.
+    Player_SetHPByIndex(newPointFp->player_id, 0, keptPercent);
+    ftCo_800D4FF4(newPoint);
+
+    // ftCo_800D4FF4 sets its own real death-chain intangibility/flags
+    // (x2219_b1, x221E_b1/b2, etc.), but has no idea about TagAssist's OWN
+    // bench flags -- TagAssist_SetBenched's x221F_b3 (skips the fighter's
+    // own AI/input think-call entirely, Fighter_8006ABA0) and invisible/
+    // x221F_b1 are ours alone, so clear them explicitly. The fighter still
+    // won't actually be controllable until the platform ride finishes and
+    // the chain drops it into ftCo_MS_Wait on its own -- same as a real
+    // respawn -- this just stops TagAssist itself from continuing to
+    // suppress it afterward.
+    newPointFp->x221F_b3 = 0;
+    newPointFp->invisible = false;
+    newPointFp->x221F_b1 = 0;
+    if (newPointFp->x890_cameraBox != NULL) {
+        // See TagAssist_Unbench's own comment on _Active vs _Auto -- same
+        // fix applies here, since this bypasses TagAssist_Unbench entirely.
+        Camera_80028F5C(newPointFp->x890_cameraBox, CmSubjectState_Active);
     }
-    // else: point died while the assist's own cameo was already out (mid
-    // call) -- it's already live and visible, nothing to unbench.
 
     // Same control handoff TagAssist_TryTag already does for every
     // ordinary tag (a no-op for a Duo/human+human team). oldPoint won't be
