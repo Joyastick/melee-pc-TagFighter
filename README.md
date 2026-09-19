@@ -22,7 +22,16 @@ the Tag Fighter mod on top of it. For melee-pc's own feature list, porting
 notes, and contributing guide, see
 [the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md).
 
-You need your own disc image. No game data ships here.
+You need your own disc image. **No game data ships here.** The decompiled game
+code is not licensed and is not relicensed by this project; only the port code
+is GPL-3.0-or-later. Details under [License](#license).
+
+> New here? The **[project site](https://999sian.github.io/melee-pc/)** has the
+> five-step setup, the FAQ (supported disc, Windows first run, older Intel GPUs,
+> first-use shader stutter, Android requirements, where the log and settings
+> live) and the per-platform known-issues list. Bugs go through the
+> [bug report form](https://github.com/999sian/melee-pc/issues/new?template=bug_report.yml);
+> questions on [Discord](https://discord.gg/aurt34svq).
 
 ![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
 
@@ -64,15 +73,18 @@ You need your own disc image. No game data ships here.
 - [ ] Online play, built on melee-pc's own online implementation once that
   lands upstream.
 
-## Building
+The phases behind the planned rows, and why they are ordered that way, are in
+[ROADMAP.md](ROADMAP.md).
 
-Needs GCC (the game code relies on `scalar_storage_order("big-endian")`, which
-only GCC implements), CMake 3.25+, Ninja, and a Vulkan driver. Aurora fetches
-its own Dawn/SDL3/nod prebuilts.
+## Download
+
+Builds for every platform are on the
+[releases page](https://github.com/999sian/melee-pc/releases). Release notes
+list the per-platform files, known issues and requirements.
 
 ```sh
-cmake -B build -G Ninja
-ninja -C build
+./Melee-x86_64.AppImage                  # open the launcher
+./Melee-x86_64.AppImage /path/to/melee.iso
 ```
 
 No disc data is needed to build. The two HSD font atlases are pixel data from
@@ -96,22 +108,50 @@ build/melee                              # open the launcher
 build/melee <disc.iso|.gcm|.ciso|.rvz>
 ```
 
-Only **Melee USA revision 2 (NTSC-U 1.02, GALE01)** is supported. A valid disc
-path on the command line boots straight in; a missing or invalid one returns to
-the launcher. Settings and the selected path live in `launcher.cfg` in SDL's
-`melee-pc_TagFighter` preference directory (usually
-`~/.local/share/melee-pc_TagFighter`) — namespaced separately from a vanilla
-melee-pc install so the two don't collide.
+**Melee USA revision 2 (NTSC-U 1.02, GALE01)** is the supported disc. A
+**Europe (PAL, GALP01)** image also boots (experimental, see
+[porting-notes.md](docs/porting-notes.md#regions) upstream), but the mod is
+only verified against NTSC-U. A valid disc path on the command line boots
+straight in; a missing or invalid one returns to the launcher. Settings and
+the selected path live in `launcher.cfg` in SDL's `melee-pc_TagFighter`
+preference directory (usually `~/.local/share/melee-pc_TagFighter`) —
+namespaced separately from a vanilla melee-pc install so the two don't
+collide.
 
 Verification reads the disc through nod, compressed images included, and compares
 SHA-1 against the
 [Redump DAT](https://github.com/libretro/libretro-database/blob/master/metadat/redump/Nintendo%20-%20GameCube.dat):
 `d4e70c064cc714ba8400a849cf299dbd1aa326fc`, 1,459,978,240 bytes. It supports
 progress and cancellation, and is not cached between launches. Unverified images
-still play.
+still play; PAL images have no reference hash and always report as unverified.
 
-Keep `resources/` next to the binary when distributing. The bundled Liberation
-Sans fonts are covered by `resources/FONT-LICENSE.txt`.
+Building from source: [docs/building.md](docs/building.md).
+
+## Requirements
+
+The renderer is WebGPU (Dawn) at its compatibility level, so the floor is
+Dawn's per-backend floor:
+
+| Platform | API tried, in order | Floor |
+|---|---|---|
+| Windows 10/11 (x86-64, ARM64) | Direct3D 12 → Direct3D 11 → Vulkan | Feature level 11_0. Dawn refuses D3D12 on Intel Gen7 (HD 4000/4400/4600, Ivy Bridge/Haswell); the intended fallback for those is Direct3D 11, which is untested on that hardware (see the status table). Vulkan 1.1 with a vendor ICD. |
+| Linux (x86-64, aarch64) | Vulkan | Vulkan 1.1 (Mesa radv/anv/hasvk, NVIDIA proprietary or NVK). |
+| macOS / iOS | Metal | Any Metal GPU; Apple Silicon tested, iOS 14+. |
+| Android | Vulkan | Vulkan 1.1, arm64. |
+
+On Windows that means any Intel Gen8 (Broadwell, 2014) or newer, AMD GCN or
+newer, NVIDIA Fermi or newer runs on Direct3D 12. Direct3D 11 is a
+compatibility path, not a performance one (FXC shaders, no DXC). OpenGL is not
+built. The log records every backend that was skipped and why, then one summary
+line with the adapter and driver.
+
+- Keep `resources/` (and on Windows the DLLs: `webgpu_dawn.dll`,
+  `dxcompiler.dll`, `dxil.dll`, `SDL3.dll`, the VC++ runtime) beside the
+  executable. `dxcompiler.dll` and `dxil.dll` are the D3D12 shader compiler;
+  D3D11 needs no extra DLL, since `d3d11.dll`, `dxgi.dll` and the FXC
+  compiler are Windows components.
+- Settings, memory cards, `music/` and `textures/` live in the `melee-pc`
+  preference directory above.
 
 ## Playing Tag Fighter
 
@@ -188,8 +228,9 @@ first if a mapping below goes stale.
 
 ## Controls
 
-Keyboard: arrows = stick, IJKL = C-stick, X = A, Z = B, C = X, V = Y, Q/E = L/R,
-Tab = Z, Enter = Start, TFGH = D-pad. Gamepads work through SDL.
+Keyboard: arrows or WASD = stick, IJKL = C-stick, X = A, Z = B, C = X, V = Y,
+Q/E = L/R, Tab = Z, Enter = Start, TFGH = D-pad. Gamepads work through SDL; an
+official GameCube adapter is read directly instead (see the status table).
 
 | | Keyboard | Gamepad |
 |---|---|---|
@@ -223,18 +264,25 @@ per-device `.controller` files; everything else shares `launcher.cfg`.
 
 | Variable | Effect |
 |---|---|
-| `MELEE_SEED=<n>` | Deterministic RNG for the attract demo. |
-| `MELEE_HEAP_CHECK=1` | Canaries on every heap allocation, checked each frame; aborts at the first stomp. |
-| `MELEE_FPS=1` | Print frame rate once a second. |
-| `MELEE_AUDIO_DUMP=<file>` | Also write the mix as raw f32 stereo 32 kHz. |
+| `MELEE_BACKEND=<name>` | Pin the graphics backend (`vulkan`, `d3d12`, `d3d11`, `metal`, ...) instead of the platform's preferred order; an unknown name lists the valid ones. |
+| `MELEE_VSYNC=0\|1` | Override the saved VSync preference. |
+| `MELEE_LOG_FILE=<path>` | Write the log to a file (default `melee-pc.log` beside `melee.exe` on Windows; empty disables). |
 | `MELEE_WINDOW_TITLE=<t>` | Window title. |
+| `MELEE_FILES_DIR=<dir>` | Loose-file overlay: files here (or in `./files/`) replace the disc's. |
+| `MELEE_CACHE_MAX_MB=<n>` | In-memory archive cache budget (default picked from installed RAM). |
+| `MELEE_PREWARM=0` | Skip the background asset pre-warm after boot. |
+| `MELEE_FAST_FADES=1` | Clamp scene fade delays. |
+| `MELEE_PIPELINE_JOBS=<n>` | Background shader-pipeline compile threads (default half the hardware threads, 1..8). |
+| `MELEE_UCF=1` | Universal Controller Fix (UCF 0.8x dashback and shield-drop rules); overrides the `ucf` launcher.cfg pref. |
+| `MELEE_GC_ADAPTER=0` | Hand the GameCube adapter (WUP-028) back to SDL's gamepad driver instead of reading it raw. |
 | `--no-card` | Boot without a memory card. |
 | `--dvd <image>` | Explicit form of the positional disc argument. |
+| `--version` | Print the build version and exit. |
 
 Diagnostics are off by default and cost nothing when unset. They measure or
-suppress only; none of them fixes anything. See
-[the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md#environment-variables)
-for the full rendering/audio diagnostic variable list.
+suppress only; none of them fixes anything. Diagnostic knobs (`MELEE_DEBUG`,
+`MELEE_FPS`, `MELEE_HEAP_CHECK`, the `AURORA_*` draw filters, ...) are listed
+in [docs/debugging.md](docs/debugging.md#diagnostic-environment-variables).
 
 ## Contributing & Coding Style
 
@@ -250,6 +298,21 @@ formatting standards, 64-bit portability rules, and verification procedures. Run
 - `src/pc` - platform layer: main, OS/VI/GX glue, keyboard, audio mixer, THP,
   vertex-array sizing.
 - `extern/aurora` - vendored aurora with local changes.
+
+## Documentation
+
+- [docs/building.md](docs/building.md) - toolchain, packaging, cross-compiling
+  for Windows, Android, iOS and macOS.
+- [docs/testing.md](docs/testing.md) - unit tests, drive/capture tools,
+  port-bug harnesses.
+- [docs/debugging.md](docs/debugging.md) - log files, crash handler, gdb, heap
+  check, diagnostic environment variables.
+- [docs/porting-notes.md](docs/porting-notes.md) - the big-endian data model,
+  LP64 bug classes, PAL support.
+- [docs/architecture.md](docs/architecture.md) - layers, threads, memory map,
+  aurora.
+- [ROADMAP.md](ROADMAP.md) - scope and sequencing of melee-pc's own remaining
+  phases (not the Tag Fighter roadmap above).
 
 For decomp porting notes, dev tools, and coding-style/contributing
 guidelines, see

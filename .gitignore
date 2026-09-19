@@ -1,9 +1,4 @@
-build/
-build-win/
-build-pc/
-build-win-arm64/
-build-ios/
-build-release/
+build*/
 dist/
 build_vanilla/
 iso_build/
@@ -31,6 +26,12 @@ docs/*
 !docs/screenshots/
 !docs/CODING_STYLE.md
 !docs/tag_assist_roster.csv
+!docs/architecture.md
+!docs/building.md
+!docs/debugging.md
+!docs/porting-notes.md
+!docs/testing.md
+!docs/site/
 
 # Claude working notes stay local -- never commit these.
 CLAUDE.md
@@ -51,3 +52,7 @@ platforms/android/release-signing.env
 # Proton/wine leavings from tools/run_proton.sh.
 vkd3d-proton.cache*
 steam_appid.txt
+
+# MELEE_LOG_FILE defaults to this beside the executable on Windows, so a run
+# started from the repo root writes it here.
+melee-pc.log

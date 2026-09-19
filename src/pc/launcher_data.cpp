@@ -28,7 +28,7 @@ static inline int mkstemp(char* tmpl) {
 #include <unistd.h>
 #endif
 
-#if defined(__has_include)
+#if defined(__has_include) && !defined(MELEE_USE_BUILTIN_SHA1)
 #if __has_include(<openssl/evp.h>) && !defined(USE_BCRYPT)
 #define MELEE_USE_OPENSSL 1
 #include <openssl/evp.h>
@@ -61,10 +61,14 @@ DiscInfo inspect_handle(NodHandle* disc) {
     constexpr unsigned char magic[] = {0xc2, 0x33, 0x9f, 0x3d};
     if (std::memcmp(header.gcn_magic, magic, 4) != 0)
         return {false, "Choose a GameCube disc image."};
+    if (std::memcmp(header.game_id, "GALP01", 6) == 0 && header.disc_num == 0)
+        return {true, "Super Smash Bros. Melee / Europe (PAL) / experimental: runs the USA 1.02 "
+                      "game code on PAL data, English (UK) text"};
     if (std::memcmp(header.game_id, "GALE01", 6) != 0) {
         if (std::memcmp(header.game_id, "GAL", 3) == 0)
-            return {
-                false, "This region is not supported. Choose Melee USA revision 2 (NTSC-U 1.02)."};
+            return {false,
+                "This region is not supported. Choose Melee USA revision 2 (NTSC-U 1.02) "
+                "or Europe (PAL)."};
         return {false, "Wrong game. Choose Super Smash Bros. Melee USA revision 2."};
     }
     if (header.disc_version != 2 || header.disc_num != 0)
@@ -254,6 +258,11 @@ Verification verify_disc(
     auto info = inspect_handle(disc.get());
     if (!info.supported)
         return {VerifyState::Error, info.message};
+    NodDiscHeader header{};
+    if (nod_disc_header(disc.get(), &header) == NOD_RESULT_OK &&
+        std::memcmp(header.game_id, "GALP01", 6) == 0)
+        return {
+            VerifyState::Mismatch, "No reference hash for the PAL disc; it will run unverified."};
     // Redump DAT: libretro/libretro-database, metadat/redump/Nintendo - GameCube.dat
     // Super Smash Bros. Melee (USA) (En,Ja) (Rev 2), decoded ISO size 1459978240.
     constexpr uint64_t expected_size = 1459978240;
@@ -327,7 +336,7 @@ Preferences load_preferences(const std::filesystem::path& path) {
                 prefs.filter_mode = value;
         } else if (key == "backend") {
             int value;
-            if (row >> value && value >= 0 && value <= 2)
+            if (row >> value && value >= 0 && value <= 3)
                 prefs.backend = value;
         } else if (key == "msaa") {
             // Only 1x and 4x exist on this renderer; see aurora's clamp.
@@ -344,7 +353,7 @@ Preferences load_preferences(const std::filesystem::path& path) {
             if (row >> value && std::isfinite(value) && value >= 0.75f && value <= 1.5f)
                 prefs.scale = value;
         } else if (key == "check_updates" || key == "custom_textures" || key == "unlock_all" ||
-                   key == "frozen_stadium" || key == "free_camera")
+                   key == "frozen_stadium" || key == "free_camera" || key == "ucf")
         {
             int value;
             if (row >> value && (value == 0 || value == 1)) {
@@ -358,6 +367,8 @@ Preferences load_preferences(const std::filesystem::path& path) {
                     prefs.frozen_stadium = value;
                 else if (key == "free_camera")
                     prefs.free_camera = value;
+                else if (key == "ucf")
+                    prefs.ucf = value;
             }
         } else if (key == "hud_mode") {
             int value;
@@ -390,8 +401,8 @@ bool save_preferences(
          << prefs.filter_mode << "\nbackend " << prefs.backend << "\ncheck_updates "
          << prefs.check_updates << "\ncustom_textures " << prefs.custom_textures << "\nunlock_all "
          << prefs.unlock_all << "\nhud_mode " << prefs.hud_mode << "\nfrozen_stadium "
-         << prefs.frozen_stadium << "\nfree_camera " << prefs.free_camera << "\nmusic_volume "
-         << prefs.music_volume << "\nsfx_volume " << prefs.sfx_volume << '\n';
+         << prefs.frozen_stadium << "\nfree_camera " << prefs.free_camera << "\nucf " << prefs.ucf
+         << "\nmusic_volume " << prefs.music_volume << "\nsfx_volume " << prefs.sfx_volume << '\n';
     auto data = text.str();
     size_t done = 0;
     bool ok = true;

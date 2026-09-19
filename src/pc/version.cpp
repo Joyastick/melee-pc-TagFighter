@@ -4,7 +4,7 @@
 #include <tuple>
 
 #ifndef MELEE_APP_VERSION
-#define MELEE_APP_VERSION "v0.1.7-beta"
+#define MELEE_APP_VERSION "v0.1.8-beta"
 #endif
 
 namespace pc {
@@ -12,6 +12,10 @@ namespace pc {
 const std::string& get_app_version() {
     static const std::string version = MELEE_APP_VERSION;
     return version;
+}
+
+extern "C" const char* pc_app_version() {
+    return get_app_version().c_str();
 }
 
 SemVer SemVer::parse(std::string_view s) {
