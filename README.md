@@ -50,6 +50,11 @@ You need your own disc image. No game data ships here.
   team with no CPU-specific control-handoff code path involved. The assist
   cameo now runs 4 seconds (up from 3) and allows up to 3 tags per call
   (each on its own 20-frame cooldown) instead of one tag ending the cameo.
+- [x] Solo Play's CPU assist behaves passively (idle, no attacking, but
+  still works its way back toward the stage if knocked off) for the whole
+  time it's out on either a tag or a plain call, instead of fighting/
+  taunting like a genuine opponent or, on a plain call, having no AI at
+  all after its scripted move finished.
 
 ### Planned
 
