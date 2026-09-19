@@ -116,7 +116,11 @@ typedef enum MenuKind {
     /* +1F */ MENU_KIND_RECORDS_BONUS = 31,
     /* +20 */ MENU_KIND_RECORDS_MISC = 32,
     /* +21 */ MENU_KIND_MULTI_VS = 33,
-    /* +22 */ MENU_KIND_34 = 34,
+    /* +22 */ MENU_KIND_34 = 34, ///< unused; == the retail table length
+#ifdef TARGET_PC
+    /* PC: VS Mode > Online. Its row is appended to mnmain.c's tables. */
+    MENU_KIND_ONLINE = 34,
+#endif
 } MenuKind;
 
 typedef enum MenuState {
@@ -165,13 +169,23 @@ typedef enum VsMenuSelection {
     SEL_VS_RULES = 3,
     SEL_VS_NAME = 4,
 #ifdef TARGET_PC
+    SEL_VS_ONLINE = 5,
     /// Tag Fighter: jumps into VS mode's CSS with Tag Battle forced on and
     /// all 4 doors pre-opened (see TagAssist_EnterForcedOn). Appended past
-    /// retail's 5 entries, mirroring how melee-pc appends its own PC-only
-    /// menu rows.
-    SEL_VS_TAG_BATTLE = 5,
+    /// melee-pc's own PC-only ONLINE row.
+    SEL_VS_TAG_BATTLE = 6,
 #endif
 } VsMenuSelection;
+
+#ifdef TARGET_PC
+typedef enum OnlineMenuSelection {
+    SEL_ONLINE_LAN = 0,
+    SEL_ONLINE_DIRECT = 1,
+    SEL_ONLINE_RANKED = 2,
+    SEL_ONLINE_UNRANKED = 3,
+    SEL_ONLINE_PROFILE = 4,
+} OnlineMenuSelection;
+#endif
 
 typedef enum SpecialVsMenuSelection {
     SEL_SPECIAL_VS_CAMERA = 0,

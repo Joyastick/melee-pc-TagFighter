@@ -26,6 +26,7 @@ docs/*
 !docs/screenshots/
 !docs/CODING_STYLE.md
 !docs/tag_assist_roster.csv
+!docs/netcode-plan.md
 !docs/architecture.md
 !docs/building.md
 !docs/debugging.md
@@ -52,6 +53,9 @@ platforms/android/release-signing.env
 # Proton/wine leavings from tools/run_proton.sh.
 vkd3d-proton.cache*
 steam_appid.txt
+
+# Agent working notes from the netcode batch stay local.
+local/
 
 # MELEE_LOG_FILE defaults to this beside the executable on Windows, so a run
 # started from the repo root writes it here.
