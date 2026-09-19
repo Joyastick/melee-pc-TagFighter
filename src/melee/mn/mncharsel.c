@@ -97,6 +97,14 @@ static u8 mnCharSel_804D6CF7;
 static u8 mnCharSel_804D6CF8;
 static s8 mnCharSel_804D6CF9;
 
+#ifdef TARGET_PC
+/// Latched once at CSS entry from TagAssist_ConsumeAutoPopulate -- read
+/// both by the door-open loop below (p_kind/team/is_teams) and, once the
+/// per-door jobjs it needs exist, by the random-character pass right after
+/// mnCharSel_802640A0() returns.
+static bool sTagAutoPopulate = false;
+#endif
+
 /// Can't be enum bc float, but reused values
 #define ICONROWHT_TOP_TOP 20.0F
 #define ICONROWHT_MID_TOP 13.0F
@@ -3023,28 +3031,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                     case VS_LIGHTNING:
                     case VS_SLOWMO:
                         cursor->x8 = 1;
+#ifdef TARGET_PC
+                        /* Entered via the main menu's "TAG BATTLE" entry:
+                         * lock this hotspot so a player can't flip back to
+                         * FFA/regular Team Battle out from under the doors
+                         * this already opened as a 2v2 preset. There's no
+                         * Tag Battle toggle here anymore either way -- the
+                         * main menu entry is the only way in. */
+                        if ((trigger & HSD_PAD_A) && !sTagAutoPopulate) {
+#else
                         if (trigger & HSD_PAD_A) {
+#endif
                             sfxMove();
-                            if (buttons & HSD_PAD_Z) {
-                                // Hold Z on the Team Battle hotspot to flip
-                                // Tag Battle instead -- there's no dedicated
-                                // CSS art/hotspot for it yet (see
-                                // tag_assist_notes.md's CSS-integration TODO),
-                                // so it rides on the same toggle a player
-                                // already uses for is_teams.
-                                TagAssist_ToggleTagBattle();
-                                // Tag Battle needs the real Red/Blue/Green
-                                // team-color picker, which retail only shows
-                                // when is_teams is on -- couple the two
-                                // directly rather than building a separate
-                                // selection UI. Turning Tag Battle off drops
-                                // back to FFA the same way.
-                                mnCharSel_804D6CB0->vs.start.rules.is_teams =
-                                    TagAssist_IsTagBattleOn() ? 1 : 0;
-                                mnCharSel_8025EE8C(
-                                    mnCharSel_804D6CB0->match_type);
-                                break;
-                            }
                             {
                                 u8* is_teams = &mnCharSel_804D6CB0->vs.start
                                                     .rules.is_teams;
@@ -3136,7 +3134,37 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             cy4 > -4.600000095367432)
                                         {
                                             cursor->x10 = -2.2f;
-                                            {
+                                            if (TagAssist_IsTagBattleOn()) {
+                                                // Tag Battle always needs
+                                                // exactly 4 players (2v2) --
+                                                // never let a door close;
+                                                // just flip between CPU and
+                                                // Player, and only land on
+                                                // Player when a real
+                                                // controller is on this port.
+                                                u8 kind = mnCharSel_803F0DFC
+                                                              .doors[door]
+                                                              .p_kind;
+                                                if (kind == 0) {
+                                                    mnCharSel_803F0DFC
+                                                        .doors[door]
+                                                        .p_kind = 1;
+                                                } else if (HSD_PadCopyStatus
+                                                               [(u8) door]
+                                                                   .err == 0)
+                                                {
+                                                    mnCharSel_803F0DFC
+                                                        .doors[door]
+                                                        .p_kind = 0;
+                                                } else if (kind == 3) {
+                                                    mnCharSel_803F0DFC
+                                                        .doors[door]
+                                                        .p_kind = 1;
+                                                }
+                                                // kind == 1 (CPU) with no
+                                                // controller on this port:
+                                                // no-op, stays CPU.
+                                            } else {
                                                 u8 new_kind;
                                                 new_kind = mnCharSel_803F0DFC
                                                                .doors[door]
@@ -3297,26 +3325,6 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             }
                                         }
                                     }
-                                }
-                            }
-                        }
-
-                        if (TagAssist_IsTagBattleOn() && (trigger & HSD_PAD_Z))
-                        {
-                            // Z on a door's team button claims "point" for
-                            // that player's team -- mirrors cycleTeam's own
-                            // hitbox above, but doesn't touch the color.
-                            for (door = 0; door < (s32) mnCharSel_804D6CF5;
-                                 door++)
-                            {
-                                CSSDoor* zdp = &mnCharSel_803F0DFC.doors[door];
-                                if (zdp->p_kind == 3 || zdp->team >= 2) {
-                                    continue; // empty door, or not Red/Blue
-                                }
-                                if (cursorOverTeamBtn(cursor, zdp)) {
-                                    TagAssist_SetExplicitPoint(zdp->team,
-                                                                door);
-                                    sfxMove();
                                 }
                             }
                         }
@@ -3504,6 +3512,25 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                if (TagAssist_IsTagBattleOn() && (trigger & HSD_PAD_Z)) {
+                    // Z on a door's team button claims "point" for that
+                    // player's team -- mirrors cycleTeam's own hitbox
+                    // above, but doesn't touch the color. Deliberately a
+                    // sibling of the a_press2/HSD_PAD_B chain above (not
+                    // nested inside it) so Z alone triggers this, without
+                    // also needing A held down the same frame.
+                    for (door = 0; door < (s32) mnCharSel_804D6CF5; door++) {
+                        CSSDoor* zdp = &mnCharSel_803F0DFC.doors[door];
+                        if (zdp->p_kind == 3 || zdp->team >= 2) {
+                            continue; // empty door, or not Red/Blue
+                        }
+                        if (cursorOverTeamBtn(cursor, zdp)) {
+                            TagAssist_SetExplicitPoint(zdp->team, door);
+                            sfxMove();
                         }
                     }
                 }
@@ -5539,6 +5566,29 @@ s32 mnCharSel_802640A0(void)
                 mnCharSel_804D6CB0->vs.start.players[i].slot_type;
             mnCharSel_803F0DFC.doors[i].costume =
                 mnCharSel_804D6CB0->vs.start.players[i].color;
+#ifdef TARGET_PC
+            /* Entered via the main menu's "TAG BATTLE" entry
+             * (TagAssist_EnterForcedOn, consumed into sTagAutoPopulate
+             * above): open all 4 doors immediately instead of making every
+             * player press Start on their own door -- port 0/2 on Red, 1/3
+             * on Blue, Human if that port's controller is plugged in, CPU
+             * otherwise. */
+            if (sTagAutoPopulate) {
+                mnCharSel_803F0DFC.doors[i].p_kind =
+                    HSD_PadMasterStatus[i].err == 0 ? Gm_PKind_Human
+                                                     : Gm_PKind_Cpu;
+                mnCharSel_803F0DFC.doors[i].team = (u8) (i & 1);
+                TagAssist_CssSyncPortTeam(i, mnCharSel_803F0DFC.doors[i].team);
+                // The line above only sets the CSS's own UI-side door state.
+                // Match start reads vs.start.players[].slot_type (this is
+                // what the normal per-frame door-toggle handler writes back
+                // on every manual click) -- without this, CSS shows open
+                // doors but the actual game mode still sees every player as
+                // closed and spawns no one.
+                mnCharSel_804D6CB0->vs.start.players[i].slot_type =
+                    mnCharSel_803F0DFC.doors[i].p_kind;
+            }
+#endif
             mnCharSel_803F0DFC.doors[i].p_kind_prev = 3;
             mnCharSel_803F0DFC.doors[i].slideranim_timer = 0;
             mnCharSel_803F0DFC.doors[i].dooranim_timer = 0;
@@ -5602,6 +5652,27 @@ void mnCharSel_Scene_OnEnter(void* arg0)
     lbCardGame_LoadArchive(0);
     mnCharSel_804D6CB0 = (CSSData*) arg0;
 
+#ifdef TARGET_PC
+    // TagAssist_ConsumeAutoPopulate is one-shot: true only on the CSS entry
+    // that immediately follows the main menu's "TAG BATTLE" selection, false
+    // on every later re-entry (e.g. a rematch from the Results screen) --
+    // which is exactly right for auto-populating doors (only do it once,
+    // never stomp choices already made), but is_teams needs forcing on
+    // every one of THOSE re-entries too, not just the first, so check
+    // TagAssist_IsTagBattleOn (which stays on for the whole session) rather
+    // than the one-shot flag here. Turning Tag Battle off/on at all only
+    // happens from the main menu (TagAssist_EnterForcedOn / LeaveTagBattle),
+    // never here -- CSS itself no longer has any say in it.
+    sTagAutoPopulate = TagAssist_ConsumeAutoPopulate();
+    if (TagAssist_IsTagBattleOn()) {
+        // Tag Battle rides on Team Battle's own Red/Blue/Green picker,
+        // which the CSS only shows/lets you cycle when is_teams is on.
+        // Entering straight from the main menu skips the input that would
+        // normally set it, so force it here instead.
+        mnCharSel_804D6CB0->vs.start.rules.is_teams = 1;
+    }
+#endif
+
     mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
 
     for (mnCharSel_804D6CF8 = 0; mnCharSel_804D6CF8 < 0x78;
@@ -5645,6 +5716,26 @@ void mnCharSel_Scene_OnEnter(void* arg0)
     }
     mnCharSel_804D6CF4 = 0;
     mnCharSel_802640A0();
+
+#ifdef TARGET_PC
+    if (sTagAutoPopulate) {
+        // Opening a door (above) doesn't pick a character for it -- without
+        // one, sel_icon stays at its unselected sentinel and the CSS never
+        // shows Start (see the sel_icon >= 0x19 check in the per-frame
+        // update), and if it somehow did start anyway, the fighter roster
+        // would be missing whoever wasn't picked. Auto-populate is meant to
+        // be a ready-to-go preset, so give every opened door the same random
+        // valid pick a player gets for a freshly-opened CPU door
+        // (mnCharSel_8025FB50) -- the mnCharSel_804A0BD0 cursor objects it
+        // needs only exist after mnCharSel_802640A0() has run.
+        int port;
+        for (port = 0; port < 4; port++) {
+            if (mnCharSel_803F0DFC.doors[port].p_kind != 3) {
+                mnCharSel_8025FB50((u8) port, 1);
+            }
+        }
+    }
+#endif
 }
 
 void mnCharSel_Scene_OnFrame(void)

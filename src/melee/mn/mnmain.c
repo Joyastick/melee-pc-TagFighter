@@ -36,6 +36,7 @@
 #include <melee/lb/lbcardnew.h>
 #include <melee/lb/lblanguage.h>
 #include <melee/lb/lbmthp.h>
+#include <melee/mod/tag_assist.h>
 #include <melee/sc/types.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/displayfunc.h>
@@ -308,6 +309,9 @@ static AnimLoopSettings mn_803EB480 = { 3500, 3549, 3520 };
 static AnimLoopSettings mn_803EB48C[] = {
     { 700, 749, 720 }, { 750, 799, 770 }, { 800, 849, 820 },
     { 850, 899, 870 }, { 900, 949, 920 },
+#ifdef TARGET_PC
+    { 700, 749, 720 }, /* SEL_VS_TAG_BATTLE: reuse the Melee preview */
+#endif
 };
 
 static AnimLoopSettings mn_803EB4C8[] = {
@@ -394,7 +398,11 @@ MenuKindData mn_803EB6B0[0x22] = {
         mn_803EB48C,
         40,
         mn_803EB678,
+#ifdef TARGET_PC
+        0x06, /* + SEL_VS_TAG_BATTLE */
+#else
         0x05,
+#endif
         mn_8022D594,
     },
     {
@@ -768,6 +776,24 @@ static void mn_80229A7C(MainMenuData* data, MenuKind menu_kind, int selection)
         data->description = NULL;
     }
     sis_idx = mn_803EB6B0[menu_kind].description_indices;
+#ifdef TARGET_PC
+    if (menu_kind == MENU_KIND_VS && selection == SEL_VS_TAG_BATTLE) {
+        /* ponytail: literal text; SdMenu has no SIS string for this entry. */
+        text = HSD_SisLib_803A6754(0, mn_804D6BB4);
+        data->description = text;
+        text->pos_x = -9.5f;
+        text->pos_y = 9.1f;
+        text->pos_z = 17.0f;
+        {
+            int e = HSD_SisLib_803A6B98(
+                text, 0.0f, 0.0f,
+                "2v2: each side calls in an assist mid-match instead of "
+                "losing a stock per KO. All 4 slots start open.");
+            HSD_SisLib_803A7548(text, e, 0.4f, 0.4f);
+        }
+        return;
+    }
+#endif
     if (sis_idx != 0) {
         text = HSD_SisLib_803A5ACC(0, mn_804D6BB4, -9.5f, 9.1f, 17.0f,
                                    364.68332f, 38.38772f);
@@ -782,6 +808,46 @@ static inline void mn_80229A7C_dontinline(void* arg0, int arg1, int arg2)
 {
     mn_80229A7C(arg0, arg1, arg2);
 }
+
+#ifdef TARGET_PC
+/* ponytail: the VS submenu's Tag Battle label is SIS text drawn over the
+ * 6th slot (its matanim label frame is blank) every frame; a real texture
+ * comes with the replacement pack. Freed with the description on menu
+ * slide-out. */
+static int s_tag_battle_entry;
+
+static void mn_UpdateTagBattleLabel(MainMenuData* data, bool alive)
+{
+    static const GXColor hovered = { 0xFF, 0xFF, 0xFF, 0xFF };
+    static const GXColor idle = { 0x96, 0x96, 0xB4, 0xFF };
+    Vec3 pos;
+
+    if (!alive || data->menu_kind != MENU_KIND_VS) {
+        if (data->tag_battle_label != NULL) {
+            HSD_SisLib_803A5CC4(data->tag_battle_label);
+            data->tag_battle_label = NULL;
+        }
+        return;
+    }
+    if (data->tag_battle_label == NULL) {
+        HSD_Text* text = HSD_SisLib_803A6754(0, mn_804D6BB4);
+        data->tag_battle_label = text;
+        text->default_alignment = 1;
+        text->font_size.x = 0.013f;
+        text->font_size.y = 0.013f;
+        s_tag_battle_entry = HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "TAG BATTLE");
+    }
+    lb_8000B1CC(data->tree[mn_803EAE68[SEL_VS_TAG_BATTLE]], NULL, &pos);
+    data->tag_battle_label->pos_x = pos.x;
+    data->tag_battle_label->pos_y = -pos.y;
+    data->tag_battle_label->pos_z = pos.z;
+    HSD_SisLib_803A74F0(data->tag_battle_label, s_tag_battle_entry,
+                        (GXColor*) (mn_804A04F0.hovered_selection ==
+                                            SEL_VS_TAG_BATTLE
+                                        ? &hovered
+                                        : &idle));
+}
+#endif
 
 StaticModelDesc MenMainBack_Top;
 
@@ -1359,6 +1425,11 @@ void fn_8022AFEC(HSD_GObj* gp)
         final_data->description->hidden = 0;
         break;
     }
+#ifdef TARGET_PC
+    mn_UpdateTagBattleLabel(final_data,
+                            final_data->state != MENU_STATE_EXIT_FROM &&
+                                final_data->state != MENU_STATE_ENTER_FROM);
+#endif
     if (var_r26 != 0) {
         data->menu_kind = mn_804A04F0.cur_menu;
     }
@@ -1437,6 +1508,9 @@ HSD_GObj* mn_8022B3A0(u8 state)
     user_data->hovered_selection = mn_804A04F0.hovered_selection;
     user_data->state = state;
     user_data->description = NULL;
+#ifdef TARGET_PC
+    user_data->tag_battle_label = NULL;
+#endif
     for (idx = 0; idx < (int) ARRAY_SIZE(user_data->tree); idx++) {
         lb_80011E24(root_jobj, &user_data->tree[idx], idx, -1);
     }
@@ -2486,18 +2560,21 @@ void mn_8022D594(HSD_GObj* gp)
         switch (mn_804A04F0.hovered_selection) {
         case SEL_VS_MELEE:
             sfxForward();
+            TagAssist_LeaveTagBattle();
             data = gm_GetCurrentSceneExitData();
             data->pending_mode = GM_VS;
             gm_801A4B60();
             break;
         case SEL_VS_TOURNAMENT:
             sfxForward();
+            TagAssist_LeaveTagBattle();
             data = gm_GetCurrentSceneExitData();
             data->pending_mode = GM_TOURNAMENT;
             gm_801A4B60();
             break;
         case SEL_VS_SPECIAL:
             sfxForward();
+            TagAssist_LeaveTagBattle();
             mn_804D6BC8.cooldown = 5;
             mn_804A04F0.prev_menu = mn_804A04F0.cur_menu;
             mn_804A04F0.cur_menu = MENU_KIND_SPECIAL;
@@ -2521,6 +2598,15 @@ void mn_8022D594(HSD_GObj* gp)
             mnName_8023AC40();
             HSD_GObjFree(gp);
             break;
+#ifdef TARGET_PC
+        case SEL_VS_TAG_BATTLE:
+            sfxForward();
+            TagAssist_EnterForcedOn();
+            data = gm_GetCurrentSceneExitData();
+            data->pending_mode = GM_VS;
+            gm_801A4B60();
+            break;
+#endif
         }
     } else if (buttons & MenuInput_Back) {
         sfxBack();
@@ -2539,13 +2625,16 @@ void mn_8022D594(HSD_GObj* gp)
     } else if (buttons & MenuInput_Up) {
         sfxMove();
         if ((VsMenuSelection) mn_804A04F0.hovered_selection == SEL_VS_MELEE) {
-            mn_804A04F0.hovered_selection = SEL_VS_NAME;
+            mn_804A04F0.hovered_selection =
+                mn_803EB6B0[MENU_KIND_VS].selection_count - 1;
         } else {
             mn_804A04F0.hovered_selection--;
         }
     } else if (buttons & MenuInput_Down) {
         sfxMove();
-        if ((VsMenuSelection) mn_804A04F0.hovered_selection == SEL_VS_NAME) {
+        if (mn_804A04F0.hovered_selection ==
+            mn_803EB6B0[MENU_KIND_VS].selection_count - 1)
+        {
             mn_804A04F0.hovered_selection = SEL_VS_MELEE;
         } else {
             mn_804A04F0.hovered_selection++;

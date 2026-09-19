@@ -35,15 +35,30 @@
 #include <melee/ft/forward.h>
 #include <melee/pl/forward.h>
 
-/// Whether "Tag Battle" is currently toggled on from the CSS rules screen
-/// (see TagAssist_ToggleTagBattle). Off by default, so an un-toggled match
-/// plays as ordinary Melee -- every other TagAssist_* hook below no-ops
-/// while this is false.
+/// Whether "Tag Battle" is currently on (see TagAssist_EnterForcedOn). Off
+/// by default, so a plain VS Mode CSS visit plays as ordinary Melee --
+/// every other TagAssist_* hook below no-ops while this is false. The only
+/// way in is the main menu's "TAG BATTLE" entry; there's no in-CSS toggle.
 bool TagAssist_IsTagBattleOn(void);
 
-/// Flips the Tag Battle toggle. Call from the CSS rules-screen input
-/// handler, mirroring how Team Battle's own is_teams flag is flipped.
-void TagAssist_ToggleTagBattle(void);
+/// Turns Tag Battle on and arms TagAssist_ConsumeAutoPopulate for the CSS
+/// setup that follows. Call from the main menu's "TAG BATTLE" entry, before
+/// jumping into VS mode's CSS -- goes straight to a ready 2v2 instead of the
+/// usual press-Start-per-door setup.
+void TagAssist_EnterForcedOn(void);
+
+/// Turns Tag Battle back off. Call once at CSS entry for every path that
+/// ISN'T the main menu's "TAG BATTLE" entry, so a stale on-flag from an
+/// earlier match doesn't leak into a plain VS Mode CSS visit -- CSS itself
+/// has no toggle to turn this off anymore.
+void TagAssist_LeaveTagBattle(void);
+
+/// One-shot: true the first time this is called after TagAssist_EnterForcedOn,
+/// false every time after (until the next TagAssist_EnterForcedOn). The CSS
+/// setup code calls this exactly once, right as it opens the doors, so
+/// backing out to the rules screen and back into CSS afterward doesn't keep
+/// re-stomping choices the player already made.
+bool TagAssist_ConsumeAutoPopulate(void);
 
 /// Mirrors a CSS door's currently-selected team color (0 = Red, 1 = Blue,
 /// 2 = Green) into this module, so the real gameplay pairing (who's on

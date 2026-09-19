@@ -64,12 +64,19 @@ is GPL-3.0-or-later. Details under [License](#license).
   time it's out on either a tag or a plain call, instead of fighting/
   taunting like a genuine opponent or, on a plain call, having no AI at
   all after its scripted move finished.
+- [x] Dedicated **TAG BATTLE** entry in the main menu's VS submenu, replacing
+  the old CSS-only Z+A hotkey -- jumps straight into character select with
+  all 4 doors already open and paired 2v2 (Red/Blue by port, Human or CPU
+  by controller presence), doors locked to CPU/Player so the mode can't
+  drop below 4 players, and the VS Mode/Team Battle/Tag Battle switch
+  locked for the rest of that CSS session.
 
 ### Planned
 
-- [ ] Dedicated Tag Battle art/UI in the character-select screen (currently
-  reuses Team Battle's own banner and team-color icons, since there's no
-  Tag Battle-specific art yet).
+- [ ] Dedicated Tag Battle art in the character-select screen itself
+  (currently reuses Team Battle's own banner and team-color icons, since
+  there's no Tag Battle-specific CSS art yet -- only the main menu entry
+  has its own label).
 - [ ] Online play, built on melee-pc's own online implementation once that
   lands upstream.
 
@@ -155,22 +162,26 @@ line with the adapter and driver.
 
 ## Playing Tag Fighter
 
-Tag Battle is off by default, so a normal 4-player VS (or Team Battle) match
-plays exactly like vanilla Melee.
+Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
+Battle match plays exactly like vanilla Melee and is unaffected by any of
+this.
 
-**Turn Tag Battle on**: in the character-select rules corner (top-left, same
-hotspot as Team Battle), hold **Z** and press **A**. The "TEAM BATTLE" banner
-starts flashing to confirm it's on — press the same combo again to turn it
-back off. This also forces Team Battle on, since Tag Battle reuses its
-Red/Blue/Green team-color picker.
+**Start a Tag Battle**: Main Menu → VS Mode → **TAG BATTLE** (the entry below
+Name Entry). This drops straight into character select with all 4 doors
+already open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue,
+each Human if a controller is plugged into that port or CPU otherwise — so
+you can go straight to picking characters instead of opening doors one at a
+time. Switching to a different VS Mode entry (Melee, Tournament, Special
+Melee) leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
 
-**Pick your team**: with Tag Battle on, each door's team-color button only
-cycles between Red and Blue (Green is unavailable — a 2v2 mode has no room
-for a third team). Whoever picks Red plays together, whoever picks Blue plays
-together — team pairing is no longer tied to which port you're in. A team is
-**Solo Play** if only one of its two doors is human (the other stays CPU),
-or **Duo Play** if both are human, sharing the team on their own
-controllers.
+**Pick your team**: each door's team-color button cycles between Red and Blue
+only (Green is unavailable — a 2v2 mode has no room for a third team), and a
+door can't be closed either — its toggle just flips between CPU and Player
+(Player only if a controller is on that port). Whoever picks Red plays
+together, whoever picks Blue plays together — team pairing isn't tied to
+which port you're in. A team is **Solo Play** if only one of its two doors is
+human (the other stays CPU), or **Duo Play** if both are human, sharing the
+team on their own controllers.
 
 **Pick your point character**: hover a door's team-color button and press
 **Z**. That player becomes their team's point (human-controlled) character,

@@ -337,6 +337,10 @@ typedef struct TeamState {
 static TeamState sTeams[2];
 static bool sTagBattleOn = false;
 
+/// Armed by TagAssist_EnterForcedOn, consumed once by the CSS setup code
+/// (see TagAssist_ConsumeAutoPopulate).
+static bool sAutoPopulatePending = false;
+
 /// Mirrors each port's CSS-selected team color (0 = Red, 1 = Blue, 2 =
 /// Green) once per CSS frame (TagAssist_CssSyncPortTeam) -- frozen at
 /// whatever it last was once the match begins and CSS's own per-frame
@@ -1662,17 +1666,29 @@ bool TagAssist_IsTagBattleOn(void)
     return sTagBattleOn;
 }
 
-void TagAssist_ToggleTagBattle(void)
+void TagAssist_EnterForcedOn(void)
 {
-    sTagBattleOn = !sTagBattleOn;
-    if (!sTagBattleOn) {
-        // Leaving Tag Battle: drop any explicit point choices so a later
-        // re-toggle starts from the same lower-port-is-point default as a
-        // fresh CSS entry, rather than resurrecting a stale choice from a
-        // completely different set of doors/colors.
-        sExplicitPointPort[0] = -1;
-        sExplicitPointPort[1] = -1;
-    }
+    sTagBattleOn = true;
+    sAutoPopulatePending = true;
+}
+
+void TagAssist_LeaveTagBattle(void)
+{
+    sTagBattleOn = false;
+    sAutoPopulatePending = false;
+    // Drop any explicit point choices so a later Tag Battle entry starts
+    // from the same lower-port-is-point default as a fresh CSS entry,
+    // rather than resurrecting a stale choice from a completely different
+    // set of doors/colors.
+    sExplicitPointPort[0] = -1;
+    sExplicitPointPort[1] = -1;
+}
+
+bool TagAssist_ConsumeAutoPopulate(void)
+{
+    bool pending = sAutoPopulatePending;
+    sAutoPopulatePending = false;
+    return pending;
 }
 
 void TagAssist_CssSyncPortTeam(int port, u8 team_color)

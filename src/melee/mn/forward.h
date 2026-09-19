@@ -164,6 +164,13 @@ typedef enum VsMenuSelection {
     SEL_VS_SPECIAL = 2,
     SEL_VS_RULES = 3,
     SEL_VS_NAME = 4,
+#ifdef TARGET_PC
+    /// Tag Fighter: jumps into VS mode's CSS with Tag Battle forced on and
+    /// all 4 doors pre-opened (see TagAssist_EnterForcedOn). Appended past
+    /// retail's 5 entries, mirroring how melee-pc appends its own PC-only
+    /// menu rows.
+    SEL_VS_TAG_BATTLE = 5,
+#endif
 } VsMenuSelection;
 
 typedef enum SpecialVsMenuSelection {
