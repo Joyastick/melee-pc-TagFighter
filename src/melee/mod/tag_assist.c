@@ -964,6 +964,23 @@ static void TagAssist_TryCallAssist(TeamState* team)
     }
     enterFn(team->assist);
 
+    // Give a genuinely CPU-controlled assist its idle "Standing" AI back
+    // (see TagAssist_ApplyControlRoles's own comment on CpuKind_0) for the
+    // rest of this cameo -- TagAssist_Unbench itself never touches
+    // cpu.kind, so without this it stays at the CpuKind_5
+    // TagAssist_SetBenched left it at while frozen, ftCo_IsCpuControlled
+    // stays false, and Fighter_8006ABA0 never runs the AI think-call at
+    // all: the assist finishes its scripted move and then just stands
+    // there inert, not even trying to get back to the stage if knocked
+    // off. Confirmed via playtesting -- only mattered for a plain call,
+    // since TagAssist_TryTag's own ApplyControlRoles call already fixed
+    // this for the tag path. A no-op for a real second player (Duo Play):
+    // Player_8003248C reads their genuine Human pkind, so this branch
+    // never touches their cpu.kind at all.
+    if (Player_8003248C(assistFp->player_id, assistFp->is_sub_fighter) == Gm_PKind_Cpu) {
+        assistFp->cpu.kind = CpuKind_0;
+    }
+
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
@@ -1268,7 +1285,21 @@ static void TagAssist_ApplyControlRoles(TeamState* team, Fighter_GObj* newPoint,
     newPointFp->input.held_buttons[2] = newPointFp->input.held_buttons[0];
 
     Player_SetSlottype(newAssistFp->player_id, Gm_PKind_Cpu);
-    newAssistFp->cpu.kind = team->saved_cpu_kind;
+    // CpuKind_0 instead of team->saved_cpu_kind: newAssistFp just got
+    // tagged out of a Solo Play team's point role, and the real combat AI
+    // profile (saved_cpu_kind) made it actively attack/taunt like a
+    // genuine opponent during that window -- confirmed via playtesting.
+    // CpuKind_0 is Training Mode's own idle "Standing" dummy behavior
+    // (ftCo_800B2AFC's CpuKind_0 case in ftCo_0A01.c -- also what
+    // gm_801891F4_SetCpuType(0) forces while Training's own menu is
+    // paused): it never acquires an enemy target or attacks at all, it
+    // only walks toward the floor beneath its own current position, which
+    // is enough to have it try to get back under itself (and so back
+    // toward the stage) if knocked off rather than standing frozen in
+    // midair. team->saved_cpu_kind is kept around for
+    // TagAssist_PromoteAssistToPoint, which still wants the REAL AI
+    // profile once a fighter permanently becomes the team's only point.
+    newAssistFp->cpu.kind = CpuKind_0;
     // Restore newAssistFp's own ORIGINAL pad port too, not just its pkind/
     // cpu.kind -- if this fighter has previously played point, its
     // x618_player_id is still left pointed at team->human_pad_port from
