@@ -878,6 +878,7 @@ src/melee/mn/mnsoundtest.c
 src/melee/mn/mnstagesel.c
 src/melee/mn/mnstagesw.c
 src/melee/mn/mnvibration.c
+src/melee/mod/tag_assist.c
 src/melee/mp/mpcoll.c
 src/melee/mp/mpisland.c
 src/melee/mp/mplib.c
