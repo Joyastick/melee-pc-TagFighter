@@ -1,6 +1,6 @@
 # MeleeXKO - Melee Tag Fighter
 
-**Alpha, for testing only.** A gameplay mod for Super Smash Bros. Melee
+**Now in Beta!** A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
 a partner "assist" fighter mid-match, similar to *Marvel vs. Capcom* switching
 or *2XKO*-style assist calls, instead of Melee's normal
