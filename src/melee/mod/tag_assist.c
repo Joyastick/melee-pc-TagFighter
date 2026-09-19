@@ -1158,6 +1158,15 @@ static void TagAssist_InitControlRoles(TeamState* team)
     if (team->is_cpu_team) {
         team->human_pad_port = pointFp->x618_player_id;
         team->cpu_pad_port = assistFp->x618_player_id;
+    }
+    if (assistIsCpu) {
+        // Captured whenever the assist is CPU at all -- not just for a
+        // human+CPU pairing -- since a full CPU+CPU team's assist also
+        // gets its cpu.kind forced to CpuKind_5 by every ordinary
+        // TagAssist_SetBenched call, and needs its own real profile back
+        // once TagAssist_PromoteAssistToPoint makes it point (see that
+        // function's own restoration for the !is_cpu_team case below).
+        //
         // CpuKind_5 is both a real, ordinary AI profile AND the sentinel
         // TagAssist_ApplyControlRoles/TagAssist_SetBenched use elsewhere to
         // mean "not really CPU-controlled" (ftCo_IsCpuControlled special-
@@ -1381,6 +1390,25 @@ static void TagAssist_PromoteAssistToPoint(TeamState* team)
     // own player_id's pkind/cpu.kind back to "CPU" here is either inert
     // (never revived) or exactly the state a revived assist needs anyway.
     TagAssist_ApplyControlRoles(team, newPoint, oldPoint);
+
+    // TagAssist_ApplyControlRoles no-ops for !is_cpu_team -- correct for a
+    // Duo (human+human) team (nothing to redirect either way), but wrong
+    // for a full CPU+CPU team: newPointFp is real CPU-controlled (pkind
+    // Gm_PKind_Cpu) but every TagAssist_SetBenched call it's ever gone
+    // through (including its very first, pre-match one) forced its own
+    // cpu.kind to CpuKind_5 -- the same sentinel ftCo_IsCpuControlled
+    // treats as "not really CPU-controlled," which skips
+    // Fighter_8006ABA0's CPU AI think-call entirely. Nothing else ever
+    // restores it for a team with no human in it, so without this the
+    // newly-promoted point just stands there inert until a real death and
+    // respawn happens to re-derive its cpu.kind through some other path.
+    // Confirmed root cause via playtesting a CPU+CPU Tag Battle match.
+    if (!team->is_cpu_team &&
+        Player_8003248C(newPointFp->player_id, newPointFp->is_sub_fighter) == Gm_PKind_Cpu &&
+        newPointFp->cpu.kind == CpuKind_5)
+    {
+        newPointFp->cpu.kind = team->saved_cpu_kind;
+    }
 
     team->point = newPoint;
     team->assist = NULL;
