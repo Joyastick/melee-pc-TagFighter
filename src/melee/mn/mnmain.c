@@ -381,7 +381,11 @@ static AnimLoopSettings mn_803EB5E8[] = {
 
 static u16 mn_803EB660[] = { 0x81, 0x82, 0x83, 0x84, 0x85, 0x00 };
 static u16 mn_803EB66C[] = { 0x86, 0x87, 0x88, 0x89, 0x8A, 0x00 };
-static u16 mn_803EB678[] = { 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x00 };
+static u16 mn_803EB678[] = { 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x00,
+#ifdef TARGET_PC
+    0x00, /* SEL_VS_TAG_BATTLE: no label texture, same as SEL_VS_ONLINE */
+#endif
+};
 static u16 mn_803EB684[] = { 0x9A, 0x9B, 0x9C, 0x9D, 0x9D, 0x9E };
 static u16 mn_803EB690[] = { 0x9F, 0xA0, 0xA1, 0xA2, 0xA3, 0x00 };
 
@@ -809,22 +813,6 @@ static void mn_80229A7C(MainMenuData* data, MenuKind menu_kind, int selection)
     }
     sis_idx = mn_803EB6B0[menu_kind].description_indices;
 #ifdef TARGET_PC
-    if (menu_kind == MENU_KIND_VS && selection == SEL_VS_TAG_BATTLE) {
-        /* ponytail: literal text; SdMenu has no SIS string for this entry. */
-        text = HSD_SisLib_803A6754(0, mn_804D6BB4);
-        data->description = text;
-        text->pos_x = -9.5f;
-        text->pos_y = 9.1f;
-        text->pos_z = 17.0f;
-        {
-            int e = HSD_SisLib_803A6B98(
-                text, 0.0f, 0.0f,
-                "2v2: each side calls in an assist mid-match instead of "
-                "losing a stock per KO. All 4 slots start open.");
-            HSD_SisLib_803A7548(text, e, 0.4f, 0.4f);
-        }
-        return;
-    }
     {
         const char* literal = mnOnline_Description(menu_kind, selection);
         if (literal != NULL) {
@@ -859,44 +847,6 @@ static inline void mn_80229A7C_dontinline(void* arg0, int arg1, int arg2)
 }
 
 #ifdef TARGET_PC
-/* ponytail: the VS submenu's Tag Battle label is SIS text drawn over the
- * 7th slot (its matanim label frame is blank) every frame; a real texture
- * comes with the replacement pack. Freed with the description on menu
- * slide-out. */
-static int s_tag_battle_entry;
-
-static void mn_UpdateTagBattleLabel(MainMenuData* data, bool alive)
-{
-    static const GXColor hovered = { 0xFF, 0xFF, 0xFF, 0xFF };
-    static const GXColor idle = { 0x96, 0x96, 0xB4, 0xFF };
-    Vec3 pos;
-
-    if (!alive || data->menu_kind != MENU_KIND_VS) {
-        if (data->tag_battle_label != NULL) {
-            HSD_SisLib_803A5CC4(data->tag_battle_label);
-            data->tag_battle_label = NULL;
-        }
-        return;
-    }
-    if (data->tag_battle_label == NULL) {
-        HSD_Text* text = HSD_SisLib_803A6754(0, mn_804D6BB4);
-        data->tag_battle_label = text;
-        text->default_alignment = 1;
-        text->font_size.x = 0.013f;
-        text->font_size.y = 0.013f;
-        s_tag_battle_entry = HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "TAG BATTLE");
-    }
-    lb_8000B1CC(data->tree[mn_803EAE68[SEL_VS_TAG_BATTLE]], NULL, &pos);
-    data->tag_battle_label->pos_x = pos.x;
-    data->tag_battle_label->pos_y = -pos.y;
-    data->tag_battle_label->pos_z = pos.z;
-    HSD_SisLib_803A74F0(data->tag_battle_label, s_tag_battle_entry,
-                        (GXColor*) (mn_804A04F0.hovered_selection ==
-                                            SEL_VS_TAG_BATTLE
-                                        ? &hovered
-                                        : &idle));
-}
-
 /* ponytail: PC-only entries (mnonline.h) have no label texture. mn_8022B3A0
  * hides their slot's matanim label and this draws SIS text over the slot
  * every frame (the tree animates). Freed with the description on slide-out. */
@@ -1524,9 +1474,6 @@ void fn_8022AFEC(HSD_GObj* gp)
         break;
     }
 #ifdef TARGET_PC
-    mn_UpdateTagBattleLabel(final_data,
-                            final_data->state != MENU_STATE_EXIT_FROM &&
-                                final_data->state != MENU_STATE_ENTER_FROM);
     mn_UpdatePcLabels(final_data,
                       final_data->state != MENU_STATE_EXIT_FROM &&
                           final_data->state != MENU_STATE_ENTER_FROM);
@@ -1610,7 +1557,6 @@ HSD_GObj* mn_8022B3A0(u8 state)
     user_data->state = state;
     user_data->description = NULL;
 #ifdef TARGET_PC
-    user_data->tag_battle_label = NULL;
     for (idx = 0; idx < (int) ARRAY_SIZE(user_data->pc_label); idx++) {
         user_data->pc_label[idx] = NULL;
     }
