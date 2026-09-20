@@ -571,7 +571,7 @@ static TagAssistMoveFn TagAssist_GetAssistMoveEnter(FighterKind kind)
     case Ft_Kind_Mars:
         return ftMs_SpecialN_Enter; // Neutral Special (Shield Breaker)
     case Ft_Kind_Emblem:
-        return ftMs_SpecialHi_Enter; // Up Special (Blazer) -- no fp->kind branch, identical for both
+        return ftMs_SpecialN_Enter; // Neutral Special (Shield Breaker) -- no fp->kind branch, identical for both
     case Ft_Kind_Yoshi:
         return ftYs_SpecialHi_Enter; // Up Special (Egg Throw)
     case Ft_Kind_Mewtwo:

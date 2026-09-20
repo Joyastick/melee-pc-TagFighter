@@ -188,7 +188,7 @@ first if a mapping below goes stale.
 | Ice Climbers | Down Special (Blizzard) | Same as grounded |
 | Luigi | Down Special (Luigi Cyclone) | Same as grounded |
 | Marth | Neutral Special (Shield Breaker) | Same as grounded |
-| Roy | Up Special (Blazer) | Same as grounded |
+| Roy | Neutral Special (Shield Breaker) | Same as grounded |
 | Yoshi | Up Special (Egg Throw) | Same as grounded |
 | Mewtwo | Side Special (Confusion) | Same as grounded |
 | Peach | Down Smash | Same as grounded |
