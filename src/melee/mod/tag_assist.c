@@ -1925,6 +1925,64 @@ bool TagAssist_IsPortPoint(int port)
     return false;
 }
 
+bool TagAssist_IsPortCurrentlyPoint(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return false;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return false;
+    }
+    team = &sTeams[color];
+    if (!team->initialized || team->point == NULL) {
+        // Before both fighters have spawned in, there's no live point/assist
+        // GObj pair to compare against yet -- fall back to the CSS-time
+        // assignment so callers (e.g. the nametag) have something sane to
+        // show during the match-start countdown.
+        return TagAssist_IsPortPoint(port);
+    }
+    return GET_FIGHTER(team->point)->player_id == port;
+}
+
+bool TagAssist_IsAssistOut(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return false;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return false;
+    }
+    team = &sTeams[color];
+    return team->initialized && team->assist_out;
+}
+
+u32 TagAssist_GetAssistFramesLeft(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return 0;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return 0;
+    }
+    team = &sTeams[color];
+    if (!team->initialized || !team->assist_out) {
+        return 0;
+    }
+    return team->assist_timer;
+}
+
 void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);

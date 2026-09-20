@@ -11,6 +11,7 @@
 #include <melee/lb/lbvector.h>
 #include <melee/mn/mnmain.h>
 #include <melee/mn/mnname.h>
+#include <melee/mod/tag_assist.h>
 #include <melee/pl/player.h>
 #include <melee/sc/types.h>
 #include <sysdolphin/baselib/cobj.h>
@@ -153,20 +154,47 @@ static void NameTag_RenderCallback(HSD_GObj* gobj, int pass)
     HSD_GObj_JObjCallback(gobj, pass);
 }
 
+/// Whether a nametag TEXT OBJECT should exist for this slot at all. An
+/// ordinary Human player who picked a real name-entry tag in CSS gets one as
+/// usual. Every one of Tag Battle's first 4 ports also gets one, always --
+/// regardless of Gm_PKind or whether a real tag was ever chosen -- since
+/// Tag Battle's auto-populated doors never go through that CSS step, and any
+/// of those 4 ports can become "point" at any time via a tag swap (see
+/// nametag_should_show below, which decides moment-to-moment visibility).
+static inline bool has_nametag(int slot)
+{
+    if (TagAssist_IsTagBattleOn() && slot < 4) {
+        return true;
+    }
+    if (Player_GetPlayerSlotType(slot) != Gm_PKind_Human ||
+        Player_GetNametagSlotID(slot) == NAMETAG_DISABLED)
+    {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+/// Whether a slot's (already-existing, see has_nametag) nametag text should
+/// be drawn on-screen right now. Outside Tag Battle this is just
+/// has_nametag itself. In Tag Battle, both of a team's nametags (point and
+/// the called-out assist) only show while an assist is actually out on
+/// screen -- there's nothing to disambiguate when it's just the one
+/// character on screen, so no tag clutters the HUD the rest of the time.
+static inline bool nametag_should_show(int slot)
+{
+    if (TagAssist_IsTagBattleOn() && slot < 4) {
+        return TagAssist_IsAssistOut(slot);
+    }
+    return has_nametag(slot);
+}
+
 void fn_802FCAC4(HSD_GObj* gobj, int pass)
 {
     if (ifAll_IsHUDHidden() || un_804D6D6C) {
         int i;
         for (i = 0; i < Gm_Player_NumMax; i++) {
-            int do_it;
-            if (Player_GetPlayerSlotType(i) != Gm_PKind_Human ||
-                Player_GetNametagSlotID(i) == 0x78)
-            {
-                do_it = false;
-            } else {
-                do_it = true;
-            }
-            if (do_it) {
+            if (has_nametag(i)) {
                 HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[i], -5000.0f,
                                     0.0f);
             }
@@ -209,16 +237,56 @@ void un_802FCBA0(void)
 #pragma pop
 #endif
 
-static inline bool has_nametag(int slot)
+/// One buffer per slot for the assist countdown digit -- has to outlive the
+/// single call below since GetNametagText's caller isn't guaranteed to have
+/// copied it out yet by the time a sibling slot's text gets built this same
+/// frame (both a team's point and its called-out assist rebuild together).
+static char s_countdownText[Gm_Player_NumMax][4];
+
+/// The point port always shows "Point". The currently-called-out assist
+/// port shows seconds left, to one decimal place (rounded up to the next
+/// tenth), until TagAssist_UpdateTimer auto-benches it -- see
+/// nametag_should_show for when either is actually drawn.
+static const char* GetNametagText(int slot)
 {
-    if (Player_GetPlayerSlotType(slot) != Gm_PKind_Human ||
-        Player_GetNametagSlotID(slot) == NAMETAG_DISABLED)
-    {
-        return false;
-    } else {
-        return true;
+    if (TagAssist_IsTagBattleOn() && slot < 4) {
+        if (TagAssist_IsPortCurrentlyPoint(slot)) {
+            return "Point";
+        }
+        {
+            // 60 frames/sec -- convert to tenths of a second so the display
+            // still fits a single digit before the point (max is 4.0s).
+            u32 tenths = (TagAssist_GetAssistFramesLeft(slot) * 10 + 59) / 60;
+            s_countdownText[slot][0] = (char) ('0' + (tenths / 10) % 10);
+            s_countdownText[slot][1] = '.';
+            s_countdownText[slot][2] = (char) ('0' + tenths % 10);
+            s_countdownText[slot][3] = '\0';
+            return s_countdownText[slot];
+        }
     }
+    return GetNameText(Player_GetNametagSlotID(slot));
 }
+
+/// Content key for a Tag Battle slot's nametag text: -1 while nothing
+/// should be drawn (no assist out), 100 for the point port's constant
+/// "Point", or the current countdown tenth-of-a-second for the called-out
+/// assist port (matching GetNametagText's own rounding). fn_802FCC44 diffs
+/// this against s_lastNametagKey every frame so the SIS text object only
+/// gets torn down and rebuilt (un_802FD28C) on an actual visible change,
+/// not 60 times a second.
+static int nametag_content_key(int slot)
+{
+    if (!TagAssist_IsTagBattleOn() || slot >= 4 || !TagAssist_IsAssistOut(slot))
+    {
+        return -1;
+    }
+    if (TagAssist_IsPortCurrentlyPoint(slot)) {
+        return 100;
+    }
+    return (int) ((TagAssist_GetAssistFramesLeft(slot) * 10 + 59) / 60);
+}
+
+static int s_lastNametagKey[Gm_Player_NumMax];
 
 void fn_802FCC44(HSD_GObj* gobj)
 {
@@ -227,10 +295,18 @@ void fn_802FCC44(HSD_GObj* gobj)
     u8* slot = HSD_GObjGetUserData(gobj);
     HSD_JObj* jobj = gobj->hsd_obj;
     PAD_STACK(8);
+    if (has_nametag(*slot)) {
+        int key = nametag_content_key(*slot);
+        if (key != s_lastNametagKey[*slot]) {
+            s_lastNametagKey[*slot] = key;
+            un_802FD28C(*slot);
+        }
+    }
     if (Player_GetPlayerSlotType(*slot) != Gm_PKind_NA &&
         Player_GetPlayerState(*slot) && Player_GetStocks(*slot) &&
         (un_804D6D70[*slot] || Player_GetNametagSlotID(*slot) != 'x' ||
-         Player_80036058(*slot) || gm_8016B258(*slot)))
+         Player_80036058(*slot) || gm_8016B258(*slot) ||
+         nametag_should_show(*slot)))
     {
         HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
     } else {
@@ -248,8 +324,13 @@ void fn_802FCC44(HSD_GObj* gobj)
     HSD_JObjSetTranslateX(jobj, vec2.x);
     HSD_JObjSetTranslateY(jobj, -vec2.y);
     if (has_nametag(*slot)) {
-        HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[*slot], vec2.x,
-                            vec2.y - 56.0f);
+        if (nametag_should_show(*slot)) {
+            HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[*slot], vec2.x,
+                                vec2.y - 56.0f);
+        } else {
+            HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[*slot], -5000.0f,
+                                0.0f);
+        }
     }
 }
 
@@ -284,8 +365,7 @@ void NameTag_Create(int slot)
             if (has_nametag(slot)) {
                 f = inlineA1(f);
                 un_804A1EF8[slot] = HSD_SisLib_803A6B98(
-                    un_804D6D78, -5000.0f, 0.0f,
-                    GetNameText(Player_GetNametagSlotID(slot)));
+                    un_804D6D78, -5000.0f, 0.0f, GetNametagText(slot));
                 HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f,
                                     0.55f);
             }
@@ -313,7 +393,7 @@ void un_802FD28C(int slot)
         HSD_SisLib_803A75E0(un_804D6D78, un_804A1EF8[slot]);
         un_804A1EF8[slot] =
             HSD_SisLib_803A6B98(un_804D6D78, -5000.0f, 0.0f,
-                                GetNameText(Player_GetNametagSlotID(slot)));
+                                GetNametagText(slot));
         HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f, 0.55f);
     }
     HSD_JObjReqAnimAll(jobj, f);
@@ -369,6 +449,7 @@ void un_802FD4C8(void)
     PAD_STACK(0x10);
     for (i = 0; i < Gm_Player_NumMax; i++) {
         un_804A1EE0[i] = NULL;
+        s_lastNametagKey[i] = -1;
     }
     un_804D6D68 = NULL;
     un_804D6D6C = 0;

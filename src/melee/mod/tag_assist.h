@@ -78,7 +78,33 @@ void TagAssist_SetExplicitPoint(unsigned char team_color, int port);
 /// CSS's flashing indicator, and internally for TagAssist_OnFighterInputFrame's
 /// own role lookup). False for a port with no explicit team assignment yet or
 /// one on Green -- Tag Battle can't start until every port is Red or Blue.
+///
+/// This is the fixed CSS-time assignment -- it does NOT track live in-match
+/// tagging. Once a match is running, use TagAssist_IsPortCurrentlyPoint
+/// instead for "who's point right now".
 bool TagAssist_IsPortPoint(int port);
+
+/// True if `port` is the port whose fighter is CURRENTLY playing the point
+/// role for its team, tracking every live tag swap (TagAssist_TryTag),
+/// point-elimination promotion, and revival -- unlike TagAssist_IsPortPoint,
+/// which only reflects the original CSS-time assignment and never changes
+/// once the match starts. Falls back to TagAssist_IsPortPoint before the
+/// team's TeamState has finished initializing (both fighters not spawned in
+/// yet). False if Tag Battle is off, `port` isn't on a valid Red/Blue team,
+/// or `port` is 4 or higher.
+bool TagAssist_IsPortCurrentlyPoint(int port);
+
+/// True while `port`'s team currently has an assist called out and on
+/// screen (see TagAssist_TryCallAssist / TagAssist_UpdateTimer). False if
+/// Tag Battle is off, `port` isn't on a valid Red/Blue team, or no assist
+/// is out for that team right now.
+bool TagAssist_IsAssistOut(int port);
+
+/// Frames left before `port`'s team's currently-called assist auto-benches
+/// (the ASSIST_DURATION_FRAMES countdown TagAssist_UpdateTimer runs down
+/// every frame). Only meaningful while TagAssist_IsAssistOut(port) is true;
+/// returns 0 otherwise.
+u32 TagAssist_GetAssistFramesLeft(int port);
 
 /// Call once per frame for every live fighter, from the same per-frame input
 /// pass that populates fp->input (Fighter_Spaghetti_8006AD10). Handles

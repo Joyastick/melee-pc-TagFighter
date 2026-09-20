@@ -3363,7 +3363,8 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                             if ((cursor->x4 != 3 ||
                                  mnCharSel_804D6CB0->match_type != 1) &&
                                 mnCharSel_803F0DFC.doors[cursor->x4].p_kind ==
-                                    0)
+                                    0 &&
+                                !TagAssist_IsTagBattleOn())
                             {
                                 if (mnCharSel_804D6CF5 == 1) {
                                     lb_80011E24(
