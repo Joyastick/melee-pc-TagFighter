@@ -1207,19 +1207,27 @@ static void TagAssist_UpdateTimer(TeamState* team)
         team->assist_timer--;
         return;
     }
-    // Don't force the bench mid-animation -- in particular, don't
-    // interrupt a real death/respawn sequence if the assist got KO'd
-    // while called out (TagAssist_HasReachedRebirth above already handles
-    // that case as soon as it's safe; this is for the ordinary
-    // non-death case, or for a death sequence that hasn't reached the
-    // platform yet). Capped so a state that never reports "done" can't
-    // stall this forever.
-    if ((TagAssist_IsInDeathSequence(team->assist) ||
-        ftAnim_IsFramesRemaining(team->assist)) && team->despawn_grace > 0)
-    {
+    // Don't force the bench out of a live death/respawn sequence -- if the
+    // assist got KO'd while called out, TagAssist_HasReachedRebirth above
+    // already benches them the instant that's actually safe to do (once
+    // they're back on the platform). Capped so a state that never reports
+    // "done" can't stall this forever.
+    //
+    // An ordinary move is a different story: TagAssist_SetBenched only
+    // twiddles flags, it never puts the fighter in a real, fully-resolved
+    // action state, so cutting a move off mid-animation and benching
+    // straight out of it would freeze the assist in whatever broken
+    // half-finished pose the move happened to be in when the timer hit
+    // zero. Force a known-good ftCo_MS_Wait baseline first instead -- the
+    // same trick TagAssist_TryReviveFallenPartner uses -- so the timer
+    // expiring always cuts the move short immediately rather than waiting
+    // out however long it has left to play.
+    if (TagAssist_IsInDeathSequence(team->assist) && team->despawn_grace > 0) {
         team->despawn_grace--;
         return;
     }
+    Fighter_ChangeMotionState(team->assist, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f,
+                              NULL);
     TagAssist_SpawnDespawnEffect(team->assist);
     TagAssist_SetBenched(team->assist);
     team->assist_out = false;
