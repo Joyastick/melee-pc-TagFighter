@@ -14,8 +14,7 @@ of the engine itself.
 Built on top of "melee-pc", whose own online play with rollback netcode is
 still in development: on this branch two copies play over a LAN or a direct
 IP (see [Netplay](#netplay-lan-and-direct-ip-prototype)); internet
-matchmaking is **not implemented yet**. Tag Battle can be played online the
-same way — see [Tag Battle over netplay](#tag-battle-over-netplay).
+matchmaking is **not implemented yet**.
 
 This repository is a fork of
 [999sian/melee-pc](https://github.com/999sian/melee-pc), a native PC port of
@@ -88,9 +87,8 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 ### Planned
 
-- [x] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
-  for now, same as melee-pc's own online support) — see
-  [Tag Battle over netplay](#tag-battle-over-netplay).
+- [] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
+  for now, same as melee-pc's own online support)
 
 The phases behind the planned rows, and why they are ordered that way, are in
 [ROADMAP.md](ROADMAP.md).
@@ -121,6 +119,86 @@ tools/package_linux.sh      # dist/Melee-x86_64.AppImage + tarball
 tools/package_windows.sh    # dist/Melee-Windows-x86_64.zip
 tools/build_android.sh      # dist/Melee-Android-arm64.apk (signed release)
 ```
+
+## Playing Tag Fighter
+
+Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
+Battle match plays exactly like vanilla Melee and is unaffected by any of
+this.
+
+**Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
+ONLINE). This drops straight into character select — its own two-tone
+"MeleeVS" title replaces the usual mode banner — with all 4 doors already
+open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue, each
+Human if a controller is plugged into that port or CPU otherwise — so you can
+go straight to picking characters instead of opening doors one at a time.
+Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
+leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
+
+**Pick your team**: each door's team-color button cycles between Red and Blue
+only (Green is unavailable — a 2v2 mode has no room for a third team), and a
+door can't be closed either — its toggle just flips between CPU and Player
+(Player only if a controller is on that port). Whoever picks Red plays
+together, whoever picks Blue plays together — team pairing isn't tied to
+which port you're in. A team is **Solo Play** if only one of its two doors is
+human (the other stays CPU), or **Duo Play** if both are human, sharing the
+team on their own controllers.
+
+**Pick your point character**: press **Z** anywhere on a door's card. That
+player becomes their team's point (human-controlled) character, their
+teammate becomes the assist, and a colored **POINT** tag appears on their
+door in their team's color. If nobody presses Z, the lower port number on
+each team is point by default.
+
+**Start**: requires exactly 2 players on Red and 2 on Blue.
+
+- **Call an assist**: D-Pad Down. The assist spawns already performing its
+  assigned move (grounded or airborne, depending on the point character's own
+  state), then despawns after a few seconds or immediately if it's KO'd while
+  out.
+- Ice Climbers bench/unbench Popo and Nana together.
+- **Point runs out of stocks**: the assist is promoted to point instead of
+  ending the team's run. If the sole survivor has more than one stock left,
+  pressing **D-Pad Down** (the same assist-call input) donates one of their
+  own stocks to revive the eliminated teammate back in as the assist.
+
+
+### Character assist moves
+
+In v1, the aerial assist call is the same move as the grounded one for every
+character (tracked as a future refinement, not a limitation you need to work
+around). Kept in sync with
+[docs/tag_assist_roster.csv](docs/tag_assist_roster.csv) — update that file
+first if a mapping below goes stale.
+
+| Character | Grounded assist | Aerial assist |
+|---|---|---|
+| Mario | Neutral Special (Fireball) | Same as grounded |
+| Dr. Mario | Down Special (Tornado) | Same as grounded |
+| Fox | Up Smash | Same as grounded |
+| Falco | Neutral Special (Blaster) | Same as grounded |
+| Captain Falcon | Neutral Special (Falcon Punch) | Same as grounded |
+| Ganondorf | Down Special (Wizard's Foot) | Same as grounded |
+| Zelda | Up Smash | Same as grounded |
+| Sheik | Up Smash | Same as grounded |
+| Donkey Kong | Neutral Special (Giant Punch, released instantly uncharged) | Same as grounded |
+| Bowser | Up Special (Whirling Fortress) | Same as grounded |
+| Mr. Game & Watch | Neutral Special (Chef) | Same as grounded |
+| Ice Climbers | Down Special (Blizzard) | Same as grounded |
+| Luigi | Down Special (Luigi Cyclone) | Same as grounded |
+| Marth | Neutral Special (Shield Breaker) | Same as grounded |
+| Roy | Up Special (Blazer) | Same as grounded |
+| Yoshi | Up Special (Egg Throw) | Same as grounded |
+| Mewtwo | Side Special (Confusion) | Same as grounded |
+| Peach | Down Smash | Same as grounded |
+| Samus | Side Special (Missile) | Same as grounded |
+| Pikachu | Down Special (Thunder) | Same as grounded |
+| Pichu | Neutral Special (Thunder Jolt) | Same as grounded |
+| Jigglypuff | Side Special (Pound) | Same as grounded |
+| Kirby | Side Special (Hammer Flip) | Same as grounded |
+| Link | Up Special (Spin Attack) | Same as grounded |
+| Young Link | Side Special (Boomerang) | Same as grounded |
+| Ness | Side Special (PK Fire) | Same as grounded |
 
 ## Running
 
@@ -173,85 +251,6 @@ line with the adapter and driver.
   compiler are Windows components.
 - Settings, memory cards, `music/` and `textures/` live in the `melee-pc`
   preference directory above.
-
-## Playing Tag Fighter
-
-Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
-Battle match plays exactly like vanilla Melee and is unaffected by any of
-this.
-
-**Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
-ONLINE). This drops straight into character select — its own two-tone
-"MeleeVS" title replaces the usual mode banner — with all 4 doors already
-open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue, each
-Human if a controller is plugged into that port or CPU otherwise — so you can
-go straight to picking characters instead of opening doors one at a time.
-Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
-leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
-
-**Pick your team**: each door's team-color button cycles between Red and Blue
-only (Green is unavailable — a 2v2 mode has no room for a third team), and a
-door can't be closed either — its toggle just flips between CPU and Player
-(Player only if a controller is on that port). Whoever picks Red plays
-together, whoever picks Blue plays together — team pairing isn't tied to
-which port you're in. A team is **Solo Play** if only one of its two doors is
-human (the other stays CPU), or **Duo Play** if both are human, sharing the
-team on their own controllers.
-
-**Pick your point character**: press **Z** anywhere on a door's card. That
-player becomes their team's point (human-controlled) character, their
-teammate becomes the assist, and a colored **POINT** tag appears on their
-door in their team's color. If nobody presses Z, the lower port number on
-each team is point by default.
-
-**Start**: requires exactly 2 players on Red and 2 on Blue.
-
-- **Call an assist**: D-Pad Down. The assist spawns already performing its
-  assigned move (grounded or airborne, depending on the point character's own
-  state), then despawns after a few seconds or immediately if it's KO'd while
-  out.
-- Ice Climbers bench/unbench Popo and Nana together.
-- **Point runs out of stocks**: the assist is promoted to point instead of
-  ending the team's run. If the sole survivor has more than one stock left,
-  pressing **D-Pad Down** (the same assist-call input) donates one of their
-  own stocks to revive the eliminated teammate back in as the assist.
-
-### Character assist moves
-
-In v1, the aerial assist call is the same move as the grounded one for every
-character (tracked as a future refinement, not a limitation you need to work
-around). Kept in sync with
-[docs/tag_assist_roster.csv](docs/tag_assist_roster.csv) — update that file
-first if a mapping below goes stale.
-
-| Character | Grounded assist | Aerial assist |
-|---|---|---|
-| Mario | Neutral Special (Fireball) | Same as grounded |
-| Dr. Mario | Down Special (Tornado) | Same as grounded |
-| Fox | Up Smash | Same as grounded |
-| Falco | Neutral Special (Blaster) | Same as grounded |
-| Captain Falcon | Neutral Special (Falcon Punch) | Same as grounded |
-| Ganondorf | Down Special (Wizard's Foot) | Same as grounded |
-| Zelda | Up Smash | Same as grounded |
-| Sheik | Up Smash | Same as grounded |
-| Donkey Kong | Neutral Special (Giant Punch, released instantly uncharged) | Same as grounded |
-| Bowser | Up Special (Whirling Fortress) | Same as grounded |
-| Mr. Game & Watch | Neutral Special (Chef) | Same as grounded |
-| Ice Climbers | Down Special (Blizzard) | Same as grounded |
-| Luigi | Down Special (Luigi Cyclone) | Same as grounded |
-| Marth | Neutral Special (Shield Breaker) | Same as grounded |
-| Roy | Up Special (Blazer) | Same as grounded |
-| Yoshi | Up Special (Egg Throw) | Same as grounded |
-| Mewtwo | Side Special (Confusion) | Same as grounded |
-| Peach | Down Smash | Same as grounded |
-| Samus | Side Special (Missile) | Same as grounded |
-| Pikachu | Down Special (Thunder) | Same as grounded |
-| Pichu | Neutral Special (Thunder Jolt) | Same as grounded |
-| Jigglypuff | Side Special (Pound) | Same as grounded |
-| Kirby | Side Special (Hammer Flip) | Same as grounded |
-| Link | Up Special (Spin Attack) | Same as grounded |
-| Young Link | Side Special (Boomerang) | Same as grounded |
-| Ness | Side Special (PK Fire) | Same as grounded |
 
 ## Controls
 
