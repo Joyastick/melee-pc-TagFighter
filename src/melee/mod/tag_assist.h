@@ -106,6 +106,12 @@ bool TagAssist_IsAssistOut(int port);
 /// returns 0 otherwise.
 u32 TagAssist_GetAssistFramesLeft(int port);
 
+/// How many more times the point character can tag with `port`'s team's
+/// currently-called assist before TAG_MAX_TAGS_PER_CALL blocks further tag
+/// input. Only meaningful while TagAssist_IsAssistOut(port) is true;
+/// returns 0 otherwise.
+u8 TagAssist_GetTagsRemaining(int port);
+
 /// Call once per frame for every live fighter, from the same per-frame input
 /// pass that populates fp->input (Fighter_Spaghetti_8006AD10). Handles
 /// assist-call input, forced-move playback, auto-despawn, tag-swap input,

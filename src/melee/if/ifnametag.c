@@ -237,16 +237,40 @@ void un_802FCBA0(void)
 #pragma pop
 #endif
 
-/// One buffer per slot for the assist countdown digit -- has to outlive the
-/// single call below since GetNametagText's caller isn't guaranteed to have
-/// copied it out yet by the time a sibling slot's text gets built this same
-/// frame (both a team's point and its called-out assist rebuild together).
+/// One buffer per slot for the point port's "Point: N" text -- has to
+/// outlive the single call below since GetNametagText's caller isn't
+/// guaranteed to have copied it out yet by the time a sibling slot's text
+/// gets built this same frame (both a team's point and its called-out
+/// assist rebuild together). Sized for "Point: N\0" (9 characters);
+/// TAG_MAX_TAGS_PER_CALL is a single digit, so N is always one char.
+static char s_pointText[Gm_Player_NumMax][9];
+
+/// One buffer per slot for the assist countdown digit.
 static char s_countdownText[Gm_Player_NumMax][4];
 
-/// The point port always shows "Point". The currently-called-out assist
-/// port shows seconds left, to one decimal place (rounded up to the next
-/// tenth), until TagAssist_UpdateTimer auto-benches it. If that timer has
-/// actually hit 0 but TagAssist_UpdateTimer is still holding off the bench
+/// The point port shows "Point" followed by how many more tags
+/// TAG_MAX_TAGS_PER_CALL still allows this call, e.g. "Point: 2" -- put here
+/// rather than on the assist's own countdown (an earlier attempt) because
+/// the assist's text already rewrites up to 10x/second as the countdown
+/// ticks down, and each rewrite was stomping the tags-remaining digit
+/// before it could actually be read. The point's text only changes on an
+/// actual tag (rare, human-driven), so it reads cleanly.
+///
+/// A ':' separator, not '(N)': HSD_SisLib_803A67EC (this engine's own
+/// ASCII->SIS-glyph encoder, hsd_3A64.c) only special-cases a small set of
+/// ASCII punctuation (space, ' " , - . :) plus letters/digits -- anything
+/// else falls through to its "treat this and the next byte as one Shift-JIS
+/// character" path (for Japanese text support), fails to match any font
+/// atlas entry, and silently emits NOTHING for either byte. '(' and ')'
+/// aren't in that safe set, which is exactly why an earlier "Point(N)"
+/// attempt showed no parens AND no digit at all -- the digit was consumed
+/// as the second half of the bogus pair. ':' is one of the explicitly
+/// whitelisted characters, so it encodes normally.
+///
+/// The currently-called-out assist port itself just shows seconds left, to
+/// one decimal place (rounded up to the next tenth), until
+/// TagAssist_UpdateTimer auto-benches it. If that timer has actually hit 0
+/// but TagAssist_UpdateTimer is still holding off the bench
 /// (TagAssist_CantAct / a death sequence -- see its own comment), the
 /// assist is still out at this point, so show "..." instead of a
 /// misleading "0.0" that implies the bench is imminent when it's actually
@@ -256,7 +280,18 @@ static const char* GetNametagText(int slot)
 {
     if (TagAssist_IsTagBattleOn() && slot < 4) {
         if (TagAssist_IsPortCurrentlyPoint(slot)) {
-            return "Point";
+            u8 tagsRemaining = TagAssist_GetTagsRemaining(slot);
+            char* out = s_pointText[slot];
+            *out++ = 'P';
+            *out++ = 'o';
+            *out++ = 'i';
+            *out++ = 'n';
+            *out++ = 't';
+            *out++ = ':';
+            *out++ = ' ';
+            *out++ = (char) ('0' + (tagsRemaining % 10));
+            *out = '\0';
+            return s_pointText[slot];
         }
         {
             u32 framesLeft = TagAssist_GetAssistFramesLeft(slot);
@@ -265,7 +300,8 @@ static const char* GetNametagText(int slot)
                 return "...";
             }
             // 60 frames/sec -- convert to tenths of a second so the display
-            // still fits a single digit before the point (max is 4.0s).
+            // still fits a single digit before the point (max is 5.0s,
+            // ASSIST_DURATION_FRAMES).
             tenths = (framesLeft * 10 + 59) / 60;
             s_countdownText[slot][0] = (char) ('0' + (tenths / 10) % 10);
             s_countdownText[slot][1] = '.';
@@ -277,9 +313,17 @@ static const char* GetNametagText(int slot)
     return GetNameText(Player_GetNametagSlotID(slot));
 }
 
+/// Fixed text scale for every nametag, Tag Battle's own labels included --
+/// no longer scaled by text length (a prior attempt at that made
+/// "Point(N)" harder to read, not easier), so the plate can run a little
+/// tight for "Point(N)" rather than shrinking the text to fit it.
+#define NAMETAG_DEFAULT_SCALE_X 0.4f
+#define NAMETAG_DEFAULT_SCALE_Y 0.55f
+
 /// Content key for a Tag Battle slot's nametag text: -1 while nothing
-/// should be drawn (no assist out), 100 for the point port's constant
-/// "Point", 200 for the called-out assist's "..." hold (its timer already
+/// should be drawn (no assist out), 100 + tagsRemaining for the point
+/// port's "Point(N)" (folding tagsRemaining in so a tag actually changes
+/// the key), 200 for the called-out assist's "..." hold (its timer already
 /// hit 0 but the bench is still waiting it out), or the current countdown
 /// tenth-of-a-second otherwise (matching GetNametagText's own rounding).
 /// fn_802FCC44 diffs this against s_lastNametagKey every frame so the
@@ -292,7 +336,7 @@ static int nametag_content_key(int slot)
         return -1;
     }
     if (TagAssist_IsPortCurrentlyPoint(slot)) {
-        return 100;
+        return (int) (100 + TagAssist_GetTagsRemaining(slot));
     }
     {
         u32 framesLeft = TagAssist_GetAssistFramesLeft(slot);
@@ -345,6 +389,15 @@ void fn_802FCC44(HSD_GObj* gobj)
          nametag_should_show(*slot)))
     {
         HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
+        if (TagAssist_IsTagBattleOn() && *slot < 4) {
+            // Tag Battle's "Point"/countdown text is drawn entirely through
+            // the separate SIS text overlay below, which doesn't read this
+            // jobj's transform or hidden flag at all -- so hiding the
+            // shared nametag model's plate mesh here just removes the
+            // background box, leaving the text (and its own positioning)
+            // completely unaffected.
+            HSD_JObjSetFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
+        }
     } else {
         HSD_JObjSetFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
         if (has_nametag(*slot)) {
@@ -402,8 +455,9 @@ void NameTag_Create(int slot)
                 f = inlineA1(f);
                 un_804A1EF8[slot] = HSD_SisLib_803A6B98(
                     un_804D6D78, -5000.0f, 0.0f, GetNametagText(slot));
-                HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f,
-                                    0.55f);
+                HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
+                                    NAMETAG_DEFAULT_SCALE_X,
+                                    NAMETAG_DEFAULT_SCALE_Y);
             }
             HSD_JObjReqAnimAll(jobj, f);
         }
@@ -430,7 +484,8 @@ void un_802FD28C(int slot)
         un_804A1EF8[slot] =
             HSD_SisLib_803A6B98(un_804D6D78, -5000.0f, 0.0f,
                                 GetNametagText(slot));
-        HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot], 0.4f, 0.55f);
+        HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
+                            NAMETAG_DEFAULT_SCALE_X, NAMETAG_DEFAULT_SCALE_Y);
     }
     HSD_JObjReqAnimAll(jobj, f);
     HSD_JObjAnimAll(jobj);

@@ -10,6 +10,7 @@
 #include <melee/ef/types.h>
 #include <melee/gm/gm_1601.h>
 #include <melee/gm/gmvs.h>
+#include <melee/lb/lbaudio_ax.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
@@ -35,7 +36,7 @@
 #include <melee/ft/kinds/ftDonkey/ftdonkey.h>
 #include <melee/ft/kinds/ftDonkey/ftdonkeyspecialn.h>
 #include <melee/ft/kinds/ftFox/ftfoxspecialn.h>
-#include <melee/ft/kinds/ftGameWatch/ftgamewatchspecialn.h>
+#include <melee/ft/kinds/ftGameWatch/ftgamewatchspecials.h>
 #include <melee/ft/kinds/ftKirby/ftkirby.h>
 #include <melee/ft/kinds/ftKoopa/ftkoopaspecialhi.h>
 #include <melee/ft/kinds/ftKoopa/ftkoopaspecialn.h>
@@ -137,8 +138,8 @@
 #define TAG_ASSIST_PRESSED HSD_PAD_DPADDOWN
 
 /// How long a called assist stays out before auto-benching.
-/// 240 = 4 seconds at 60fps.
-#define ASSIST_DURATION_FRAMES 240
+/// 300 = 5 seconds at 60fps.
+#define ASSIST_DURATION_FRAMES 300
 
 /// Frames to let a freshly-spawned assist run completely untouched before
 /// we freeze it for the first time.
@@ -563,7 +564,7 @@ static TagAssistMoveFn TagAssist_GetAssistMoveEnter(FighterKind kind)
     case Ft_Kind_Koopa:
         return ftKp_SpecialHi_Enter; // Up Special (Whirling Fortress)
     case Ft_Kind_GameWatch:
-        return ftGw_SpecialN_Enter; // Neutral Special (Chef)
+        return ftGw_SpecialS_Enter; // Side Special (Judge)
     case Ft_Kind_Popo:
         return ftPp_SpecialLw_Enter; // Down Special (Blizzard)
     case Ft_Kind_Luigi:
@@ -1098,19 +1099,24 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
     }
 }
 
-/// Fighter-side generic hit-impact "thwack" (weak/mid/strong severity
-/// table, ftColl_803C0C40 = {141, 142, 143} in ftcoll.c, played via
-/// ft_PlaySFX same as any normal attack's hit sound) -- picked as the tag
-/// cue after confirming the actual Fan/Harisen item hit sound the request
-/// was for isn't reachable this way at all: it's resolved through a
-/// completely different audio path (lbColl_80005BB0/raw AX handles baked
-/// into the item's own .dat animcmd data, with no C-level id), not
-/// ft_PlaySFX's fighter-side sound table. Mid severity (142): always
-/// resident in the fighter-common bank regardless of which items/
-/// characters are in the match, and audibly close enough to a hit-based
-/// cue to read as "something just connected" without being tied to any
-/// one character's own voice/effect bank.
-#define TAG_EFFECT_SFX_ID 142
+/// The actual Fan (Harisen) item's hit "slap" sound -- confirmed by
+/// temporarily logging HitCapsule::sfx_kind/sfx_severity at every hit-
+/// connect site in ftcoll.c and swinging a Harisen in a real match:
+/// sfx_kind came back 6 every time (severity didn't matter -- see below).
+/// Raw AX sound id resolved the same way lbColl_80005BB0 resolves any
+/// item/character hit sound: index lbColl_803B9880 (ftcoll.c/lbcollision.c)
+/// by `sfx_kind * 3 + sfx_severity`. Kind 6's row is { 0xE1, 0xE1, 0xE1 } --
+/// identical across all three severities, so the raw id is always 225
+/// regardless of how hard the hit was. Played directly via
+/// lbAudioAx_80024184 (the same low-level call lbColl_80005BB0 itself
+/// makes) rather than ft_PlaySFX, since 225 is already a final resolved AX
+/// id, not a fighter-side sfx_id ft_80087D0C would need to remap.
+///
+/// Two earlier picks were tried and rejected first: 142 (ftColl_803C0C40's
+/// hit-impact "thwack", via ft_PlaySFX) read as "an attack landed" rather
+/// than "a tag happened"; 3 (ftCommon's tech/wall-tech "poof") was
+/// correctly non-hit-like but too soft/quiet.
+#define TAG_EFFECT_RAW_SFX_ID 225
 
 /// Same sparkle burst as TagAssist_SpawnDespawnEffect, reused as-is (same
 /// confirmed-safe, shared-bank gfx ids -- see kDespawnEffectGfxIds) at BOTH
@@ -1120,14 +1126,23 @@ static void TagAssist_SpawnDespawnEffect(Fighter_GObj* gobj)
 /// TagAssist_TryTag right after the swap, so `newPoint`/`newAssist` are
 /// already at their real, current positions -- no repositioning happens on
 /// a tag (unlike a call), so this is purely a visual marker, no physics
-/// implications. Plays TAG_EFFECT_SFX_ID once (not twice) -- attributed to
-/// the new point, but audible either way since it's not spatialized by
-/// distance the way the sparkle's position is.
+/// implications. Not tied to either fighter (lbAudioAx_80024184 takes no
+/// Fighter*/pan-source argument the way ft_PlaySFX does), and not
+/// spatialized by distance the way the sparkle's position is.
+///
+/// Played TWICE, at a slight pan offset, rather than once: 127 is already
+/// VOL_MAX (lbaudio_ax.c) and gets clamped right back to it if raised
+/// further, so there's no headroom left in the volume argument itself.
+/// Layering two simultaneous voices of the same clip is the actual lever
+/// for "louder" here -- it sums acoustically instead of hitting a clamp,
+/// and the slight pan spread keeps it from being a perfectly-phased single
+/// louder mono spike.
 static void TagAssist_SpawnTagEffect(Fighter_GObj* newPoint, Fighter_GObj* newAssist)
 {
     TagAssist_SpawnDespawnEffect(newPoint);
     TagAssist_SpawnDespawnEffect(newAssist);
-    ft_PlaySFX(GET_FIGHTER(newPoint), TAG_EFFECT_SFX_ID, 127, 64);
+    lbAudioAx_80024184(TAG_EFFECT_RAW_SFX_ID, 127, 48, -1);
+    lbAudioAx_80024184(TAG_EFFECT_RAW_SFX_ID, 127, 80, -1);
 }
 
 /// True while `gobj`'s fighter is anywhere in the common death->respawn
@@ -2126,6 +2141,29 @@ u32 TagAssist_GetAssistFramesLeft(int port)
         return 0;
     }
     return team->assist_timer;
+}
+
+/// How many more times TagAssist_TryTag will honor a tag input before
+/// TAG_MAX_TAGS_PER_CALL blocks it, for `port`'s team's current assist
+/// call. Only meaningful while TagAssist_IsAssistOut(port) is true; returns
+/// 0 otherwise (matching TagAssist_GetAssistFramesLeft's own convention).
+u8 TagAssist_GetTagsRemaining(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return 0;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return 0;
+    }
+    team = &sTeams[color];
+    if (!team->initialized || !team->assist_out) {
+        return 0;
+    }
+    return TAG_MAX_TAGS_PER_CALL - team->tags_this_call;
 }
 
 void TagAssist_OnFighterInputFrame(Fighter_GObj* gobj)

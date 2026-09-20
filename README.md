@@ -84,6 +84,21 @@ is GPL-3.0-or-later. Details under [License](#license).
   occasionally going CPU-controlled (or losing their own AI) several tags
   into a match -- both are now kept in sync with control-role swaps the
   same way retail keeps them in sync with a normal port assignment.
+- [x] Nametags during an assist call: the point character shows
+  **Point: N** (how many more tags this call still allows), and the
+  called-out assist shows a live countdown (to a tenth of a second) to
+  when it auto-benches -- both hidden whenever no assist is out, so
+  there's nothing on screen outside an active call.
+- [x] Tagging in is instant: the fighter you tag into immediately cancels
+  whatever it was doing (its own assist move, idle loop, anything) and you
+  get full control the moment the tag lands. Skipped whenever that fighter
+  genuinely couldn't have acted anyway -- hitstun, being grabbed, frozen,
+  buried, asleep, and the roster's other exotic "stuck" states all play
+  out naturally first, so a tag (or the timer running out) can never be
+  used to escape a combo or a throw for free. The assist's own auto-bench
+  respects the same rule and happens right on schedule once its timer
+  expires, instead of waiting out however long its current move had left
+  to play.
 
 ### Planned
 
@@ -121,7 +136,7 @@ tools/package_windows.sh    # dist/Melee-Windows-x86_64-vX.Y.Z-beta.zip
 tools/build_android.sh      # dist/Melee-Android-arm64.apk (signed release)
 ```
 
-## Playing Tag Fighter
+## Playing MeleeVS
 
 Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
 Battle match plays exactly like vanilla Melee and is unaffected by any of
@@ -155,8 +170,20 @@ each team is point by default.
 
 - **Call an assist**: D-Pad Down. The assist spawns already performing its
   assigned move (grounded or airborne, depending on the point character's own
-  state), then despawns after a few seconds or immediately if it's KO'd while
-  out.
+  state). While it's out, both fighters get a nametag showing everything you
+  need to track the call at a glance:
+  - **Point: N** over the active fighter, where `N` is how many more tags
+    are still allowed this call (starts at 3, counts down as you use them).
+  - A live countdown over the assist, showing how long until it auto-benches
+    (shown as "..." instead if it's mid-hitstun/grabbed/etc. and the bench
+    is briefly waiting that out).
+- **Tag**: D-Pad Down again while the assist is out swaps which of the two is
+  point. The fighter you tag into instantly cancels whatever it was doing and
+  you get full control right away -- unless it's genuinely unable to act
+  (hitstun, grabbed, frozen, and other exotic "stuck" states), in which case
+  it plays that out naturally first instead of handing you a free escape. Up
+  to 3 tags are allowed per call, each on its own short cooldown, and tagging
+  doesn't restart the assist's cameo timer.
 - Ice Climbers bench/unbench Popo and Nana together.
 - **Point runs out of stocks**: the assist is promoted to point instead of
   ending the team's run. If the sole survivor has more than one stock left,
