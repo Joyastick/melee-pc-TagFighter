@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build-ios}"
 DIST_DIR="${ROOT_DIR}/dist"
 IOS_DIR="${ROOT_DIR}/platforms/ios"
+MELEE_VERSION="${MELEE_VERSION:-0.0.0}"
 
 export IOS_SDK_PATH="${IOS_SDK_PATH:-/home/sian/toolchains/sdks/sdks/iPhoneOS16.5.sdk}"
 export SDKROOT="${IOS_SDK_PATH}"
@@ -86,8 +87,8 @@ elif command -v ldid >/dev/null; then
     echo "Signed with ldid using Melee.entitlements"
 fi
 
-echo "=== Packaging Melee-iOS-arm64.ipa ==="
-IPA_FILE="${DIST_DIR}/Melee-iOS-arm64.ipa"
+echo "=== Packaging Melee-iOS-arm64-${MELEE_VERSION}.ipa ==="
+IPA_FILE="${DIST_DIR}/Melee-iOS-arm64-${MELEE_VERSION}.ipa"
 rm -f "${IPA_FILE}"
 (cd "${DIST_DIR}" && python3 -m zipfile -c "${IPA_FILE}" Payload)
 cp -f "${IPA_FILE}" "${DIST_DIR}/Melee-Signed-Final.ipa"

@@ -105,6 +105,8 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libgbm-dev
 
       - name: Build and package
+        env:
+          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
         run: tools/package_linux.sh
 
       # Runs in this job, not in `tests`: every smoke case runs the real
@@ -116,8 +118,8 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            dist/Melee-${{ matrix.arch }}.AppImage
-            dist/melee-linux-${{ matrix.arch }}.tar.gz
+            dist/Melee-${{ matrix.arch }}-*.AppImage
+            dist/melee-linux-${{ matrix.arch }}-*.tar.gz
           if-no-files-found: error
 
   windows:
@@ -161,12 +163,13 @@ jobs:
       - name: Build and package
         env:
           TARGET_ARCH: ${{ matrix.arch }}
+          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
         run: tools/package_windows.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.arch }}
-          path: dist/Melee-Windows-${{ matrix.arch }}.zip
+          path: dist/Melee-Windows-${{ matrix.arch }}-*.zip
           if-no-files-found: error
 
   macos:
@@ -203,7 +206,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: dist/Melee-macOS-${{ matrix.arch }}.zip
+          path: dist/Melee-macOS-${{ matrix.arch }}-*.zip
           if-no-files-found: error
 
   ios:
@@ -244,12 +247,13 @@ jobs:
       - name: Build and package iOS IPA
         env:
           IOS_SDK_PATH: /tmp/sdks/iPhoneOS16.5.sdk
+          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
         run: tools/build_ios.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: ios-arm64
-          path: dist/Melee-iOS-arm64.ipa
+          path: dist/Melee-iOS-arm64-*.ipa
           if-no-files-found: error
 
   release:
@@ -272,11 +276,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -lh artifacts
-          # A tag containing a hyphen (v0.1.0-beta) is a prerelease.
-          prerelease=""
-          [[ "${GITHUB_REF_NAME}" == *-* ]] && prerelease="--prerelease"
+          # .github/RELEASE_NOTES.md is upstream melee-pc's own changelog, not
+          # this fork's -- using it here would publish someone else's release
+          # notes under a Tag Fighter tag. --generate-notes builds real,
+          # fork-specific notes from what actually merged since the last tag
+          # instead. Beta tags are not marked prerelease here, matching how
+          # this fork's own releases have always been published.
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
-            --notes-file .github/RELEASE_NOTES.md \
-            ${prerelease} \
+            --generate-notes \
             artifacts/*

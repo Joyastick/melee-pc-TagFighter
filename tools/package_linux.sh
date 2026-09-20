@@ -7,6 +7,7 @@ BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build}"
 DIST_DIR="${ROOT_DIR}/dist"
 APPDIR="${BUILD_DIR}/AppDir"
 TOOLS_DIR="${BUILD_DIR}/tools"
+MELEE_VERSION="${MELEE_VERSION:-0.0.0}"
 
 ARCH="$(uname -m)"
 case "${ARCH}" in
@@ -57,7 +58,7 @@ gzip -dc "${ROOT_DIR}/tools/initial_pipeline_cache.db.gz" \
     > "${APPDIR}/usr/bin/initial_pipeline_cache.db"
 
 echo "=== Generating AppImage ==="
-ARCH="${ARCH}" "${TOOLS_DIR}/appimagetool" "${APPDIR}" "${DIST_DIR}/Melee-${ARCH}.AppImage"
+ARCH="${ARCH}" "${TOOLS_DIR}/appimagetool" "${APPDIR}" "${DIST_DIR}/Melee-${ARCH}-${MELEE_VERSION}.AppImage"
 
 echo "=== Generating Portable Tarball ==="
 TAR_STAGE="${BUILD_DIR}/melee-linux-${ARCH}"
@@ -78,7 +79,7 @@ exec "${HERE}/melee" "$@"
 APP_RUN
 chmod +x "${TAR_STAGE}/run.sh"
 
-tar -czf "${DIST_DIR}/melee-linux-${ARCH}.tar.gz" -C "${BUILD_DIR}" "melee-linux-${ARCH}"
+tar -czf "${DIST_DIR}/melee-linux-${ARCH}-${MELEE_VERSION}.tar.gz" -C "${BUILD_DIR}" "melee-linux-${ARCH}"
 
 echo "=== Packaging Complete ==="
 ls -lh "${DIST_DIR}"

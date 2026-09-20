@@ -5,13 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
 TARGET_ARCH="${TARGET_ARCH:-x86_64}"
+# Matches the vX.Y.Z-beta suffix every release asset has shipped under.
+MELEE_VERSION="${MELEE_VERSION:-0.0.0}"
 
 case "${TARGET_ARCH}" in
     x86_64|amd64)
         TARGET_ARCH="x86_64"
         BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build-win}"
         STAGE_DIR="${DIST_DIR}/melee-windows-x86_64"
-        ZIP_NAME="Melee-Windows-x86_64.zip"
+        ZIP_NAME="Melee-Windows-x86_64-${MELEE_VERSION}.zip"
         TOOLCHAIN_FILE="${ROOT_DIR}/cmake/x86_64-w64-mingw32.cmake"
         SDL3_PROVIDER="package"
         DAWN_PROVIDER="package"
@@ -27,7 +29,7 @@ case "${TARGET_ARCH}" in
         TARGET_ARCH="arm64"
         BUILD_DIR="${BUILD_DIR:-${ROOT_DIR}/build-win-arm64}"
         STAGE_DIR="${DIST_DIR}/melee-windows-arm64"
-        ZIP_NAME="Melee-Windows-arm64.zip"
+        ZIP_NAME="Melee-Windows-arm64-${MELEE_VERSION}.zip"
         TOOLCHAIN_FILE="${ROOT_DIR}/cmake/aarch64-w64-mingw32.cmake"
         SDL3_PROVIDER="vendor"
         DAWN_PROVIDER="package"

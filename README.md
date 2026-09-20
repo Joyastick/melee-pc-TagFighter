@@ -97,13 +97,13 @@ The phases behind the planned rows, and why they are ordered that way, are in
 
 Tag Fighter builds (with the mod included) are on
 [this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases) --
-not upstream's, which only ever ships vanilla melee-pc. Grab
-`Melee-Windows-x86_64.zip` from the latest release's Assets, unzip it, and run
-`melee.exe` (see [Running](#running) below for disc requirements).
+not upstream's, which only ever ships vanilla melee-pc. Grab the
+`Melee-Windows-x86_64-vX.Y.Z-beta.zip` asset from the latest release, unzip
+it, and run `melee.exe` (see [Running](#running) below for disc requirements).
 
 ```sh
-./Melee-x86_64.AppImage                  # open the launcher
-./Melee-x86_64.AppImage /path/to/melee.iso
+./Melee-x86_64-vX.Y.Z-beta.AppImage                  # open the launcher
+./Melee-x86_64-vX.Y.Z-beta.AppImage /path/to/melee.iso
 ```
 
 No disc data is needed to build. The two HSD font atlases are pixel data from
@@ -112,11 +112,12 @@ you supply, at boot (`src/pc/discfont.c`).
 
 The release artifacts are produced by the same scripts CI runs, so they work
 locally too. Windows cross-compiles from Linux with MinGW-w64; Android needs an
-NDK (`ANDROID_NDK_HOME`) and a JDK 17.
+NDK (`ANDROID_NDK_HOME`) and a JDK 17. Each sets its output version from the
+`MELEE_VERSION` environment variable (defaults to `0.0.0` when unset).
 
 ```sh
-tools/package_linux.sh      # dist/Melee-x86_64.AppImage + tarball
-tools/package_windows.sh    # dist/Melee-Windows-x86_64.zip
+tools/package_linux.sh      # dist/Melee-x86_64-vX.Y.Z-beta.AppImage + tarball
+tools/package_windows.sh    # dist/Melee-Windows-x86_64-vX.Y.Z-beta.zip
 tools/build_android.sh      # dist/Melee-Android-arm64.apk (signed release)
 ```
 
