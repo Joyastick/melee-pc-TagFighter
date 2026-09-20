@@ -245,8 +245,13 @@ static char s_countdownText[Gm_Player_NumMax][4];
 
 /// The point port always shows "Point". The currently-called-out assist
 /// port shows seconds left, to one decimal place (rounded up to the next
-/// tenth), until TagAssist_UpdateTimer auto-benches it -- see
-/// nametag_should_show for when either is actually drawn.
+/// tenth), until TagAssist_UpdateTimer auto-benches it. If that timer has
+/// actually hit 0 but TagAssist_UpdateTimer is still holding off the bench
+/// (TagAssist_CantAct / a death sequence -- see its own comment), the
+/// assist is still out at this point, so show "..." instead of a
+/// misleading "0.0" that implies the bench is imminent when it's actually
+/// waiting on the fighter to become benchable. See nametag_should_show for
+/// when either nametag is actually drawn.
 static const char* GetNametagText(int slot)
 {
     if (TagAssist_IsTagBattleOn() && slot < 4) {
@@ -254,9 +259,14 @@ static const char* GetNametagText(int slot)
             return "Point";
         }
         {
+            u32 framesLeft = TagAssist_GetAssistFramesLeft(slot);
+            u32 tenths;
+            if (framesLeft == 0) {
+                return "...";
+            }
             // 60 frames/sec -- convert to tenths of a second so the display
             // still fits a single digit before the point (max is 4.0s).
-            u32 tenths = (TagAssist_GetAssistFramesLeft(slot) * 10 + 59) / 60;
+            tenths = (framesLeft * 10 + 59) / 60;
             s_countdownText[slot][0] = (char) ('0' + (tenths / 10) % 10);
             s_countdownText[slot][1] = '.';
             s_countdownText[slot][2] = (char) ('0' + tenths % 10);
@@ -269,10 +279,12 @@ static const char* GetNametagText(int slot)
 
 /// Content key for a Tag Battle slot's nametag text: -1 while nothing
 /// should be drawn (no assist out), 100 for the point port's constant
-/// "Point", or the current countdown tenth-of-a-second for the called-out
-/// assist port (matching GetNametagText's own rounding). fn_802FCC44 diffs
-/// this against s_lastNametagKey every frame so the on-screen text only
-/// gets rewritten on an actual visible change, not 60 times a second.
+/// "Point", 200 for the called-out assist's "..." hold (its timer already
+/// hit 0 but the bench is still waiting it out), or the current countdown
+/// tenth-of-a-second otherwise (matching GetNametagText's own rounding).
+/// fn_802FCC44 diffs this against s_lastNametagKey every frame so the
+/// on-screen text only gets rewritten on an actual visible change, not 60
+/// times a second.
 static int nametag_content_key(int slot)
 {
     if (!TagAssist_IsTagBattleOn() || slot >= 4 || !TagAssist_IsAssistOut(slot))
@@ -282,7 +294,13 @@ static int nametag_content_key(int slot)
     if (TagAssist_IsPortCurrentlyPoint(slot)) {
         return 100;
     }
-    return (int) ((TagAssist_GetAssistFramesLeft(slot) * 10 + 59) / 60);
+    {
+        u32 framesLeft = TagAssist_GetAssistFramesLeft(slot);
+        if (framesLeft == 0) {
+            return 200;
+        }
+        return (int) ((framesLeft * 10 + 59) / 60);
+    }
 }
 
 static int s_lastNametagKey[Gm_Player_NumMax];

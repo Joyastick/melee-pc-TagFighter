@@ -1157,6 +1157,106 @@ static bool TagAssist_IsInDeathSequence(Fighter_GObj* gobj)
     return fp->motion_id >= ftCo_MS_DeadDown && fp->motion_id <= ftCo_MS_RebirthWait;
 }
 
+/// True while `gobj`'s fighter is in a state where the player fundamentally
+/// has no ability to act -- ordinary knockback hitstun, a grab (as the
+/// victim, held or mid-throw-flight), or one of the roster's more exotic
+/// "stuck" effects (frozen, buried, asleep/bound, screw-attack spin, or a
+/// shield break's dizzy stagger). Used to gate both TagAssist_TryTag's
+/// instant-control cancel and TagAssist_UpdateTimer's auto-bench -- neither
+/// tagging in nor benching out should ever hand a free escape out of a
+/// state the player couldn't have acted out of anyway.
+///
+/// Deliberately does NOT cover states the player voluntarily chose to be
+/// in -- attacks, dodges/rolls, shielding, a committed tech/getup option --
+/// those are meant to still get cut short exactly like the original
+/// tag-cancel behavior, only genuinely uncontrollable states are exempted.
+static bool TagAssist_CantAct(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    FtMotionId id = fp->motion_id;
+
+    // Held by a grab, buried, dazed (Furafura), frozen, or bound by a
+    // Sing-style effect -- grab_timer is the actual generic, character-
+    // agnostic mashable countdown the engine runs for ALL of these (see
+    // e.g. ftCo_CaptureWait.c, ftCo_Bury.c, ftCo_Furafura.c,
+    // ftCo_DamageIce.c, ftCo_DamageSong.c, ftCo_DamageBind.c, every
+    // per-character CaptureWaitKoopa/Kirby/etc, all decrementing this same
+    // field). capture_timer (checked below for its one real use) is NOT
+    // this: it's set only by the item-triggered Leadead/Likelike capture,
+    // and stays 0 for every ordinary grab -- confirmed the hard way, an
+    // earlier version of this check gated on capture_timer alone and never
+    // caught a normal grab at all.
+    if (fp->grab_timer > 0.0f) {
+        return true;
+    }
+    // Ordinary knockback hitstun, ground or air, every character.
+    if ((id >= ftCo_MS_DamageHi1 && id <= ftCo_MS_DamageFlyRoll) ||
+        id == ftCo_MS_DamageFall)
+    {
+        return true;
+    }
+    // Screw-attack-style spin hitstun (DK's Up Special, etc).
+    if (id == ftCo_MS_DamageScrew || id == ftCo_MS_DamageScrewAir) {
+        return true;
+    }
+    // Frozen solid by any freezer effect. DamageIceJump is the mash-to-
+    // break-free wiggle -- still no real directional/attack control.
+    if (id == ftCo_MS_DamageIce || id == ftCo_MS_DamageIceJump) {
+        return true;
+    }
+    // Shield break stagger through the dizzy stumble afterward
+    // (ShieldBreakFly..Furafura is one contiguous block in ftCommon's
+    // table) -- can only be hit, no player input does anything.
+    if (id >= ftCo_MS_ShieldBreakFly && id <= ftCo_MS_Furafura) {
+        return true;
+    }
+    // Asleep outright, or bound by a Sing-style effect (DamageSong/
+    // DamageSongWait/DamageSongRv/DamageBind, contiguous).
+    if (id == ftCo_MS_Sleep ||
+        (id >= ftCo_MS_DamageSong && id <= ftCo_MS_DamageBind))
+    {
+        return true;
+    }
+    // Buried in the ground (DK Down Special, a grounded Yoshi/DK-style
+    // pound, etc) -- mashable, but no directional/attack control while
+    // stuck.
+    if (id >= ftCo_MS_Bury && id <= ftCo_MS_BuryJump) {
+        return true;
+    }
+    // Knocked down and hit again before ever reaching the actionable
+    // get-up-option Wait state -- DownBound* is the initial floor bounce,
+    // DownDamage* is a second hit while still floored. Deliberately NOT
+    // DownWait/DownStand/DownAttack/DownFoward/DownBack/DownSpot: those are
+    // the player's own already-chosen get-up option, not a stuck state.
+    if (id == ftCo_MS_DownBoundU || id == ftCo_MS_DownDamageU ||
+        id == ftCo_MS_DownBoundD || id == ftCo_MS_DownDamageD)
+    {
+        return true;
+    }
+    // Being thrown through the air after a grab releases -- grab_timer
+    // above already covers the HELD portion of every grab, but the actual
+    // post-release Thrown* flight is its own motion ID with no timer
+    // running, and there's still no control during it.
+    if ((id >= ftCo_MS_ThrownF && id <= ftCo_MS_ThrownlwWomen) ||
+        (id >= ftCo_MS_ThrownFF && id <= ftCo_MS_ThrownFLw) ||
+        (id >= ftCo_MS_ThrownKoopaF && id <= ftCo_MS_ThrownKoopaB) ||
+        (id >= ftCo_MS_ThrownKoopaAirF && id <= ftCo_MS_ThrownKoopaAirB) ||
+        (id >= ftCo_MS_ThrownKirbyStar && id <= ftCo_MS_ThrownKirby) ||
+        (id >= ftCo_MS_ThrownMewtwo && id <= ftCo_MS_ThrownMewtwoAir) ||
+        id == ftCo_MS_ThrownMasterHand || id == ftCo_MS_ThrownCrazyHand)
+    {
+        return true;
+    }
+    // Retail's own capture-tracking treats these two as still "captured"
+    // even once capture_timer has already hit 0 (see ftCo_800C7434.c's own
+    // capture_timer == 0 && motion_id != ftCo_MS_CaptureLeadead check) --
+    // a Ganondorf-family/Likelike-item capture edge case.
+    if (id == ftCo_MS_CaptureLeadead || id == ftCo_MS_CaptureLikelike) {
+        return true;
+    }
+    return false;
+}
+
 /// True once the assist's death/respawn sequence has reached the "angel
 /// platform" specifically -- ftCo_MS_Rebirth (riding the platform down) or
 /// ftCo_MS_RebirthWait (standing on it, about to drop through and become
@@ -1222,7 +1322,16 @@ static void TagAssist_UpdateTimer(TeamState* team)
     // same trick TagAssist_TryReviveFallenPartner uses -- so the timer
     // expiring always cuts the move short immediately rather than waiting
     // out however long it has left to play.
-    if (TagAssist_IsInDeathSequence(team->assist) && team->despawn_grace > 0) {
+    //
+    // TagAssist_CantAct gets the same wait here as the death sequence:
+    // benching mid-hitstun/grab/freeze/etc would force this same Wait
+    // baseline INTO an uncontrollable state, which reads as a free escape
+    // from whatever the opponent just landed -- wait it out like a real
+    // opponent's assist would have to, same as tagging in already does
+    // (TagAssist_TryTag).
+    if ((TagAssist_IsInDeathSequence(team->assist) ||
+        TagAssist_CantAct(team->assist)) && team->despawn_grace > 0)
+    {
         team->despawn_grace--;
         return;
     }
@@ -1499,15 +1608,14 @@ static void TagAssist_ApplyControlRoles(TeamState* team, Fighter_GObj* newPoint,
 
 /// Point's own D-Pad Down while the assist is already out: a full role
 /// swap, not another call. Unlike TagAssist_TryCallAssist, this never
-/// forces a move Enter or repositions anyone -- both fighters are already
-/// mid-match wherever they actually are, so this is a pure handoff of the
-/// "point" label (and, for a human+CPU team, of real control -- see
-/// TagAssist_ApplyControlRoles). The newly-demoted fighter is left exactly
-/// as active/visible as it already was and simply starts counting down the
-/// same cameo timer TagAssist_UpdateTimer already runs for an ordinary
-/// call, so it benches itself the same way once that runs out (or sooner,
-/// if it gets KO'd -- TagAssist_HasReachedRebirth handles that path
-/// already, unchanged).
+/// repositions anyone -- both fighters are already mid-match wherever they
+/// actually are. The incoming point (see below) gets its current animation
+/// cancelled to a neutral, fully-controllable baseline; the newly-demoted
+/// fighter is left exactly as active/visible as it already was and simply
+/// starts counting down the same cameo timer TagAssist_UpdateTimer already
+/// runs for an ordinary call, so it benches itself the same way once that
+/// runs out (or sooner, if it gets KO'd -- TagAssist_HasReachedRebirth
+/// handles that path already, unchanged).
 static void TagAssist_TryTag(TeamState* team)
 {
     Fighter* pointFp = GET_FIGHTER(team->point);
@@ -1538,6 +1646,26 @@ static void TagAssist_TryTag(TeamState* team)
 
     newPoint = team->assist;
     newAssist = team->point;
+    // Cancel whatever the incoming point was doing -- its own assist-call
+    // move, an idle loop, whatever -- and drop it into a known-good, fully-
+    // controllable ftCo_MS_Wait baseline the instant control hands over,
+    // the same known-good-state trick used elsewhere in this file
+    // (TagAssist_UpdateTimer, TagAssist_TryReviveFallenPartner). Skipped
+    // while TagAssist_CantAct is true -- those are exactly the states where
+    // the player wouldn't have control anyway, so tagging in doesn't get to
+    // hand a free escape out of a combo, grab, freeze, etc; the fighter
+    // just finishes playing that out naturally like it would have
+    // regardless. Deliberately NOT applied to newAssist (the outgoing
+    // point) either way: only the fighter being tagged INTO should ever
+    // snap to neutral. Safe to force here specifically because newPoint is
+    // always the currently called-out assist, which TagAssist_Unbench
+    // already places on solid ground when it's spawned in -- unlike an
+    // arbitrary mid-air fighter, forcing a grounded idle state never
+    // teleports or desyncs it.
+    if (!TagAssist_CantAct(newPoint)) {
+        Fighter_ChangeMotionState(newPoint, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f,
+                                  NULL);
+    }
     TagAssist_ApplyControlRoles(team, newPoint, newAssist);
 
     team->point = newPoint;
