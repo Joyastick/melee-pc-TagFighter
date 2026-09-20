@@ -1175,18 +1175,27 @@ static bool TagAssist_CantAct(Fighter_GObj* gobj)
     Fighter* fp = GET_FIGHTER(gobj);
     FtMotionId id = fp->motion_id;
 
-    // Held by a grab, buried, dazed (Furafura), frozen, or bound by a
-    // Sing-style effect -- grab_timer is the actual generic, character-
-    // agnostic mashable countdown the engine runs for ALL of these (see
-    // e.g. ftCo_CaptureWait.c, ftCo_Bury.c, ftCo_Furafura.c,
-    // ftCo_DamageIce.c, ftCo_DamageSong.c, ftCo_DamageBind.c, every
-    // per-character CaptureWaitKoopa/Kirby/etc, all decrementing this same
-    // field). capture_timer (checked below for its one real use) is NOT
-    // this: it's set only by the item-triggered Leadead/Likelike capture,
-    // and stays 0 for every ordinary grab -- confirmed the hard way, an
-    // earlier version of this check gated on capture_timer alone and never
-    // caught a normal grab at all.
-    if (fp->grab_timer > 0.0f) {
+    // Held by an ordinary grab -- every one of these is the victim's own
+    // "being carried/damaged/struggling" motion ID for a given grab type,
+    // as opposed to the grabber's own Catch*/Throw* animations (never
+    // checked here) or the post-release Thrown* flight (its own check
+    // below). Deliberately motion-ID-based rather than checking
+    // fp->grab_timer directly: grab_timer is the mashable countdown these
+    // states count down, but it isn't reliably reset back to 0 by every
+    // exit path (e.g. getting hit out of a grab rather than mashing free),
+    // so a stale positive leftover from an earlier, already-finished grab
+    // was incorrectly blocking cancellation/benching on a LATER, unrelated
+    // state -- confirmed via a taunt reported as "stuck" with no grab in
+    // sight. Checking the actual current motion ID avoids that entirely.
+    if ((id >= ftCo_MS_CapturePulledHi && id <= ftCo_MS_CaptureFoot) ||
+        (id >= ftCo_MS_CaptureCaptain && id <= ftCo_MS_CaptureWaitKoopa) ||
+        (id >= ftCo_MS_CaptureKoopaAir && id <= ftCo_MS_CaptureWaitKoopaAir) ||
+        (id >= ftCo_MS_CaptureKirby && id <= ftCo_MS_CaptureWaitKirby) ||
+        (id >= ftCo_MS_CaptureMewtwo && id <= ftCo_MS_CaptureMewtwoAir) ||
+        (id >= ftCo_MS_CaptureMasterHand && id <= ftCo_MS_CaptureWaitMasterHand) ||
+        (id >= ftCo_MS_CaptureKirbyYoshi && id <= ftCo_MS_KirbyYoshiEgg) ||
+        (id >= ftCo_MS_CaptureCrazyHand && id <= ftCo_MS_CaptureWaitCrazyHand))
+    {
         return true;
     }
     // Ordinary knockback hitstun, ground or air, every character.
@@ -1233,10 +1242,10 @@ static bool TagAssist_CantAct(Fighter_GObj* gobj)
     {
         return true;
     }
-    // Being thrown through the air after a grab releases -- grab_timer
-    // above already covers the HELD portion of every grab, but the actual
-    // post-release Thrown* flight is its own motion ID with no timer
-    // running, and there's still no control during it.
+    // Being thrown through the air after a grab releases -- the Capture*
+    // check above already covers the HELD portion of every grab, but the
+    // actual post-release Thrown* flight is its own separate motion ID,
+    // and there's still no control during it.
     if ((id >= ftCo_MS_ThrownF && id <= ftCo_MS_ThrownlwWomen) ||
         (id >= ftCo_MS_ThrownFF && id <= ftCo_MS_ThrownFLw) ||
         (id >= ftCo_MS_ThrownKoopaF && id <= ftCo_MS_ThrownKoopaB) ||
