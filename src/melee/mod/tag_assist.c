@@ -280,6 +280,32 @@ typedef struct TeamState {
                              ///< substitutes a fallback if the real captured
                              ///< value happens to collide with that sentinel
                              ///< (see its own comment).
+    bool port_has_nana[2];      ///< True if the fighter at port_gobj[0]/[1]
+                                 ///< is Popo (Ice Climbers) -- most teams
+                                 ///< have neither slot on Ice Climbers, and
+                                 ///< CpuKind_5 already means something else
+                                 ///< (see saved_cpu_kind above), so presence
+                                 ///< can't be inferred from a sentinel value
+                                 ///< in port_nana_cpu_kind[N] alone.
+    CpuKind port_nana_cpu_kind[2]; ///< Nana's own original fp->cpu.kind for
+                                 ///< whichever port her Popo sits at (only
+                                 ///< meaningful where port_has_nana[N] is
+                                 ///< true), captured once in
+                                 ///< TagAssist_InitControlRoles the same way
+                                 ///< port_player_id captures Popo's own
+                                 ///< identity -- [0]/[1] line up with
+                                 ///< port_gobj[0]/[1], which (unlike
+                                 ///< point/assist) never move with a tag.
+                                 ///< Nana is a fully separate Fighter_GObj
+                                 ///< that TagAssist_ApplyControlRoles never
+                                 ///< used to touch at all (see
+                                 ///< TagAssist_GetIceClimberPartner) --
+                                 ///< restored onto her whenever her own Popo
+                                 ///< becomes point again, so she keeps
+                                 ///< acting as a genuine AI partner instead
+                                 ///< of staying stuck at whatever
+                                 ///< TagAssist_SetBenched/the idle-cameo
+                                 ///< profile last left her at.
     bool point_eliminated; ///< true once the point character has
                              ///< permanently run out of stocks and been
                              ///< promoted from the assist (see
@@ -625,6 +651,31 @@ static bool TagAssist_FindGroundBelow(const Vec3* pos, Vec3* out_ground_pos,
     }
     out_ground_pos->z = pos->z;
     return true;
+}
+
+/// If `gobj` is Zelda or Sheik, returns that same player's OTHER transform
+/// half (whichever of Player_GetEntityAtIndex(player_id, 0)/(..., 1) isn't
+/// `gobj` itself) -- NULL for every other character. Unlike Ice Climbers'
+/// Popo/Nana (TagAssist_GetIceClimberPartner below), both halves are always
+/// the SAME logical player and are meant to be perfectly interchangeable --
+/// only one is ever visible/"active" (fp->is_sub_fighter marks the other
+/// one dormant), but retail's own Fighter_Spaghetti_8006AD10 still ticks
+/// the dormant half every frame regardless (confirmed: same as Nana, no
+/// is_sub_fighter gate), and ftCo_IsCpuControlled only checks
+/// pkind/cpu.kind, not is_sub_fighter. So the dormant half independently
+/// reads real controller input whenever ITS OWN fp->cpu.kind/x618_player_id
+/// say to -- see TagAssist_ApplyControlRoles's use of this for why control-
+/// routing writes need to land on both halves at once, not just whichever
+/// one currently happens to be active.
+static Fighter_GObj* TagAssist_GetTransformPartner(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    Fighter_GObj* a;
+    if (fp->kind != Ft_Kind_Zelda && fp->kind != Ft_Kind_Seak) {
+        return NULL;
+    }
+    a = Player_GetEntityAtIndex(fp->player_id, 0);
+    return (a != gobj) ? a : Player_GetEntityAtIndex(fp->player_id, 1);
 }
 
 /// If `gobj` is Popo (Ice Climbers' leader), returns Nana's own separate
@@ -985,6 +1036,18 @@ static void TagAssist_TryCallAssist(TeamState* team)
     if (Player_8003248C(assistFp->player_id, assistFp->is_sub_fighter) == Gm_PKind_Cpu) {
         assistFp->cpu.kind = CpuKind_0;
     }
+    // Same gap for Nana if the assist is Ice Climbers: TagAssist_Unbench
+    // already repositions/unfreezes her (TagAssist_GetIceClimberPartner
+    // recursion) but never touches cpu.kind, so without this she stays at
+    // CpuKind_5 (frozen by TagAssist_SetBenched) even though Popo is now
+    // visibly out and moving -- confirmed root cause of "Ice Climbers
+    // assist: Popo works fine, Nana just stands there" after a call.
+    {
+        Fighter_GObj* assistNana = TagAssist_GetIceClimberPartner(team->assist);
+        if (assistNana != NULL) {
+            GET_FIGHTER(assistNana)->cpu.kind = CpuKind_0;
+        }
+    }
 
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
@@ -1205,6 +1268,24 @@ static void TagAssist_InitControlRoles(TeamState* team)
         team->saved_cpu_kind = (assistFp->cpu.kind == CpuKind_5)
                                     ? CpuKind_4 : assistFp->cpu.kind;
     }
+
+    // Capture each port's own Ice Climbers Nana partner's real cpu.kind
+    // (if any) up front, the same way port_player_id captures Popo's own
+    // identity -- see TagAssist_ApplyControlRoles's restoration of this for
+    // why: Nana is a fully separate Fighter_GObj that nothing else here
+    // ever saves a baseline for.
+    {
+        Fighter_GObj* pointNana = TagAssist_GetIceClimberPartner(team->point);
+        Fighter_GObj* assistNana = TagAssist_GetIceClimberPartner(team->assist);
+        team->port_has_nana[0] = pointNana != NULL;
+        if (pointNana != NULL) {
+            team->port_nana_cpu_kind[0] = GET_FIGHTER(pointNana)->cpu.kind;
+        }
+        team->port_has_nana[1] = assistNana != NULL;
+        if (assistNana != NULL) {
+            team->port_nana_cpu_kind[1] = GET_FIGHTER(assistNana)->cpu.kind;
+        }
+    }
     OSReport("[TagAssist] team init: point kind=%d player_id=%d, assist kind=%d "
              "player_id=%d, is_cpu_team=%d\n",
              pointFp->kind, pointFp->player_id, assistFp->kind,
@@ -1289,6 +1370,56 @@ static void TagAssist_ApplyControlRoles(TeamState* team, Fighter_GObj* newPoint,
     newPointFp->input.held_buttons[1] = newPointFp->input.held_buttons[0];
     newPointFp->input.held_buttons[2] = newPointFp->input.held_buttons[0];
 
+    // If newPoint is Zelda/Sheik, mirror this same human-control state onto
+    // her dormant transform half too -- retail's own
+    // Player_SetPlayerAndEntityCpuType (player.c) always keeps cpu.kind in
+    // sync across BOTH of a Zelda/Sheik player's Fighter_GObj instances;
+    // our writes above only ever touch whichever half is currently
+    // team->point, breaking that invariant the moment a transform later
+    // swaps which half is active. Fighter_Spaghetti_8006AD10 ticks the
+    // DORMANT half every frame too (no is_sub_fighter gate -- same as
+    // Nana), and ftCo_IsCpuControlled only checks pkind/cpu.kind -- so a
+    // dormant half left at a stale cpu.kind=CpuKind_5 from an earlier point
+    // stint keeps independently reading the same real controller's raw
+    // input and can trigger her own transform on it. Confirmed root cause
+    // of "the assist randomly starts a down-b transform" a few tags in.
+    // held_buttons seeded too, same reasoning as newPointFp's own seed
+    // above -- her x618_player_id can be changing here for the first time.
+    {
+        Fighter_GObj* pointPartner = TagAssist_GetTransformPartner(newPoint);
+        if (pointPartner != NULL) {
+            Fighter* partnerFp = GET_FIGHTER(pointPartner);
+            partnerFp->cpu.kind = CpuKind_5;
+            partnerFp->x618_player_id = team->human_pad_port;
+            partnerFp->input.held_buttons[0] = newPointFp->input.held_buttons[0];
+            partnerFp->input.held_buttons[1] = newPointFp->input.held_buttons[0];
+            partnerFp->input.held_buttons[2] = newPointFp->input.held_buttons[0];
+        }
+    }
+
+    // If newPoint is Popo, restore Nana's own real AI profile (captured in
+    // TagAssist_InitControlRoles) instead of leaving her at whatever she
+    // last had -- CpuKind_5 just above is Popo's own "defeat
+    // ftCo_IsCpuControlled, read real input" sentinel, which would instead
+    // silence her genuine AI outright if mirrored onto her verbatim (she's
+    // never actually human-controlled). Keyed by which CSS-original port
+    // newPoint sits at (port_gobj[]/port_nana_cpu_kind[] never move with a
+    // tag, unlike point/assist), so this is correct no matter how many
+    // times point and assist have swapped. Confirmed root cause of "Ice
+    // Climbers assist: Nana's AI stops working correctly" once both point
+    // and assist are Ice Climbers and a tag swaps which Popo is human --
+    // without this, Nana keeps whatever idle/frozen profile she was left at
+    // while her own Popo was still the assist.
+    {
+        Fighter_GObj* pointNana = TagAssist_GetIceClimberPartner(newPoint);
+        if (pointNana != NULL) {
+            int portIdx = (newPoint == team->port_gobj[0]) ? 0 : 1;
+            if (team->port_has_nana[portIdx]) {
+                GET_FIGHTER(pointNana)->cpu.kind = team->port_nana_cpu_kind[portIdx];
+            }
+        }
+    }
+
     Player_SetSlottype(newAssistFp->player_id, Gm_PKind_Cpu);
     // CpuKind_0 instead of team->saved_cpu_kind: newAssistFp just got
     // tagged out of a Solo Play team's point role, and the real combat AI
@@ -1305,6 +1436,34 @@ static void TagAssist_ApplyControlRoles(TeamState* team, Fighter_GObj* newPoint,
     // TagAssist_PromoteAssistToPoint, which still wants the REAL AI
     // profile once a fighter permanently becomes the team's only point.
     newAssistFp->cpu.kind = CpuKind_0;
+    // Mirror the same idle-cameo CPU state onto newAssist's own dormant
+    // Zelda/Sheik transform half too -- see the matching newPoint-side
+    // mirror above for why (retail's own invariant, broken by only ever
+    // writing to whichever half is currently tracked). Without this, a
+    // fighter that was previously point and has since transformed leaves
+    // its now-dormant half stuck human-controlled (cpu.kind=CpuKind_5)
+    // even after this GObj becomes assist.
+    {
+        Fighter_GObj* assistPartner = TagAssist_GetTransformPartner(newAssist);
+        if (assistPartner != NULL) {
+            Fighter* partnerFp = GET_FIGHTER(assistPartner);
+            partnerFp->cpu.kind = CpuKind_0;
+            partnerFp->x618_player_id = team->cpu_pad_port;
+        }
+    }
+    // Mirror the same idle-cameo profile onto Nana if newAssist is Popo --
+    // TagAssist_GetIceClimberPartner's own comment already covers why she
+    // needs separate handling (a fully separate Fighter_GObj sharing
+    // Popo's player_id). Without this she's left at whatever she last had
+    // (often CpuKind_5/frozen from TagAssist_SetBenched, or her own real
+    // combat AI from while her Popo was still point) instead of matching
+    // Popo's own new idle-cameo state.
+    {
+        Fighter_GObj* assistNana = TagAssist_GetIceClimberPartner(newAssist);
+        if (assistNana != NULL) {
+            GET_FIGHTER(assistNana)->cpu.kind = CpuKind_0;
+        }
+    }
     // Restore newAssistFp's own ORIGINAL pad port too, not just its pkind/
     // cpu.kind -- if this fighter has previously played point, its
     // x618_player_id is still left pointed at team->human_pad_port from
@@ -1634,11 +1793,48 @@ static void TagAssist_CheckPointElimination(TeamState* team)
 /// cause of "tagging doesn't work" / "CPU keeps ending up controlling the
 /// swapped-to character forever, can't tag back": port_gobj[] never moves
 /// with a tag, so it can't ever be fooled by one.
+/// True if `gobj` is Zelda or Sheik and `other` is that same player's other
+/// transform half -- see TagAssist_GetTransformPartner. Doesn't dereference
+/// `other` -- safe to call even with a stale/dead pointer from an
+/// already-ended match, since this only ever compares it against a fresh
+/// lookup.
+static bool TagAssist_IsTransformPartner(Fighter_GObj* gobj, Fighter_GObj* other)
+{
+    return TagAssist_GetTransformPartner(gobj) == other;
+}
+
 static void TagAssist_HandleNewMatch(TeamState* team, int roleIdx,
                                      Fighter_GObj* gobj)
 {
     int otherIdx = roleIdx ^ 1;
     if (team->port_gobj[roleIdx] != NULL && team->port_gobj[roleIdx] != gobj) {
+        if (TagAssist_IsTransformPartner(gobj, team->port_gobj[roleIdx])) {
+            // Zelda<->Sheik transform, not a new match: retail swaps which
+            // of this player's two Fighter_GObj instances is active rather
+            // than mutating fp->kind in place, so the pointer this module
+            // tracks per port/role goes stale the instant a transform
+            // happens. The transform itself (ftCommon_8007EFC8) copies
+            // position/velocity/percent/etc. onto the newly-active GObj,
+            // but has no idea this mod exists -- it never copies
+            // cpu.kind/x618_player_id, so the new GObj is left at whatever
+            // CSS set on it at spawn instead of whatever
+            // TagAssist_ApplyControlRoles last wrote onto the fighter it's
+            // replacing. Confirmed root cause of "lose control of the
+            // character to CPU AI" specifically around a transform: update
+            // the identity in place and reassert this team's control roles
+            // onto the now-active pair, instead of wiping the whole team's
+            // state (which would also silently undo any tag already made).
+            if (team->point == team->port_gobj[roleIdx]) {
+                team->point = gobj;
+            } else if (team->assist == team->port_gobj[roleIdx]) {
+                team->assist = gobj;
+            }
+            team->port_gobj[roleIdx] = gobj;
+            if (team->assist != NULL) {
+                TagAssist_ApplyControlRoles(team, team->point, team->assist);
+            }
+            return;
+        }
         // If this ever fires mid-match (not right after a real match
         // start/reset), that's a real bug -- it means something made a
         // port's own gobj pointer look like it changed when it shouldn't
