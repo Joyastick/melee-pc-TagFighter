@@ -271,9 +271,8 @@ static const char* GetNametagText(int slot)
 /// should be drawn (no assist out), 100 for the point port's constant
 /// "Point", or the current countdown tenth-of-a-second for the called-out
 /// assist port (matching GetNametagText's own rounding). fn_802FCC44 diffs
-/// this against s_lastNametagKey every frame so the SIS text object only
-/// gets torn down and rebuilt (un_802FD28C) on an actual visible change,
-/// not 60 times a second.
+/// this against s_lastNametagKey every frame so the on-screen text only
+/// gets rewritten on an actual visible change, not 60 times a second.
 static int nametag_content_key(int slot)
 {
     if (!TagAssist_IsTagBattleOn() || slot >= 4 || !TagAssist_IsAssistOut(slot))
@@ -288,6 +287,25 @@ static int nametag_content_key(int slot)
 
 static int s_lastNametagKey[Gm_Player_NumMax];
 
+/// Rewrites slot's EXISTING SIS text entry in place. Deliberately NOT
+/// un_802FD28C: that frees-and-recreates via HSD_SisLib_803A6B98, which
+/// always appends a brand new entry to the shared per-context SIS buffer
+/// and bumps its running entry counter -- the "free" half
+/// (HSD_SisLib_803A75E0) only blanks the OLD entry's text, it never
+/// actually reclaims its bytes from that buffer. Fine for un_802FD28C's
+/// original, rare call sites (once per respawn), but doing that on every
+/// countdown tick here permanently grows the buffer a little each time and
+/// exhausts the whole SIS heap (HSD_SisLib_Alloc's "Memory Empty" OSPanic)
+/// within about a minute of Tag Battle play -- this was the actual cause
+/// of the "crash on Final Destination" report, unrelated to that stage.
+/// HSD_SisLib_803A70A0 instead overwrites the same entry_idx's text
+/// in-place, so repeated calls don't leak.
+static void nametag_update_text(int slot)
+{
+    HSD_SisLib_803A70A0(un_804D6D78, un_804A1EF8[slot],
+                        (char*) GetNametagText(slot));
+}
+
 void fn_802FCC44(HSD_GObj* gobj)
 {
     Vec3 vec;
@@ -299,7 +317,7 @@ void fn_802FCC44(HSD_GObj* gobj)
         int key = nametag_content_key(*slot);
         if (key != s_lastNametagKey[*slot]) {
             s_lastNametagKey[*slot] = key;
-            un_802FD28C(*slot);
+            nametag_update_text(*slot);
         }
     }
     if (Player_GetPlayerSlotType(*slot) != Gm_PKind_NA &&
