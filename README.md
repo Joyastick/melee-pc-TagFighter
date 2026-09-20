@@ -70,19 +70,24 @@ is GPL-3.0-or-later. Details under [License](#license).
   time it's out on either a tag or a plain call, instead of fighting/
   taunting like a genuine opponent or, on a plain call, having no AI at
   all after its scripted move finished.
-- [x] Dedicated **TAG BATTLE** entry in the main menu's VS submenu, replacing
+- [x] Dedicated **MELEE VS** entry in the main menu's VS submenu, replacing
   the old CSS-only Z+A hotkey -- jumps straight into character select with
   all 4 doors already open and paired 2v2 (Red/Blue by port, Human or CPU
   by controller presence), doors locked to CPU/Player so the mode can't
   drop below 4 players, and the VS Mode/Team Battle/Tag Battle switch
   locked for the rest of that CSS session.
+- [x] Dedicated Tag Battle art in the character-select screen: a two-tone
+  "MeleeVS" title in place of the borrowed "TEAM BATTLE" banner, and a
+  colored **POINT** tag on whichever door is currently each team's point
+  character. Z now claims point from anywhere on a door's card, not just
+  its team-color button.
+- [x] Fixed Ice Climbers' Nana and Zelda/Sheik's dormant transform half
+  occasionally going CPU-controlled (or losing their own AI) several tags
+  into a match -- both are now kept in sync with control-role swaps the
+  same way retail keeps them in sync with a normal port assignment.
 
 ### Planned
 
-- [ ] Dedicated Tag Battle art in the character-select screen itself
-  (currently reuses Team Battle's own banner and team-color icons, since
-  there's no Tag Battle-specific CSS art yet -- only the main menu entry
-  has its own label).
 - [x] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
   for now, same as melee-pc's own online support) — see
   [Tag Battle over netplay](#tag-battle-over-netplay).
@@ -92,9 +97,11 @@ The phases behind the planned rows, and why they are ordered that way, are in
 
 ## Download
 
-Builds for every platform are on the
-[releases page](https://github.com/999sian/melee-pc/releases). Release notes
-list the per-platform files, known issues and requirements.
+Tag Fighter builds (with the mod included) are on
+[this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases) --
+not upstream's, which only ever ships vanilla melee-pc. Grab
+`Melee-Windows-x86_64.zip` from the latest release's Assets, unzip it, and run
+`melee.exe` (see [Running](#running) below for disc requirements).
 
 ```sh
 ./Melee-x86_64.AppImage                  # open the launcher
@@ -173,13 +180,14 @@ Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
 Battle match plays exactly like vanilla Melee and is unaffected by any of
 this.
 
-**Start a Tag Battle**: Main Menu → VS Mode → **TAG BATTLE** (the entry below
-Name Entry). This drops straight into character select with all 4 doors
-already open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue,
-each Human if a controller is plugged into that port or CPU otherwise — so
-you can go straight to picking characters instead of opening doors one at a
-time. Switching to a different VS Mode entry (Melee, Tournament, Special
-Melee) leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
+**Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
+ONLINE). This drops straight into character select — its own two-tone
+"MeleeVS" title replaces the usual mode banner — with all 4 doors already
+open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue, each
+Human if a controller is plugged into that port or CPU otherwise — so you can
+go straight to picking characters instead of opening doors one at a time.
+Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
+leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
 
 **Pick your team**: each door's team-color button cycles between Red and Blue
 only (Green is unavailable — a 2v2 mode has no room for a third team), and a
@@ -190,10 +198,11 @@ which port you're in. A team is **Solo Play** if only one of its two doors is
 human (the other stays CPU), or **Duo Play** if both are human, sharing the
 team on their own controllers.
 
-**Pick your point character**: hover a door's team-color button and press
-**Z**. That player becomes their team's point (human-controlled) character,
-their teammate becomes the assist, and their team icon starts flashing. If
-nobody presses Z, the lower port number on each team is point by default.
+**Pick your point character**: press **Z** anywhere on a door's card. That
+player becomes their team's point (human-controlled) character, their
+teammate becomes the assist, and a colored **POINT** tag appears on their
+door in their team's color. If nobody presses Z, the lower port number on
+each team is point by default.
 
 **Start**: requires exactly 2 players on Red and 2 on Blue.
 
