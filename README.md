@@ -1,4 +1,4 @@
-# MeleeXKO - Melee Tag Fighter
+# MeleeVS - Melee Tag Fighter
 
 **Now in Beta!** A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in

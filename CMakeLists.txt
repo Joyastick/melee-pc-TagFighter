@@ -342,6 +342,19 @@ add_custom_target(launcher_resources ALL
         "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:melee>/resources")
 add_dependencies(melee launcher_resources)
 
+# Re-derives MELEE_APP_VERSION from `git describe` before every build (see
+# src/pc/version.cpp) instead of relying on a hand-maintained #define.
+add_custom_target(melee_version_header ALL
+    COMMAND ${CMAKE_COMMAND}
+        "-DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/generated/version_git.h"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateVersion.cmake"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/version_git.h"
+    COMMENT "Deriving app version from git describe"
+    VERBATIM)
+add_dependencies(melee melee_version_header)
+target_include_directories(melee PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if (Python3_Interpreter_FOUND)
     set(MELEE_PYTHON "${Python3_EXECUTABLE}")

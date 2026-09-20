@@ -600,6 +600,7 @@ public:
         document->AddEventListener(Rml::EventId::Change, this);
         document->Show();
         text("app-version", pc::get_app_version());
+        text("upstream-version", pc::get_upstream_pc_version());
         text("check-status", "Current version: " + pc::get_app_version());
         if (prefs.check_updates) {
             pc::updater::check_for_updates_async(true);
@@ -1231,6 +1232,7 @@ public:
         slider("scale", prefs.scale * 100.0f);
         label("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
         label("menu-version", pc::get_app_version());
+        label("menu-upstream-version", pc::get_upstream_pc_version());
         auto ustate = pc::updater::get_state();
         if (ustate.status == pc::updater::Status::UpdateAvailable) {
             label("port-update-status", "Update available: " + ustate.latest_release.tag_name);

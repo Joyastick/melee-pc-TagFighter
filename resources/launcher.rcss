@@ -20,6 +20,8 @@ body {
 .edition { color: #94a1b8; font-size: 13dp; letter-spacing: 1dp; }
 .hero { padding: 38dp 0 28dp; }
 .eyebrow { font-size: 13dp; letter-spacing: 3dp; color: #f4be63; margin-bottom: 8dp; }
+.mod-tag { font-size: 18dp; letter-spacing: 0; color: #94a1b8; vertical-align: middle; }
+.mod-subtitle { font-size: 15dp; color: #94a1b8; margin: 10dp 0 0; }
 h1 { font-size: 94dp; font-weight: bold; letter-spacing: 7dp; margin: 0; line-height: 1.0; }
 h2 { font-size: 27dp; line-height: 1.2; margin: 12dp 0 18dp; }
 p { line-height: 1.5; margin: 10dp 0; }

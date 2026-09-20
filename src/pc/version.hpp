@@ -26,6 +26,7 @@ struct SemVer {
 };
 
 const std::string& get_app_version();
+const std::string& get_upstream_pc_version();
 bool is_update_available(std::string_view current_ver, std::string_view latest_ver);
 
 }  // namespace pc
