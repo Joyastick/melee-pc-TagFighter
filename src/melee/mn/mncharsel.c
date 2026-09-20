@@ -103,6 +103,16 @@ static s8 mnCharSel_804D6CF9;
 /// per-door jobjs it needs exist, by the random-character pass right after
 /// mnCharSel_802640A0() returns.
 static bool sTagAutoPopulate = false;
+
+/// Tag Battle's own CSS title ("Melee"/"VS" two-tone) and per-door "POINT"
+/// labels, in place of the borrowed "TEAM BATTLE" banner. Created once by
+/// mnCharSel_802640A0 (where the SIS context ctx is in scope), updated every
+/// frame by fn_80262F44, and reset to NULL by mnCharSel_Scene_OnEnter so a
+/// fresh CSS entry never reuses a pointer freed by the previous scene's
+/// teardown.
+static HSD_Text* sMeleeVsTitle;
+static HSD_Text* sMeleeVsTitleVs;
+static HSD_Text* sPointLabel[4];
 #endif
 
 /// Can't be enum bc float, but reused values
@@ -1709,13 +1719,20 @@ void mnCharSel_8025EE8C(u8 idx)
         }
         return;
     }
-    // No baked "TAG BATTLE" banner text exists in MnSlChr.dat, so Tag
-    // Battle borrows the existing "TEAM BATTLE" banner text here -- it's
-    // then made to flash in fn_80262F44 so it still reads as visually
-    // distinct from an ordinary, static Team Battle banner.
-    if (mnCharSel_804D6CB0->vs.start.rules.is_teams ||
-        TagAssist_IsTagBattleOn())
-    {
+#ifdef TARGET_PC
+    // No baked "TAG BATTLE" banner text exists in MnSlChr.dat, and Tag
+    // Battle no longer borrows "TEAM BATTLE" either (mnCharSel_802640A0
+    // draws its own "MeleeVS" title text instead) -- is_teams is forced on
+    // for Tag Battle's own reasons (reusing Team Battle's Red/Blue picker)
+    // but that's not a reason to show this banner. mode_ffa_frame isn't a
+    // blank frame (it's the plain "MELEE" mode-name texture), so hide the
+    // joint outright instead of animating it to any frame.
+    if (TagAssist_IsTagBattleOn()) {
+        lb_80011E24(mnCharSel_804D6CC0, &spC, 36, -1);
+        HSD_JObjSetFlagsAll(spC, JOBJ_HIDDEN);
+    } else
+#endif
+    if (mnCharSel_804D6CB0->vs.start.rules.is_teams) {
         mode_frame = mnCharSel_803F0A48.mode_info[idx].mode_teams_frame;
         cc0 = mnCharSel_804D6CC0;
         lb_80011E24(cc0, &result_jobj, 36, -1);
@@ -2471,6 +2488,19 @@ static inline bool cursorOverTeamBtn(struct CSSCursorData* cursor, CSSDoor* dp)
     f32 cy5 = cursor->x10;
     return cx5 > dp->teambtn_left && cx5 < dp->teambtn_right &&
            cy5 < -0.9999999046325683 && cy5 > -5.800000095367432;
+}
+
+/// Whether the cursor is anywhere over this door's card -- the toggle box
+/// and team box between them span almost the full door width (see their
+/// literal bounds in mnCharSel_803F0DFC). The y-range is widened well past
+/// both widgets' own bounds (-4.6..0.2 and -5.8..-1.0) to reach down over
+/// the portrait/name/CPU-level area too, not just the top ribbon strip.
+static inline bool cursorOverDoor(struct CSSCursorData* cursor, CSSDoor* dp)
+{
+    f32 cx = cursor->xC;
+    f32 cy = cursor->x10;
+    return cx > dp->togglebtn_left && cx < dp->teambtn_right && cy < 0.2f &&
+           cy > -20.0f;
 }
 
 /// Advances the door's team colour when the cursor clicks its team box.
@@ -3517,10 +3547,9 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                 }
 
                 if (TagAssist_IsTagBattleOn() && (trigger & HSD_PAD_Z)) {
-                    // Z on a door's team button claims "point" for that
-                    // player's team -- mirrors cycleTeam's own hitbox
-                    // above, but doesn't touch the color. Deliberately a
-                    // sibling of the a_press2/HSD_PAD_B chain above (not
+                    // Z anywhere on a door's card claims "point" for that
+                    // player's team -- doesn't touch the color. Deliberately
+                    // a sibling of the a_press2/HSD_PAD_B chain above (not
                     // nested inside it) so Z alone triggers this, without
                     // also needing A held down the same frame.
                     for (door = 0; door < (s32) mnCharSel_804D6CF5; door++) {
@@ -3528,7 +3557,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                         if (zdp->p_kind == 3 || zdp->team >= 2) {
                             continue; // empty door, or not Red/Blue
                         }
-                        if (cursorOverTeamBtn(cursor, zdp)) {
+                        if (cursorOverDoor(cursor, zdp)) {
                             TagAssist_SetExplicitPoint(zdp->team, door);
                             sfxMove();
                         }
@@ -3809,21 +3838,10 @@ void fn_80262F44(HSD_GObj* gobj)
     PAD_STACK(0x8);
 
     if (TagAssist_IsTagBattleOn()) {
-        // Flash the "TEAM BATTLE" banner (joint 36, forced on regardless of
-        // the real is_teams state by mnCharSel_8025EE8C above) so it reads
-        // as an animated Tag Battle indicator rather than a static, ordinary
-        // Team Battle banner -- there's no baked Tag Battle art to swap in.
-        static u32 sTagBannerFlashTimer = 0;
-        HSD_JObj* banner_jobj;
-        // 8 frames/phase at the engine's 60fps tick is a brisk ~3.75Hz blink
-        // (was 30, ~1Hz -- too slow to read at a glance).
-        bool flash_on = ((sTagBannerFlashTimer++ / 8) & 1) == 0;
-        lb_80011E24(mnCharSel_804D6CC0, &banner_jobj, 36, -1);
-        if (flash_on) {
-            HSD_JObjClearFlags(banner_jobj, JOBJ_HIDDEN);
-        } else {
-            HSD_JObjSetFlags(banner_jobj, JOBJ_HIDDEN);
-        }
+        // Red/Blue team colors, matching the CSS's own name-tag palette
+        // (mnCharSel_804DC594/584 below).
+        static const GXColor red_team = { 220, 0, 0, 255 };
+        static const GXColor blue_team = { 20, 80, 160, 255 };
 
         for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
             if (mnCharSel_803F0DFC.doors[i].p_kind == 3) {
@@ -3835,24 +3853,34 @@ void fn_80262F44(HSD_GObj* gobj)
             TagAssist_CssSyncPortTeam(i, mnCharSel_803F0DFC.doors[i].team);
 
             {
-                // Flash the point door's own (correctly Red/Blue) team icon
-                // rather than forcing a color, so it's visually distinct
-                // without lying about anyone's real team. Every non-point
-                // door gets its icon force-shown every frame regardless --
-                // otherwise a door that stops being point right as its flash
-                // lands on the "off" phase (a teammate presses Z, or it
-                // switches team color) is left with team_joint stuck hidden
-                // forever, since nothing else ever re-clears that flag once
-                // this loop stops treating it as the flashing one.
+                // No more flashing this to mark point -- the POINT label
+                // below already says so, unambiguously and without needing
+                // to catch it mid-blink. Always shown, same as any other
+                // door's team icon.
                 HSD_JObj* team_jobj;
+                bool is_point = TagAssist_IsPortPoint(i);
                 lb_80011E24(mnCharSel_804D6CC0, &team_jobj,
                             mnCharSel_803F0DFC.doors[i].team_joint, -1);
-                if (!TagAssist_IsPortPoint(i)) {
-                    HSD_JObjClearFlags(team_jobj, JOBJ_HIDDEN);
-                } else if (flash_on) {
-                    HSD_JObjClearFlags(team_jobj, JOBJ_HIDDEN);
-                } else {
-                    HSD_JObjSetFlags(team_jobj, JOBJ_HIDDEN);
+                HSD_JObjClearFlags(team_jobj, JOBJ_HIDDEN);
+
+                if (sPointLabel[i] != NULL) {
+                    sPointLabel[i]->hidden = !is_point;
+                    if (is_point) {
+                        Vec3 pos;
+                        const GXColor* color =
+                            mnCharSel_803F0DFC.doors[i].team == 0
+                                ? &red_team
+                                : &blue_team;
+                        // cpuslider_joint (tried first) sits in a different
+                        // spot on an HMN door than a CPU one -- team_joint is
+                        // the one anchor that's consistent for both.
+                        lb_8000B1CC(team_jobj, NULL, &pos);
+                        sPointLabel[i]->pos_x = pos.x + 5.8f;
+                        sPointLabel[i]->pos_y = -pos.y + 19.2f;
+                        sPointLabel[i]->pos_z = pos.z;
+                        HSD_SisLib_803A74F0(sPointLabel[i], 0,
+                                            (GXColor*) color);
+                    }
                 }
             }
         }
@@ -5640,6 +5668,81 @@ s32 mnCharSel_802640A0(void)
     }
 
     mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
+
+#ifdef TARGET_PC
+    if (TagAssist_IsTagBattleOn()) {
+        // "MeleeVS" title, replacing the "TEAM BATTLE" banner
+        // mnCharSel_8025EE8C just hid: Melee in purple, VS in green, sat
+        // where that banner used to be.
+        static const GXColor melee_purple = { 160, 60, 220, 255 };
+        static const GXColor vs_green = { 60, 200, 80, 255 };
+
+        lb_80011E24(mnCharSel_804D6CC0, &sp108, 36, -1);
+        lb_8000B1CC(sp108, NULL, &spEC);
+        // Two separate text objects (not one text with two colored runs) --
+        // 803A6B98's (x, y) args turned out not to advance a cursor between
+        // runs, so a second run drawn at the same (0, 0) just overlapped the
+        // first character-for-character. Placing "VS" by hand past "Melee"'s
+        // own width sidesteps needing to understand that API further.
+        //
+        // HSD_SisLib_803A6754 (not the bare _803A5ACC the KO-star texts use)
+        // -- it's the one that actually sets up text->alloc_data, which
+        // HSD_SisLib_803A6B98 below dereferences unconditionally.
+        text = HSD_SisLib_803A6754(0, ctx);
+        sMeleeVsTitle = text;
+        text->pos_x = spEC.x;
+        text->pos_y = -spEC.y - 0.5f;
+        text->pos_z = spEC.z;
+        text->box_size_x = 200.0f;
+        text->box_size_y = 48.0f;
+        text->default_alignment = 1;
+        text->default_kerning = 1;
+        text->font_size.x = 0.09f;
+        text->font_size.y = 0.09f;
+        HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "Melee");
+        HSD_SisLib_803A74F0(text, 0, (GXColor*) &melee_purple);
+
+        text = HSD_SisLib_803A6754(0, ctx);
+        sMeleeVsTitleVs = text;
+        text->pos_x = spEC.x + 6.5f;
+        text->pos_y = -spEC.y - 0.5f;
+        text->pos_z = spEC.z;
+        text->box_size_x = 100.0f;
+        text->box_size_y = 48.0f;
+        text->default_alignment = 1;
+        text->default_kerning = 1;
+        text->font_size.x = 0.09f;
+        text->font_size.y = 0.09f;
+        HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "VS");
+        HSD_SisLib_803A74F0(text, 0, (GXColor*) &vs_green);
+
+        // Per-door "POINT" tag, anchored off team_joint (see fn_80262F44,
+        // which repositions/recolors/shows-hides these every frame off the
+        // same joint -- team_joint sits consistently near the top of the
+        // card for both HMN and CPU doors, unlike cpuslider_joint). Created
+        // hidden -- this initial placement just avoids a garbage first-frame
+        // flash.
+        for (i = 0; i < 4; i++) {
+            lb_80011E24(mnCharSel_804D6CC0, &sp108,
+                        mnCharSel_803F0DFC.doors[i].team_joint, -1);
+            lb_8000B1CC(sp108, NULL, &spEC);
+            text = HSD_SisLib_803A6754(0, ctx);
+            sPointLabel[i] = text;
+            text->pos_x = spEC.x + 5.8f;
+            text->pos_y = -spEC.y + 19.2f;
+            text->pos_z = spEC.z;
+            text->box_size_x = 120.0f;
+            text->box_size_y = 32.0f;
+            text->default_alignment = 2;
+            text->default_kerning = 1;
+            text->font_size.x = 0.05f;
+            text->font_size.y = 0.05f;
+            text->hidden = 1;
+            HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "POINT");
+        }
+    }
+#endif
+
     PAD_STACK(0x20);
     return lbAudioAx_80023F28(gmMainLib_8015ECB0());
 }
@@ -5653,6 +5756,12 @@ void mnCharSel_Scene_OnEnter(void* arg0)
     mnCharSel_804D6CB0 = (CSSData*) arg0;
 
 #ifdef TARGET_PC
+    // The previous CSS scene's teardown (if any) already freed whatever
+    // these pointed at; a fresh scene must never reuse them.
+    sMeleeVsTitle = NULL;
+    sMeleeVsTitleVs = NULL;
+    sPointLabel[0] = sPointLabel[1] = sPointLabel[2] = sPointLabel[3] = NULL;
+
     // TagAssist_ConsumeAutoPopulate is one-shot: true only on the CSS entry
     // that immediately follows the main menu's "TAG BATTLE" selection, false
     // on every later re-entry (e.g. a rematch from the Results screen) --
