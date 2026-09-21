@@ -1,6 +1,7 @@
 # MeleeVS - Melee Tag Fighter
 
 ![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
+https://ko-fi.com/joyastick
 
 A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
