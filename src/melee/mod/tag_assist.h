@@ -41,6 +41,13 @@
 /// way in is the main menu's "TAG BATTLE" entry; there's no in-CSS toggle.
 bool TagAssist_IsTagBattleOn(void);
 
+/// Bitmask (HSD_PAD_* from sysdolphin/baselib/controller.h) of whichever
+/// single extra GCC button the F1 menu's "MeleeVS: Tag Bind" setting
+/// currently maps alongside D-Pad Down for calling/tagging, or 0 if that
+/// setting is "Off" (D-Pad Down only). ftCo_Jump_GetInput reads this to stop
+/// treating the same button as a jump input whenever it's X or Y.
+u32 TagAssist_ExtraBindMask(void);
+
 /// Turns Tag Battle on and arms TagAssist_ConsumeAutoPopulate for the CSS
 /// setup that follows. Call from the main menu's "TAG BATTLE" entry, before
 /// jumping into VS mode's CSS -- goes straight to a ready 2v2 instead of the

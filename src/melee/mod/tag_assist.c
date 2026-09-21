@@ -137,12 +137,39 @@
 /// retail's own down-taunt if that's bound to the same input in a given
 /// state -- known v1 overlap, revisit if that's a problem in practice.
 ///
-/// When the F1 menu's "Tag on Y" setting is on, Y calls/tags too (and
-/// ftCo_Jump_GetInput stops treating Y as a jump button, so the two never
-/// fight over the same press).
+/// The F1 menu's "MeleeVS: Tag Bind" setting picks one more GCC button that
+/// also calls/tags, on top of D-Pad Down (see TagAssist_ExtraBindMask and
+/// pc_get_tag_bind's index table, pc.h). If that button is X or Y,
+/// ftCo_Jump_GetInput stops treating it as a jump button so the two never
+/// fight over the same press; any other pick can double up with whatever
+/// else retail already binds it to (e.g. Start still pauses too) -- same
+/// kind of known overlap as the D-Pad Down/down-taunt case above.
+u32 TagAssist_ExtraBindMask(void)
+{
+    static const HSD_Pad kBindMasks[] = {
+        0,  // Off
+        HSD_PAD_A,
+        HSD_PAD_B,
+        HSD_PAD_X,
+        HSD_PAD_Y,
+        HSD_PAD_Z,
+        HSD_PAD_L,
+        HSD_PAD_R,
+        HSD_PAD_START,
+        HSD_PAD_DPADUP,
+        HSD_PAD_DPADLEFT,
+        HSD_PAD_DPADRIGHT,
+    };
+    int bind = pc_get_tag_bind();
+    if (bind < 0 || (unsigned)bind >= sizeof(kBindMasks) / sizeof(kBindMasks[0])) {
+        return 0;
+    }
+    return kBindMasks[bind];
+}
+
 static inline HSD_Pad TagAssist_TriggerMask(void)
 {
-    return HSD_PAD_DPADDOWN | (pc_is_tag_on_y_enabled() ? HSD_PAD_Y : 0);
+    return HSD_PAD_DPADDOWN | TagAssist_ExtraBindMask();
 }
 #define TAG_ASSIST_PRESSED TagAssist_TriggerMask()
 

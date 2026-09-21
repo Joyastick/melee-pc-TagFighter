@@ -69,6 +69,11 @@ int backend_next(int mode) {
 constexpr const char* tab_ids[] = {"tab-graphics", "tab-audio", "tab-cheats", "tab-controls"};
 constexpr const char* page_ids[] = {"page-graphics", "page-audio", "page-cheats", "page-controls"};
 constexpr int tab_count = 4;
+// Order must match kBindMasks in tag_assist.c (see pc_get_tag_bind, pc.h) --
+// index 0 is "Off" (D-Pad Down only), the rest name one extra GCC button.
+constexpr const char* kTagBindNames[] = {
+    "Off", "A", "B", "X", "Y", "Z", "L", "R", "Start", "D-Pad Up", "D-Pad Left", "D-Pad Right"};
+constexpr int kTagBindCount = int(sizeof(kTagBindNames) / sizeof(kTagBindNames[0]));
 int tab_index(const Rml::String& id) {
     for (int i = 0; i < tab_count; ++i)
         if (id == tab_ids[i])
@@ -1111,7 +1116,7 @@ public:
             return {"volume", "music-volume", "sfx-volume", "mute", "fps", "scale",
                 "port-check-update"};
         case 2:
-            return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-on-y"};
+            return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-bind"};
         default: {
             std::vector<std::string> ids{"pad-port"};
             for (int i = 0; i < PAD_BUTTON_COUNT; ++i)
@@ -1219,7 +1224,7 @@ public:
         label("frozen-stadium", prefs.frozen_stadium ? "Hazardless" : "Normal");
         label("free-camera", prefs.free_camera ? "Free" : "Normal");
         label("ucf", std::getenv("MELEE_UCF") ? "Environment override" : prefs.ucf ? "On" : "Off");
-        label("tag-on-y", prefs.tag_on_y ? "On" : "Off");
+        label("tag-bind", kTagBindNames[prefs.tag_bind]);
         label("unlock-all", prefs.unlock_all ? "Unlocked" : "Normal");
         label("backend", backend_name(prefs.backend));
         slider("volume", prefs.volume * 100.0f);
@@ -1404,8 +1409,8 @@ public:
             prefs.free_camera = !prefs.free_camera;
         } else if (id == "ucf") {
             prefs.ucf = !prefs.ucf;
-        } else if (id == "tag-on-y") {
-            prefs.tag_on_y = !prefs.tag_on_y;
+        } else if (id == "tag-bind") {
+            prefs.tag_bind = (prefs.tag_bind + 1) % kTagBindCount;
         } else if (id == "unlock-all") {
             prefs.unlock_all = !prefs.unlock_all;
         } else if (id == "backend") {
@@ -1688,8 +1693,8 @@ extern "C" bool pc_is_ucf_enabled(void) {
     static const char* env = std::getenv("MELEE_UCF");
     return env ? env[0] != '0' : prefs.ucf;
 }
-extern "C" bool pc_is_tag_on_y_enabled(void) {
-    return prefs.tag_on_y;
+extern "C" int pc_get_tag_bind(void) {
+    return prefs.tag_bind;
 }
 extern "C" int pc_get_hud_mode(void) {
     return prefs.hud_mode;

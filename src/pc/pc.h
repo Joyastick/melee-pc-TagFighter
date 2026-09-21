@@ -81,7 +81,11 @@ bool pc_is_unlock_all_enabled(void);
 bool pc_is_frozen_stadium_enabled(void);
 bool pc_is_free_camera_enabled(void);
 bool pc_is_ucf_enabled(void);
-bool pc_is_tag_on_y_enabled(void);
+/// Index into the F1 menu's "MeleeVS: Tag Bind" option list (0 = Off,
+/// meaning D-Pad Down only; see the kBindMasks table next to
+/// TagAssist_ExtraBindMask, tag_assist.c, and kTagBindNames, launcher.cpp,
+/// which must stay in the same order).
+int pc_get_tag_bind(void);
 int pc_get_hud_mode(void);
 float pc_get_music_volume(void);
 float pc_get_sfx_volume(void);
