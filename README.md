@@ -47,9 +47,13 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 ### It features: 
 [x] Assists for every character - Press D-Pad Down to perform a predetermined assist move for each character
+
 [x] Active Tag - When both characters are on the screen at the same time, press D-Pad Down to swap 'Point' between them
+
 [x] Multiple 'Freestyle' tags - Ability to active tag 3 times per assist call
+
 [x] 2XKO-Like Duos - Team up with your friends to create crazy combos
+
 [x] Tag Animation Canceling - Cancel any animation the character was in (besides getting hit/grabbed) into full control of the character
 
 ### Planned
