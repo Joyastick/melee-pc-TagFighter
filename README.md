@@ -25,7 +25,7 @@ Melee built from [doldecomp/melee](https://github.com/doldecomp/melee) on top
 of [aurora](https://github.com/encounter/aurora) (GX/OS/PAD/DVD/CARD/THP
 compatibility layer with a WebGPU backend) and SDL3. Everything melee-pc
 provides - the native build, launcher, settings overlay, HD texture packs,
-custom soundtrack streaming, and so on — still applies here; this fork adds
+custom soundtrack streaming, and so on - still applies here; this fork adds
 the Tag Fighter mod on top of it. For melee-pc's own feature list, porting
 notes, and contributing guide, see
 [the upstream README](https://github.com/999sian/melee-pc/blob/master/README.md).
@@ -96,19 +96,19 @@ Battle match plays exactly like vanilla Melee and is unaffected by any of
 this.
 
 **Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
-ONLINE). This drops straight into character select — its own two-tone
-"MeleeVS" title replaces the usual mode banner — with all 4 doors already
-open and paired up 2v2 — ports 1 and 3 on Red, ports 2 and 4 on Blue, each
-Human if a controller is plugged into that port or CPU otherwise — so you can
+ONLINE). This drops straight into character select - its own two-tone
+"MeleeVS" title replaces the usual mode banner - with all 4 doors already
+open and paired up 2v2 - ports 1 and 3 on Red, ports 2 and 4 on Blue, each
+Human if a controller is plugged into that port or CPU otherwise - so you can
 go straight to picking characters instead of opening doors one at a time.
 Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
 leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
 
 **Pick your team**: each door's team-color button cycles between Red and Blue
-only (Green is unavailable — a 2v2 mode has no room for a third team), and a
-door can't be closed either — its toggle just flips between CPU and Player
+only (Green is unavailable - a 2v2 mode has no room for a third team), and a
+door can't be closed either - its toggle just flips between CPU and Player
 (Player only if a controller is on that port). Whoever picks Red plays
-together, whoever picks Blue plays together — team pairing isn't tied to
+together, whoever picks Blue plays together - team pairing isn't tied to
 which port you're in. A team is **Solo Play** if only one of its two doors is
 human (the other stays CPU), or **Duo Play** if both are human, sharing the
 team on their own controllers.
@@ -132,7 +132,7 @@ each team is point by default.
     is briefly waiting that out).
 - **Tag**: D-Pad Down again while the assist is out swaps which of the two is
   point. The fighter you tag into instantly cancels whatever it was doing and
-  you get full control right away -- unless it's genuinely unable to act
+  you get full control right away - unless it's genuinely unable to act
   (hitstun, grabbed, frozen, and other exotic "stuck" states), in which case
   it plays that out naturally first instead of handing you a free escape. Up
   to 3 tags are allowed per call, each on its own short cooldown, and tagging
@@ -149,7 +149,7 @@ each team is point by default.
 In v1, the aerial assist call is the same move as the grounded one for every
 character (tracked as a future refinement, not a limitation you need to work
 around). Kept in sync with
-[docs/tag_assist_roster.csv](docs/tag_assist_roster.csv) — update that file
+[docs/tag_assist_roster.csv](docs/tag_assist_roster.csv) - update that file
 first if a mapping below goes stale.
 
 | Character | Grounded assist | Aerial assist |
