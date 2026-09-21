@@ -237,9 +237,6 @@ formatting standards, 64-bit portability rules, and verification procedures. Run
 Netplay is currently only supported for regular vanilla gameplay, but planned for MeleeVS.
 For more information check out [999sian/melee-pc](https://github.com/999sian/melee-pc) for the main branch for the PC Port
 
-
-## Porting notes
-
 ## Documentation
 
 - [docs/building.md](docs/building.md) - toolchain, packaging, cross-compiling
