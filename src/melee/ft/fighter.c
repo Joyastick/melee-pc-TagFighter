@@ -1922,6 +1922,16 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                     fp->input.held_buttons[0] &= ~HSD_PAD_R;
                     break;
                 }
+                // Same idea for X/Y: strip whichever one the tag-bind
+                // setting has claimed here, at the one place every jump
+                // check (ftCo_Jump_GetInput and its several siblings --
+                // fn_800CAF78, ftCo_JumpAerial, ftCo_KneeBend, Peach's
+                // float check -- each read held/pressed_buttons directly
+                // instead of funneling through one shared function) reads
+                // its input from. The `& HSD_PAD_XY` keeps this from also
+                // stripping a non-jump bind (A/B/Z/Start/D-Pad) that just
+                // happens to be set this frame.
+                fp->input.held_buttons[0] &= ~(TagAssist_ExtraBindMask() & HSD_PAD_XY);
             }
 
             if (gm_8016B0FC()) {

@@ -26,7 +26,6 @@
 #include <melee/ft/inlines.h>
 #include <melee/ft/kinds/ftPeach/ftpeachfloat.h>
 #include <melee/ft/types.h>
-#include <melee/mod/tag_assist.h>
 
 ftCo_JumpInput ftCo_Jump_GetInput(Fighter_GObj* gobj)
 {
@@ -38,10 +37,11 @@ ftCo_JumpInput ftCo_Jump_GetInput(Fighter_GObj* gobj)
     }
 
     // Whichever of X/Y the F1 menu's tag-bind setting has repurposed for
-    // tagging (see TagAssist_ExtraBindMask, tag_assist.c) stops counting as
-    // a jump input here; masking with ~0 (bind is Off, or some other
-    // button entirely) leaves HSD_PAD_XY untouched.
-    if (fp->input.pressed_buttons & (HSD_PAD_XY & ~TagAssist_ExtraBindMask())) {
+    // tagging is already stripped out of pressed_buttons upstream
+    // (Fighter_Spaghetti_8006AD10, fighter.c) -- see that call site's
+    // comment for why it has to happen there instead of here, since this
+    // isn't the only place that reads X/Y for jump.
+    if (fp->input.pressed_buttons & HSD_PAD_XY) {
         return JumpInput_XY;
     }
 

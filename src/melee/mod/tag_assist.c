@@ -140,10 +140,13 @@
 /// The F1 menu's "MeleeVS: Tag Bind" setting picks one more GCC button that
 /// also calls/tags, on top of D-Pad Down (see TagAssist_ExtraBindMask and
 /// pc_get_tag_bind's index table, pc.h). If that button is X or Y,
-/// ftCo_Jump_GetInput stops treating it as a jump button so the two never
-/// fight over the same press; any other pick can double up with whatever
-/// else retail already binds it to (e.g. Start still pauses too) -- same
-/// kind of known overlap as the D-Pad Down/down-taunt case above.
+/// Fighter_Spaghetti_8006AD10 (fighter.c) strips it out of the fighter's
+/// own held/pressed_buttons every frame so it stops counting as a jump
+/// input anywhere in that fighter's own code -- there wasn't just the one
+/// ftCo_Jump_GetInput call site to patch, so the fix has to live upstream
+/// of all of them instead. Any other tag-bind pick can double up with
+/// whatever else retail already binds it to (e.g. Start still pauses too)
+/// -- same kind of known overlap as the D-Pad Down/down-taunt case above.
 ///
 /// L and R each get their own entry, but they can't be read the same way
 /// as every other digital button: a normal (even hard) shield press only
