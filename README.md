@@ -58,7 +58,7 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 ### Planned
 
-- [] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
+[] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
   for now, same as melee-pc's own online 
 
 ## Download
