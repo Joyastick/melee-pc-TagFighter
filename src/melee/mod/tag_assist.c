@@ -28,6 +28,7 @@
 #include <sysdolphin/baselib/random.h>
 
 #include <melee/ft/kinds/ftCommon/forward.h>
+#include <melee/ft/kinds/ftCommon/ftCo_Fall.h>
 
 /// Each of these declares that character's move-Enter function(s) --
 /// see TagAssist_GetAssistMoveEnter for why we call those directly instead
@@ -1805,8 +1806,8 @@ static void TagAssist_TryTag(TeamState* team)
     newAssist = team->point;
     // Cancel whatever the incoming point was doing -- its own assist-call
     // move, an idle loop, whatever -- and drop it into a known-good, fully-
-    // controllable ftCo_MS_Wait baseline the instant control hands over,
-    // the same known-good-state trick used elsewhere in this file
+    // controllable neutral baseline the instant control hands over, the
+    // same known-good-state trick used elsewhere in this file
     // (TagAssist_UpdateTimer, TagAssist_TryReviveFallenPartner). Skipped
     // while TagAssist_CantAct is true -- those are exactly the states where
     // the player wouldn't have control anyway, so tagging in doesn't get to
@@ -1814,14 +1815,30 @@ static void TagAssist_TryTag(TeamState* team)
     // just finishes playing that out naturally like it would have
     // regardless. Deliberately NOT applied to newAssist (the outgoing
     // point) either way: only the fighter being tagged INTO should ever
-    // snap to neutral. Safe to force here specifically because newPoint is
-    // always the currently called-out assist, which TagAssist_Unbench
-    // already places on solid ground when it's spawned in -- unlike an
-    // arbitrary mid-air fighter, forcing a grounded idle state never
-    // teleports or desyncs it.
+    // snap to neutral.
+    //
+    // TagAssist_Unbench places a freshly-called assist on solid ground, but
+    // that's only true the moment it's spawned in -- an aerial assist move
+    // (TagAssist_GetAssistMoveEnterAerial), getting launched while out, or
+    // just walking off a platform edge during its cameo can all leave it
+    // airborne by the time this actually runs. ftCo_MS_Wait has no falling
+    // physics of its own -- its collision handling (ftCo_Wait_Coll,
+    // ft_80084280) assumes the fighter is already standing on something
+    // and just re-glues their position to whatever floor happens to be
+    // within its normal ground-stick range, which reads as an abrupt
+    // "teleport to the ground" if newPoint was actually still some real
+    // height up. ftCo_Fall_Enter is the equivalent known-good baseline for
+    // that case: same idea (immediately player-controllable, no lingering
+    // move/IASA state), but as a real airborne state with its own falling
+    // physics instead of a grounded one.
     if (!TagAssist_CantAct(newPoint)) {
-        Fighter_ChangeMotionState(newPoint, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f,
-                                  NULL);
+        Fighter* newPointFp = GET_FIGHTER(newPoint);
+        if (newPointFp->ground_or_air == GA_Ground) {
+            Fighter_ChangeMotionState(newPoint, ftCo_MS_Wait, 0, 0.0f, 1.0f,
+                                      0.0f, NULL);
+        } else {
+            ftCo_Fall_Enter(newPoint);
+        }
     }
     TagAssist_ApplyControlRoles(team, newPoint, newAssist);
 
