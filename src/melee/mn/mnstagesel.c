@@ -993,7 +993,7 @@ void mnStageSel_Scene_OnFrame(void)
             mnStageSel_804D6CAE = netStageSel_Resolve();
             /* >= NUM_STAGES, not >= 0x1E: 29 is the RANDOM button (stkind 0)
              * and 30 is "no cell". Taking 29 literally handed the match
-             * stkind 0 — both peers agreed on it, so no desync was reported;
+             * stkind 0 - both peers agreed on it, so no desync was reported;
              * the match simply started with no stage and fell through to the
              * results screen. */
             if (mnStageSel_804D6CAE >= NUM_STAGES) {
@@ -1002,7 +1002,7 @@ void mnStageSel_Scene_OnFrame(void)
         }
 #endif
         /* mnStageSel_804D6CAE is 30 ("no cell") until the cursor hit test at
-         * :409-423 matches, and the table holds exactly 30 entries — so
+         * :409-423 matches, and the table holds exactly 30 entries - so
          * confirming without a cell read ONE PAST THE END and handed the
          * match whatever stkind that garbage byte held. Observed online as a
          * match that requests "Gr.dat" (the empty stage name) and falls

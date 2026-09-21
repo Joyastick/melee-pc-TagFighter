@@ -765,7 +765,7 @@ static void resume_fail(void) {
  * pins seed, start_frame and ck_from); HS_PENDING and HS_FAILED mean the
  * parameters are still unagreed, whether or not the guest has adopted the
  * host's session id. The MELEE_NET path runs no handshake at all and stays
- * HS_IDLE for the whole session, so there idleness cannot mean "not yet" --
+ * HS_IDLE for the whole session, so there idleness cannot mean "not yet" -
  * except in a lobby session's first frames, before pc_lan_poll() has
  * claimed the handshake. The lobby claims it on its first poll, so a
  * session still idle RESUME_LOBBY_GRACE frames in has no lobby behind it.
@@ -783,8 +783,8 @@ static bool session_established(void) {
  *
  * One-way by design: a RESUME is a statement, never a request, and this
  * never sends anything. The receiver has both sides' numbers in front of it
- * -- s_wrote - r.have is what the peer needs from us, r.newest -
- * s_remote_have what we need from it -- so one message clears or refuses the
+ * - s_wrote - r.have is what the peer needs from us, r.newest -
+ * s_remote_have what we need from it - so one message clears or refuses the
  * whole exchange, and when both peers stall (the usual case) each opens its
  * own phase and states its own numbers anyway. An earlier version answered
  * a RESUME whenever no phase was open on this side; both sides then answered
@@ -842,7 +842,7 @@ void net_resume_rel(const void* payload, int len) {
 
 /* The stall timeout fired: open the phase instead of dropping the session.
  * False when resume is off or the session was never established, and the
- * caller then times out exactly as it did before this file grew a phase --
+ * caller then times out exactly as it did before this file grew a phase -
  * same line, same status, same 7 s. */
 static bool resume_begin(uint64_t now) {
     if (s_rc_window_ms <= 0 || !session_established()) {
@@ -1041,7 +1041,7 @@ void pc_net_disconnect(void) {
 
 /* MELEE_NET_EXIT_AFTER_FRAMES=n (tools/net_test.py): the instance that reaches
  * n first sends BYE, and the other one is a frame or two behind (the clocks
- * differ by the time offset), so its own check would never fire — it would sit
+ * differ by the time offset), so its own check would never fire - it would sit
  * at the title until the harness killed it. A BYE this close to the target ends
  * the test as done; a BYE for a real reason still logs DESYNC etc. first. */
 static int32_t s_exit_after; /* 0 = knob unset */
@@ -1401,8 +1401,8 @@ static PADStatus* pad_head(void) {
  * is about to consume. With qtype 0 a full queue makes HSD_PadRenewRawStatus
  * shift qread, merge the dropped sample's buttons into the next one and
  * overwrite the slot write_head just filled (controller.c:77-105); the tick
- * then simulates a raw local sample -- the remote port reads as "no
- * controller", the local port as the undelayed physical pad -- while the
+ * then simulates a raw local sample - the remote port reads as "no
+ * controller", the local port as the undelayed physical pad - while the
  * frame's checksum still reports the synced inputs. One such frame on one
  * peer is a permanent divergence.
  *
@@ -1487,7 +1487,7 @@ static void head_check(void) {
     /* And did the tick advance the simulation at all? gm_RunSimTick only
      * runs gm_EvaluateAllControllerInputs and the scene's frame proc when
      * lb_80019A30(0) is set, which lb_80019900 recomputes from an
-     * accumulator in lb_0195.c -- a TU the snapshot deliberately excludes.
+     * accumulator in lb_0195.c - a TU the snapshot deliberately excludes.
      * At 60 Hz it is true every tick; if a re-run tick ever lands on a
      * false one, that frame was counted but never simulated. */
     if (!lb_80019A30(0)) {
@@ -1791,7 +1791,7 @@ static void fresh_tick(PADStatus* head, bool raw) {
  * re-run. The pair separates the two faults that both look like "the
  * re-simulation diverged": a tick that is not a pure function of (state,
  * inputs) breaks both, while a first pass that did something a re-run never
- * does -- rendered, loaded, ran a frame twice, read a clock -- breaks only
+ * does - rendered, loaded, ran a frame twice, read a clock - breaks only
  * the first. Off unless the variable is set. */
 #define AUDIT_EVERY 120
 static int s_audit_k;
@@ -1862,7 +1862,7 @@ void pc_net_sync(void) {
     /* Every tick must consume a queue entry: HSD_PadRenewMasterStatus renews
      * the game's inputs only when the queue is non-empty, so a tick that
      * finds it empty runs on the previous frame's inputs while write_head
-     * and the checksum below say it ran on this frame's -- a divergence on
+     * and the checksum below say it ran on this frame's - a divergence on
      * one side only. pc_net_pace_adjust_ns pins one entry there; this counts
      * the invariant (pad_empty must stay 0) and repairs it if some flush got
      * in between. The local sample is read back out of the head only when

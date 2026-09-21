@@ -52,7 +52,7 @@
  * so they come from the platform CSPRNG and nowhere else: pc_install_id()
  * (pc.h:65) is persistent and public, and HSD_Rand is the game's
  * deterministic RNG whose seed is on the wire. There is deliberately no
- * fallback — a machine that cannot produce 8 random bytes fails the
+ * fallback - a machine that cannot produce 8 random bytes fails the
  * handshake instead of producing a predictable nonce. */
 #if defined(MELEE_USE_BCRYPT)
 #include <bcrypt.h>
@@ -201,7 +201,7 @@ static void rules_apply(const Rules* ru, bool from_peer) {
  *
  * So the session pins the whole unlock surface: pc_unlock_state_all() is
  * written into the real masks before RULES is built, which is what makes
- * every reader agree -- the three predicates with a pc_is_unlock_all_enabled
+ * every reader agree - the three predicates with a pc_is_unlock_all_enabled
  * short circuit, gm_80164600 which has none, and the direct mask readers in
  * gm_1601.c and gm_16F1.c that bypass any read-time override. The state
  * each side actually ended up with is hashed onto the wire and compared, so
@@ -349,7 +349,7 @@ static void on_rules(const uint8_t* payload, int len) {
     }
     /* Pin our unlock surface, then check the host's came out the same. Both
      * sides write the same constant, so a mismatch means the two builds
-     * disagree about what "all unlocked" is -- one peer would run with a
+     * disagree about what "all unlocked" is - one peer would run with a
      * reader still saying "locked", which is a silent mid-match seed
      * divergence. Refuse instead (local://UnlockSync-doc.md).
      * ponytail: refusing sends no READY, so the host only finds out from its
@@ -413,7 +413,7 @@ static void on_ready(const uint8_t* payload, int len) {
     /* A READY is ours only if it hashes under this session id and echoes the
      * nonce we put in RULES; a capture from any earlier session fails both,
      * and an off-path forgery has to guess 64 bits. Refusals are dropped,
-     * not failed, so an injected READY cannot end a live handshake — the
+     * not failed, so an injected READY cannot end a live handshake - the
      * genuine one still arrives, or the 15 s timeout fires. */
     if (rd.hash != ready_hash(rd, net.session)) {
         hs_drop(LOG_READY_HASH, "READY", "hash mismatch");

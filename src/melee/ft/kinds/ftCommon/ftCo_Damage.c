@@ -107,7 +107,7 @@ float ftCo_ScaleBy154(float mul)
     return mul * p_ftCommonData->x154;
 }
 
-/// Knockback severity bucket, 0..3 — see the header. Declaring this @c bool
+/// Knockback severity bucket, 0..3 - see the header. Declaring this @c bool
 /// clamped every strong hit to 1.
 enum_t ftCo_8008D8E8(float f)
 {

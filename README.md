@@ -64,7 +64,7 @@ is GPL-3.0-or-later. Details under [License](#license).
 ## Download
 
 Tag Fighter builds (with the mod included) are on
-[this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases) --
+[this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases) -
 not upstream's, which only ever ships vanilla melee-pc. Grab the
 `Melee-Windows-x86_64-vX.Y.Z.zip` asset from the latest release, unzip
 it, and run `melee.exe` (see [Running](#running) below for disc requirements).

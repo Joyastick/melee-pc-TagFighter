@@ -46,12 +46,12 @@ tree over the disc image.
 
 ### The two env knobs the harness needs
 
-- `MELEE_EXIT_AFTER_FRAMES=<n>` — after `n` frames, leave the frame loop through
+- `MELEE_EXIT_AFTER_FRAMES=<n>` - after `n` frames, leave the frame loop through
   the same path a window close takes (`pc_exit_requested` in `src/pc/vi.c`, so
   `atexit(pc_shutdown_once)` still runs), exit 0, and log
   `MELEE_EXIT_AFTER_FRAMES: reached frame <n>, exiting`. This is what makes a
   case bounded: a hang fails on the per-case timeout instead of hanging CI.
-- `MELEE_BOOT_SCENE=<title|vs|classic|training>` — boot straight into one scene
+- `MELEE_BOOT_SCENE=<title|vs|classic|training>` - boot straight into one scene
   with a hard-coded setup, no menu navigation. It starts the state machine in
   that mode instead of routing through `GM_BOOT`, whose memory-card scene burns
   a mode-dependent and wildly variable number of frames (under 300 ahead of
@@ -59,7 +59,7 @@ tree over the disc image.
   already a fixed direct start (`onEnterDebugVs`: Link vs Mario on Final
   Destination). `classic` and `training` open on a character select, so their
   `on_load` hooks seed the pick the way the select screen's exit would and jump
-  past it — Mario in Classic, Mario vs a Link CPU on Battlefield in Training.
+  past it - Mario in Classic, Mario vs a Link CPU on Battlefield in Training.
   While the knob is set, the state machine also logs `boot scene: game mode <n>`
   and `boot scene: state <n> scene <n>` per entry. Both knobs cost one `getenv`
   when unset.

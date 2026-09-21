@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>melee-pc — a native PC port of Super Smash Bros. Melee</title>
+<title>melee-pc - a native PC port of Super Smash Bros. Melee</title>
 <meta name="description" content="melee-pc: a native Linux, Windows, macOS, Android and iOS port of Super Smash Bros. Melee built from the decompilation. Bring your own disc image.">
 <style>
   :root { --bg:#0e0f13; --fg:#e8e8ec; --dim:#a4a6b3; --line:#2a2c36; --accent:#e4b04a; --card:#171922; }
@@ -73,8 +73,8 @@
   out of the disc image you supply at boot. The repository and the release archives contain only the port code and
   third-party libraries.</p>
   <p>It is a beta, for testing. Expect crashes. Online play with rollback netcode is planned and <strong>not implemented
-  yet</strong>. Every game mode runs -- VS, 1-P Classic / Adventure / All-Star, Training, Stadium, Trophies, Event
-  Match -- alongside PC extras like internal resolution up to 10x, a 16:9 combat camera, post-processing shaders,
+  yet</strong>. Every game mode runs - VS, 1-P Classic / Adventure / All-Star, Training, Stadium, Trophies, Event
+  Match - alongside PC extras like internal resolution up to 10x, a 16:9 combat camera, post-processing shaders,
   gamepad remapping, custom soundtracks and HD texture packs. Feature by feature, including what is only half done, the
   <a href="https://github.com/999sian/melee-pc#status">status table in the README</a> is the authoritative list; this
   page does not keep its own copy.</p>
@@ -103,7 +103,7 @@
       (<strong>NTSC-U 1.02, game ID GALE01</strong>) as <code>.iso</code>, <code>.gcm</code>, <code>.ciso</code> or <code>.rvz</code>.
       A Europe (PAL, GALP01) image boots experimentally. Japanese discs, 1.00/1.01 revisions and modified builds (20XX, UnclePunch, …) do not work.</li>
     <li><strong>GPU:</strong> Vulkan 1.1 on Linux and Android; Direct3D 12 (feature level 11_0) or Vulkan on Windows; Metal on macOS/iOS.
-      A Direct3D 11 fallback is built for the Intel Haswell iGPUs (HD 4000/4400/4600, 2012–2014 laptops) that Dawn refuses on D3D12, but it has not been verified on real hardware, see the <a href="#faq-intel">FAQ</a>.</li>
+      A Direct3D 11 fallback is built for the Intel Haswell iGPUs (HD 4000/4400/4600, 2012-2014 laptops) that Dawn refuses on D3D12, but it has not been verified on real hardware, see the <a href="#faq-intel">FAQ</a>.</li>
     <li><strong>CPU/RAM:</strong> any 64-bit x86 or ARM CPU from the last decade; 2 GB of RAM is enough (the asset cache scales itself down on low-memory devices).</li>
     <li><strong>Android:</strong> Android 8.0 (API 26) or newer, 64-bit ARM, Vulkan-capable GPU. Android 9 phones that only expose OpenGL ES are not supported.</li>
     <li><strong>Controllers:</strong> any gamepad SDL3 knows (Xbox, PlayStation, Switch Pro, …), or the keyboard. An official Wii U / Switch GameCube adapter is read directly for raw stick and trigger values; in PC mode it is just another gamepad.</li>
@@ -153,7 +153,7 @@
   </details>
 
   <details id="faq-disc"><summary>Which disc version do I need?</summary>
-    <p><strong>USA revision 2 — NTSC-U 1.02, game ID GALE01.</strong> This is the only version the code was recovered from, and the only one the disc verifier has a reference hash for. A PAL (GALP01) image also boots, experimentally: it runs the USA game code on the PAL files, with English (UK) text and at 60 Hz. PAL images always show as "unverified" because there is no reference hash for them.</p>
+    <p><strong>USA revision 2 - NTSC-U 1.02, game ID GALE01.</strong> This is the only version the code was recovered from, and the only one the disc verifier has a reference hash for. A PAL (GALP01) image also boots, experimentally: it runs the USA game code on the PAL files, with English (UK) text and at 60 Hz. PAL images always show as "unverified" because there is no reference hash for them.</p>
     <p>1.00 and 1.01 discs, the Japanese release, and any modified image will not work. If you own a 1.00/1.01 US disc you are out of luck for now.</p>
     <p class="src">Sources: README, release notes.</p>
   </details>
@@ -179,7 +179,7 @@
   </details>
 
   <details id="faq-intel"><summary>Windows: <code>DXGI_ERROR_DEVICE_HUNG</code> / "Device lost" on an older Intel laptop.</summary>
-    <p>Intel HD 4000/4400/4600 (Haswell) iGPUs cannot use Direct3D 12 here: Dawn refuses D3D12 on Intel Gen7 outright and Intel never shipped a Windows Vulkan driver for them, so <em>Auto</em> is meant to land on Direct3D 11. That fallback is built but nobody has confirmed it working on such a machine yet, so a report with a log from one is genuinely useful. A <code>DXGI_ERROR_DEVICE_HUNG</code> in the log on one of these machines is Intel's last Haswell driver (20.19.15.x, from 2020) timing out the GPU mid-match — Pokémon Stadium transformations are a reliable trigger — and there is no further API to fall back to on that hardware.</p>
+    <p>Intel HD 4000/4400/4600 (Haswell) iGPUs cannot use Direct3D 12 here: Dawn refuses D3D12 on Intel Gen7 outright and Intel never shipped a Windows Vulkan driver for them, so <em>Auto</em> is meant to land on Direct3D 11. That fallback is built but nobody has confirmed it working on such a machine yet, so a report with a log from one is genuinely useful. A <code>DXGI_ERROR_DEVICE_HUNG</code> in the log on one of these machines is Intel's last Haswell driver (20.19.15.x, from 2020) timing out the GPU mid-match - Pokémon Stadium transformations are a reliable trigger - and there is no further API to fall back to on that hardware.</p>
     <p>The graphics backend can be pinned from the launcher's Graphics tab (<em>Direct3D 11</em>) or with <code>MELEE_BACKEND=d3d11</code>, which is useful when reporting so the log shows the same path every run.</p>
     <p class="src">Sources: <a href="https://github.com/999sian/melee-pc/issues/67">#67</a>, <a href="https://github.com/999sian/melee-pc/issues/64">#64</a>.</p>
   </details>

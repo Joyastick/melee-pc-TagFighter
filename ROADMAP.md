@@ -92,12 +92,12 @@ Focus: Cutting-edge display performance and competitive practice tools (UnclePun
 Focus: Zero-delay online play with completely decentralized, serverless peer matchmaking. Design document: [docs/netcode-plan.md](docs/netcode-plan.md).
 
 - [ ] **Native Rollback Netcode** (Slippi model, re-implemented on native memory):
-  * Input delay 0–4 (auto from RTT), 7-frame rollback window, repeat-last-input prediction, snapshots only on predicted frames.
+  * Input delay 0-4 (auto from RTT), 7-frame rollback window, repeat-last-input prediction, snapshots only on predicted frames.
   * Whole-region snapshot of game statics + live heaps (audio heap excluded); SFX/music/rumble gated during re-simulation.
   * Slippi-style time sync (trimmed-mean clock offset, stall/advance) applied to native frame pacing; per-frame desync checksums.
   * Determinism groundwork first: `-ffp-contract=off` on every TU game logic reaches, one vendored trig implementation instead of platform libm, shared RNG seed, deterministic (prewarmed) in-match disc loads, record/replay harness.
 - [ ] **BitTorrent-Style Decentralized Matchmaking (Serverless P2P)**:
-  * **DHT / Kademlia Peer Discovery**: Mainline DHT (BEP 5) via jech/dht; time-bucketed topic infohashes for queues; `announce_peer(implied_port)` + `get_peers` is the rendezvous, BEP 42 `ip` reveals the NAT mapping — no matchmaking server, no STUN.
+  * **DHT / Kademlia Peer Discovery**: Mainline DHT (BEP 5) via jech/dht; time-bucketed topic infohashes for queues; `announce_peer(implied_port)` + `get_peers` is the rendezvous, BEP 42 `ip` reveals the NAT mapping - no matchmaking server, no STUN.
   * **Decentralized Connect Codes**: `NAME#XXXX` (suffix derived from the player's ed25519 public key); Direct topics hash the code.
   * **NAT Traversal & UDP Hole-Punching**: Simultaneous open from the DHT socket (Slippi's approach); symmetric NAT re-queues, no relay.
   * **Community Resilience & Longevity**: Zero backend infrastructure means the online mode can never be shut down or abandoned.

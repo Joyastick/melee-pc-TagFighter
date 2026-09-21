@@ -89,7 +89,7 @@ def keys(proto, rev, ident, name, port, state="lobby", gen=1, disc="deadbeef"):
     """The TXT set announce_on() writes (src/pc/net_lan.c:148-217). A record
     claiming our own protocol version must carry the full key set including
     disc=, or parse_txt() rejects it as RJ_NO_OURS before any other rule is
-    reached — which is what makes every 'accept' case here a real parse."""
+    reached - which is what makes every 'accept' case here a real parse."""
     return [f"v={proto}", f"rev={rev}", f"id={ident:016x}", f"name={name}",
             f"port={port}", f"state={state}", f"gen={gen}", f"disc={disc}"]
 

@@ -1,7 +1,7 @@
 **Beta, for testing only.** Expect crashes and missing features.
 
 You need your own Super Smash Bros. Melee disc image. **No game data ships in
-these artifacts** — the port reads everything, including its font atlases, from
+these artifacts** - the port reads everything, including its font atlases, from
 the image you supply at runtime.
 
 **USA revision 2 (NTSC-U 1.02, GALE01)** is the supported disc. A Europe (PAL,
@@ -31,7 +31,7 @@ English (UK) text.
   best, usually none), and because DI is established from the stick at the
   moment hitlag ends, the DI window was 3 frames too, so launches landed at
   their raw undirected endpoint. That reads in play as "no hitlag, no SDI, and
-  everybody gets sent way further than usual" — thanks to Syrox for the report
+  everybody gets sent way further than usual" - thanks to Syrox for the report
   that identified it. Hitlag is now `floor(floor(floor(d/3 + 3) * e) * c)`
   capped at 20, with the 1.5x electric multiplier on the victim and the
   0.666667x crouch-cancel multiplier, verified against 1634 measured hits.
@@ -168,7 +168,7 @@ image path directly:
 
 - **Phase 1 Feature Pack & Cheats Restructuring:**
   - **Custom Soundtrack Streaming:** Embedded `stb_vorbis` audio stream decoder supporting runtime `.ogg` and `.wav` file overrides for BGM. Automatically loads stage soundtrack replacements placed in `music/` or loose folders and blends them with in-game music volume controls.
-  - **Free / Unlocked Pause Camera:** Added a Free Camera cheat toggle in settings and in-game F1 overlay, permitting full 360-degree pitch/yaw rotation and 0.5f–5000.0f zoom distance while paused.
+  - **Free / Unlocked Pause Camera:** Added a Free Camera cheat toggle in settings and in-game F1 overlay, permitting full 360-degree pitch/yaw rotation and 0.5f-5000.0f zoom distance while paused.
   - **Wide HUD Anchoring (16:9):** Match timer, stock icons, damage percentages, and player tags are dynamically anchored outwards for native 16:9 widescreen viewports (toggleable between Classic 4:3 and Wide 16:9 in Graphics settings).
   - **Dedicated Cheats Tab:** Restructured launcher and in-game F1 menu with a dedicated "Cheats" tab housing *Unlock All*, *Frozen Stadium* (hazardless Pokémon Stadium), and *Free Camera*.
 
@@ -187,7 +187,7 @@ image path directly:
 
 - **Android & Mobile Optimizations:**
   - **Android 60 FPS First-Play Intro Optimization:** Eliminated main-thread pipeline compilation stalls during `MvOpen.mth` by stopping unrequested background shader queue drainage when `!g_hasPipelineThread`.
-  - **Faster Android Boot Times:** Instant check in `seed_pipeline_cache()` skips SQLite re-seeding if already populated, cutting 1.5–3.0s off warm launches.
+  - **Faster Android Boot Times:** Instant check in `seed_pipeline_cache()` skips SQLite re-seeding if already populated, cutting 1.5-3.0s off warm launches.
   - **Adreno GPU Color Correction (fixes #20):** Prefer RGBA8Unorm swapchain format to fix inverted red/blue colors on Qualcomm Adreno GPUs.
 
 - **Memory Management & OS Startup Stability:**
@@ -346,14 +346,14 @@ settings overlay.
 ## Contributors
 
 ### Project Contributors
-- **@999sian** — Project Lead, Phase 1 features, multi-core optimizations, file cache, Android & Windows porting, and stability fixes.
-- **@theofficialgman** — Linux aarch64 (ARM64) support, Nod aarch64 prebuilts, 4-core & ARM scheduling optimizations (#44, #47).
-- **@alexscott2718-gif** — Graphics backend selection, command line overrides, and engine logging.
-- **@r-burns** — Melee decompilation and 64-bit portability foundations.
-- **@MarkMcCaskey** — Decompilation and core engine maintenance.
-- **@ribbanya** (Robin Avery) — Decompilation and memory card subsystem.
-- **@PsiLupan** (Will Carter) — Decompilation and subsystem typing.
-- **@itsgrimetime** (Mike Grimes) — Decompilation foundations.
+- **@999sian** - Project Lead, Phase 1 features, multi-core optimizations, file cache, Android & Windows porting, and stability fixes.
+- **@theofficialgman** - Linux aarch64 (ARM64) support, Nod aarch64 prebuilts, 4-core & ARM scheduling optimizations (#44, #47).
+- **@alexscott2718-gif** - Graphics backend selection, command line overrides, and engine logging.
+- **@r-burns** - Melee decompilation and 64-bit portability foundations.
+- **@MarkMcCaskey** - Decompilation and core engine maintenance.
+- **@ribbanya** (Robin Avery) - Decompilation and memory card subsystem.
+- **@PsiLupan** (Will Carter) - Decompilation and subsystem typing.
+- **@itsgrimetime** (Mike Grimes) - Decompilation foundations.
 
 ### Community Testers & Issue Reporters
 Special thanks to our community members whose detailed bug reports and reproduction steps directly helped diagnose and resolve issues in these releases:
@@ -370,8 +370,8 @@ Special thanks to our community members whose detailed bug reports and reproduct
 - **@nitrostemp** (#37)
 
 ### Upstream Projects & Foundations
-- **[doldecomp/melee](https://github.com/doldecomp/melee)** — The Super Smash Bros. Melee decompilation team and contributors.
-- **[encounter/aurora](https://github.com/encounter/aurora)** — Luke Street (@encounter) and contributors for the GameCube hardware emulation layer and WebGPU backend.
-- **[TwilitRealm/dusklight](https://github.com/TwilitRealm/dusklight)** — Architectural inspiration for GameCube PC ports.
+- **[doldecomp/melee](https://github.com/doldecomp/melee)** - The Super Smash Bros. Melee decompilation team and contributors.
+- **[encounter/aurora](https://github.com/encounter/aurora)** - Luke Street (@encounter) and contributors for the GameCube hardware emulation layer and WebGPU backend.
+- **[TwilitRealm/dusklight](https://github.com/TwilitRealm/dusklight)** - Architectural inspiration for GameCube PC ports.
 - **SDL3, RmlUi, stb_vorbis, and Dawn teams** for the runtime engine libraries.
 

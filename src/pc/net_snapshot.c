@@ -240,7 +240,7 @@ void record_state(const PADStatus* head, int32_t frame) {
 void dump_states_around(int32_t frame) {
     /* Most of the ring: the checksum covers position but not velocity, so
      * the frame a desync is reported on is not the frame the two timelines
-     * parted -- that one is found by diffing the two peers' dumps back
+     * parted - that one is found by diffing the two peers' dumps back
      * until the lines agree. */
     for (int32_t f = frame - 40; f <= frame + 1; f++) {
         const char* s = s_state_ring[f & (STATE_RING - 1)];
@@ -271,7 +271,7 @@ const char* state_line(int32_t frame) {
  * take it (CMakeLists.txt: Linux and Android). GNU ld for PE/COFF and ld64
  * have no INSERT AFTER, so on Windows and Apple the four symbols have no
  * definition: without them the link fails outright, and defining them as an
- * empty span would be worse — snapshot_take would happily copy the heaps and
+ * empty span would be worse - snapshot_take would happily copy the heaps and
  * silently omit every static, i.e. rollback into a desync. So they are
  * defined here as an empty span on those platforms and snapshot_take refuses,
  * which drops the session to lockstep for good (net.c snap_predicted raises
