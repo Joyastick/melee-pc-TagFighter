@@ -1,7 +1,7 @@
 **Beta, for testing only.** Expect crashes and missing features.
 
 You need your own Super Smash Bros. Melee disc image. **No game data ships in
-these artifacts** - the port reads everything, including its font atlases, from
+these artifacts** — the port reads everything, including its font atlases, from
 the image you supply at runtime.
 
 **USA revision 2 (NTSC-U 1.02, GALE01)** is the supported disc. A Europe (PAL,
@@ -16,35 +16,23 @@ English (UK) text.
 
 ## Highlights
 
-- **Rollback Netplay & LAN Play Prototype (#72):**
-  - Native in-game Online menu (`VS Mode > ONLINE`) featuring LAN Play and Direct IP connect, complete with an interactive *Mario Kart: Double Dash*-style LAN lobby counter.
-  - Native rollback netplay engine with state snapshotting, deterministic simulation rollbacks, reliable UDP messaging, and live in-game network HUD showing ping, delay, and rollback frame count.
-  - Cross-platform floating-point determinism (`-ffp-contract=off`, unified musl trigonometry) guaranteeing simulation parity across Linux, Windows, and Android.
-- **Native macOS Support (Apple Silicon & Intel) (#65):**
-  - Native macOS `.app` bundle packages (`Melee-macOS-arm64.zip` and `Melee-macOS-x86_64.zip`) using the Apple Metal graphics backend via WebGPU/Dawn.
-  - Built with Homebrew GCC big-endian scalar storage order translation and automatic dylib staging.
-- **Experimental PAL Disc Support (#65):**
-  - Boot European / PAL disc images (GALP01) using USA game code with automatic string index remapping, PAL kerning tables, and single-byte SIS font decoding.
-- **Hitlag, SDI and DI are fixed:** Every build before this one gave *every*
-  hit in the game exactly 3 frames of hitlag regardless of damage, instead of
-  4-20. Hits had almost no freeze, SDI was effectively impossible (one input at
-  best, usually none), and because DI is established from the stick at the
-  moment hitlag ends, the DI window was 3 frames too, so launches landed at
-  their raw undirected endpoint. That reads in play as "no hitlag, no SDI, and
-  everybody gets sent way further than usual" - thanks to Syrox for the report
-  that identified it. Hitlag is now `floor(floor(floor(d/3 + 3) * e) * c)`
-  capped at 20, with the 1.5x electric multiplier on the victim and the
-  0.666667x crouch-cancel multiplier, verified against 1634 measured hits.
-  Knockback *magnitude* was never affected: 259 measured launches match the
-  vanilla formula exactly.
-- **Direct3D 11 backend (Windows):** a Direct3D 11 path is now built and ordered after D3D12, ahead of Vulkan, for the GPUs Dawn refuses on D3D12 (Intel Gen7 / Haswell-era iGPUs); it is also selectable in the launcher's *Graphics backend* setting and as `MELEE_BACKEND=d3d11`. **Untested on real Windows hardware**: the adapter enumerates and the fall-back to D3D12 works, but nobody has yet seen a D3D11 device created. Reports with a log are wanted. The log records each skipped backend and why, plus the adapter and driver chosen.
-- **Universal Controller Fix (UCF 0.8x):** dashback and shield-drop rules, off by default; toggle on the launcher's Gameplay page or the F1 port menu ("Universal Controller Fix"), or force with `MELEE_UCF=1`.
+A point release for two bugs reported against v0.1.10-beta, both hit on a
+first online visit.
 
 ## Fixes
 
-- **Adventure Mode Topi / ReDead Crash Fix (fixes #68, #71):** Resolved an LP64 64-bit struct alignment bug in `itZako_ItemVars` that caused Topi's icicle back-reference to be overwritten, crashing the game with `SIGSEGV` when attacking or KO'ing enemies on Icicle Mountain and Underground Maze.
-- **Android Handshake Compatibility:** Gated `getrandom()` behind API 28+ check with `/dev/urandom` fallback for older Android releases (API 26/27).
-- **First-use shader pipeline compiles no longer freeze the game (#46):** a draw whose pipeline is still compiling is skipped for a few frames, compiles run on a low-priority worker pool (`MELEE_PIPELINE_JOBS`), and the bundled seed is queued at the session's MSAA level. `MELEE_PIPELINE_SYNC=1` restores the old blocking behaviour.
+- **Online Profile said "Identity unavailable. Check your profile files"**, and
+  Direct Connect then hosted an empty code, so nobody could be dialed. An
+  `identity.key` whose length was not 32 bytes (a 0-byte file left by a crash
+  or a full disk between the create and the write, or a truncated copy) was
+  refused forever: every later run failed the same way until the file was
+  deleted by hand. A file that cannot hold a key is now replaced, and every
+  failure logs the path and errno. A readable 32-byte key is never touched.
+  If yours was damaged, your connect code changes: the old key was
+  unrecoverable either way.
+- **The launcher's Discord icon never loaded** (`Failed to open file
+  '<game dir>\discord.png'`). Relative assets in the launcher page were looked
+  up beside the executable instead of in `resources/`.
 
 ## Known issues
 
@@ -53,7 +41,10 @@ the numbers below link there.
 
 **All platforms**
 
-- Online play is a prototype: LAN Play and Direct Connect are supported, but Ranked, Unranked, and global matchmaking lobbies are not yet implemented.
+- Online play is a prototype. LAN Play, Direct Connect, Unranked and Ranked are
+  implemented and rendezvous through the public DHT, but pairing across two
+  NATs and live ranked acceptance are unproven, and cross-platform simulation
+  determinism is not claimed. Ratings are community-computed and unverified.
 - Widescreen applies to fights (VS, Sudden Death, Training); menus, results and
   cutscenes stay at the original aspect. The wide HUD is a separate toggle and
   only moves the timer and the 2-4 player HUD groups.
@@ -137,6 +128,103 @@ image path directly:
 
 ## Previous releases
 
+### Changes in v0.1.10-beta
+
+#### Highlights
+
+- **Internet play over the DHT (prototype):** signed Direct, Unranked and
+  Ranked best-of-three matchmaking, rendezvous through the public Mainline DHT
+  with no server of ours in the path, plus burst hole punching for cellular
+  and double-NAT links. Public DHT storage is verified; two-NAT pairing and
+  live ranked acceptance are still pending.
+- **Direct Connect asks for the code in game:** the lobby prompts for your
+  friend's connect code instead of silently reusing whatever the launcher
+  field last held. Stick or D-pad left/right picks a slot, up/down cycles the
+  character, START connects, and a blank code hosts your own code for a friend
+  to dial. Previously two players who both opened Direct Connect each hosted
+  their own code and never met.
+- **Rollback snapshots on every supported platform**, so Windows and macOS no
+  longer fall back to lockstep from the first frame.
+
+#### Fixes
+
+- Ask for the connect code before starting a Direct Connect session, and keep
+  the "not a connect code" message on screen until the code is edited.
+- Retry after a failed direct session re-opens code entry instead of dropping
+  the code and restarting as public matchmaking. Untested: forcing a direct
+  session to fail needs a second peer, so this path is reviewed but not
+  exercised by a run.
+- Handle a graceful peer disconnect and stop the lobby from exhausting memory
+  while it waits.
+- Restore unranked and LAN stage picking, and fix the LAN lobby menu exit.
+- Stop the idle attract loop from running under the online lobby, suppress SFX
+  overflow spam, and disconnect cleanly when the window closes.
+- Announce immediately on the DHT and improve bootstrapping so a search finds
+  peers without waiting for the next announce window.
+- Repair the Windows (MinGW `uint32_t`, winsock `accept` clash) and macOS
+  x86_64 (symbol-less object in the snapshot sectioner) builds, and point the
+  python netplay fixtures at the configured build directory in CI.
+
+### Changes in v0.1.9-beta
+
+#### Highlights
+
+This maintenance release improved controller input, LAN session startup and
+safe update selection, and included the fixes merged since v0.1.8-beta.
+
+#### Fixes
+
+- Correct GameCube-range analog scaling and full-strength button-to-stick bindings.
+- Publish GameCube adapter input safely between the polling and game threads,
+  including disconnects and rumble commands.
+- Keep held adapter and touch buttons suppressed when closing the settings
+  overlay until those controls are released.
+- Prevent the updater from freezing when a release has no compatible asset.
+- Preserve rollback corrections when snapshot allocation fails, and use lockstep
+  from the start on platforms without snapshot support.
+- Keep LAN peers at the agreed start frame while waiting for readiness.
+- Restore Windows builds by using SDL for environment-file settings.
+- Include the recent Polar Bear Adventure Mode crash fix, Linux GameCube
+  adapter detection improvements, and bundled controller database.
+- Include the upstream scene timing, asynchronous disc transfer and deterministic
+  replay fixes. Netplay remains a prototype; this release does not claim universal
+  cross-platform determinism.
+
+### Changes in v0.1.8-beta
+
+#### Highlights
+
+- **Rollback Netplay & LAN Play Prototype (#72):**
+  - Native in-game Online menu (`VS Mode > ONLINE`) featuring LAN Play and Direct IP connect, complete with an interactive *Mario Kart: Double Dash*-style LAN lobby counter.
+  - Native rollback netplay engine with state snapshotting, deterministic simulation rollbacks, reliable UDP messaging, and live in-game network HUD showing ping, delay, and rollback frame count.
+  - Cross-platform floating-point determinism (`-ffp-contract=off`, unified musl trigonometry) guaranteeing simulation parity across Linux, Windows, and Android.
+- **Native macOS Support (Apple Silicon & Intel) (#65):**
+  - Native macOS `.app` bundle packages (`Melee-macOS-arm64.zip` and `Melee-macOS-x86_64.zip`) using the Apple Metal graphics backend via WebGPU/Dawn.
+  - Built with Homebrew GCC big-endian scalar storage order translation and automatic dylib staging.
+- **Experimental PAL Disc Support (#65):**
+  - Boot European / PAL disc images (GALP01) using USA game code with automatic string index remapping, PAL kerning tables, and single-byte SIS font decoding.
+- **Hitlag, SDI and DI are fixed:** Every build before this one gave *every*
+  hit in the game exactly 3 frames of hitlag regardless of damage, instead of
+  4-20. Hits had almost no freeze, SDI was effectively impossible (one input at
+  best, usually none), and because DI is established from the stick at the
+  moment hitlag ends, the DI window was 3 frames too, so launches landed at
+  their raw undirected endpoint. That reads in play as "no hitlag, no SDI, and
+  everybody gets sent way further than usual" — thanks to Syrox for the report
+  that identified it. Hitlag is now `floor(floor(floor(d/3 + 3) * e) * c)`
+  capped at 20, with the 1.5x electric multiplier on the victim and the
+  0.666667x crouch-cancel multiplier, verified against 1634 measured hits.
+  Knockback *magnitude* was never affected: 259 measured launches match the
+  vanilla formula exactly.
+- **Direct3D 11 backend (Windows):** a Direct3D 11 path is now built and ordered after D3D12, ahead of Vulkan, for the GPUs Dawn refuses on D3D12 (Intel Gen7 / Haswell-era iGPUs); it is also selectable in the launcher's *Graphics backend* setting and as `MELEE_BACKEND=d3d11`. **Untested on real Windows hardware**: the adapter enumerates and the fall-back to D3D12 works, but nobody has yet seen a D3D11 device created. Reports with a log are wanted. The log records each skipped backend and why, plus the adapter and driver chosen.
+- **Universal Controller Fix (UCF 0.8x):** dashback and shield-drop rules, off by default; toggle on the launcher's Gameplay page or the F1 port menu ("Universal Controller Fix"), or force with `MELEE_UCF=1`.
+
+#### Fixes
+
+- **Adventure Mode Topi / ReDead Crash Fix (fixes #68, #71):** Resolved an LP64 64-bit struct alignment bug in `itZako_ItemVars` that caused Topi's icicle back-reference to be overwritten, crashing the game with `SIGSEGV` when attacking or KO'ing enemies on Icicle Mountain and Underground Maze.
+- **Android Handshake Compatibility:** Gated `getrandom()` behind API 28+ check with `/dev/urandom` fallback for older Android releases (API 26/27).
+- **First-use shader pipeline compiles no longer freeze the game (#46):** a draw whose pipeline is still compiling is skipped for a few frames, compiles run on a low-priority worker pool (`MELEE_PIPELINE_JOBS`), and the bundled seed is queued at the session's MSAA level. `MELEE_PIPELINE_SYNC=1` restores the old blocking behaviour.
+
+
 ### Changes in v0.1.7-beta
 
 - **Native Windows ARM64 Support:**
@@ -168,7 +256,7 @@ image path directly:
 
 - **Phase 1 Feature Pack & Cheats Restructuring:**
   - **Custom Soundtrack Streaming:** Embedded `stb_vorbis` audio stream decoder supporting runtime `.ogg` and `.wav` file overrides for BGM. Automatically loads stage soundtrack replacements placed in `music/` or loose folders and blends them with in-game music volume controls.
-  - **Free / Unlocked Pause Camera:** Added a Free Camera cheat toggle in settings and in-game F1 overlay, permitting full 360-degree pitch/yaw rotation and 0.5f-5000.0f zoom distance while paused.
+  - **Free / Unlocked Pause Camera:** Added a Free Camera cheat toggle in settings and in-game F1 overlay, permitting full 360-degree pitch/yaw rotation and 0.5f–5000.0f zoom distance while paused.
   - **Wide HUD Anchoring (16:9):** Match timer, stock icons, damage percentages, and player tags are dynamically anchored outwards for native 16:9 widescreen viewports (toggleable between Classic 4:3 and Wide 16:9 in Graphics settings).
   - **Dedicated Cheats Tab:** Restructured launcher and in-game F1 menu with a dedicated "Cheats" tab housing *Unlock All*, *Frozen Stadium* (hazardless Pokémon Stadium), and *Free Camera*.
 
@@ -187,7 +275,7 @@ image path directly:
 
 - **Android & Mobile Optimizations:**
   - **Android 60 FPS First-Play Intro Optimization:** Eliminated main-thread pipeline compilation stalls during `MvOpen.mth` by stopping unrequested background shader queue drainage when `!g_hasPipelineThread`.
-  - **Faster Android Boot Times:** Instant check in `seed_pipeline_cache()` skips SQLite re-seeding if already populated, cutting 1.5-3.0s off warm launches.
+  - **Faster Android Boot Times:** Instant check in `seed_pipeline_cache()` skips SQLite re-seeding if already populated, cutting 1.5–3.0s off warm launches.
   - **Adreno GPU Color Correction (fixes #20):** Prefer RGBA8Unorm swapchain format to fix inverted red/blue colors on Qualcomm Adreno GPUs.
 
 - **Memory Management & OS Startup Stability:**
@@ -346,14 +434,14 @@ settings overlay.
 ## Contributors
 
 ### Project Contributors
-- **@999sian** - Project Lead, Phase 1 features, multi-core optimizations, file cache, Android & Windows porting, and stability fixes.
-- **@theofficialgman** - Linux aarch64 (ARM64) support, Nod aarch64 prebuilts, 4-core & ARM scheduling optimizations (#44, #47).
-- **@alexscott2718-gif** - Graphics backend selection, command line overrides, and engine logging.
-- **@r-burns** - Melee decompilation and 64-bit portability foundations.
-- **@MarkMcCaskey** - Decompilation and core engine maintenance.
-- **@ribbanya** (Robin Avery) - Decompilation and memory card subsystem.
-- **@PsiLupan** (Will Carter) - Decompilation and subsystem typing.
-- **@itsgrimetime** (Mike Grimes) - Decompilation foundations.
+- **@999sian** — Project Lead, Phase 1 features, multi-core optimizations, file cache, Android & Windows porting, and stability fixes.
+- **@theofficialgman** — Linux aarch64 (ARM64) support, Nod aarch64 prebuilts, 4-core & ARM scheduling optimizations (#44, #47).
+- **@alexscott2718-gif** — Graphics backend selection, command line overrides, and engine logging.
+- **@r-burns** — Melee decompilation and 64-bit portability foundations.
+- **@MarkMcCaskey** — Decompilation and core engine maintenance.
+- **@ribbanya** (Robin Avery) — Decompilation and memory card subsystem.
+- **@PsiLupan** (Will Carter) — Decompilation and subsystem typing.
+- **@itsgrimetime** (Mike Grimes) — Decompilation foundations.
 
 ### Community Testers & Issue Reporters
 Special thanks to our community members whose detailed bug reports and reproduction steps directly helped diagnose and resolve issues in these releases:
@@ -370,8 +458,8 @@ Special thanks to our community members whose detailed bug reports and reproduct
 - **@nitrostemp** (#37)
 
 ### Upstream Projects & Foundations
-- **[doldecomp/melee](https://github.com/doldecomp/melee)** - The Super Smash Bros. Melee decompilation team and contributors.
-- **[encounter/aurora](https://github.com/encounter/aurora)** - Luke Street (@encounter) and contributors for the GameCube hardware emulation layer and WebGPU backend.
-- **[TwilitRealm/dusklight](https://github.com/TwilitRealm/dusklight)** - Architectural inspiration for GameCube PC ports.
+- **[doldecomp/melee](https://github.com/doldecomp/melee)** — The Super Smash Bros. Melee decompilation team and contributors.
+- **[encounter/aurora](https://github.com/encounter/aurora)** — Luke Street (@encounter) and contributors for the GameCube hardware emulation layer and WebGPU backend.
+- **[TwilitRealm/dusklight](https://github.com/TwilitRealm/dusklight)** — Architectural inspiration for GameCube PC ports.
 - **SDL3, RmlUi, stb_vorbis, and Dawn teams** for the runtime engine libraries.
 

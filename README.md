@@ -59,7 +59,42 @@ is GPL-3.0-or-later. Details under [License](#license).
 ### Planned
 
 [] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
-  for now, same as melee-pc's own online 
+  for now, same as melee-pc's own online play)
+
+**This table is the single source of truth for feature status.** The release
+notes, the project site and `ROADMAP.md` defer to it; when they disagree, this
+table is right and the other one is stale.
+
+| Feature | Status | Note |
+|---|---|---|
+| Linux x86-64 / aarch64 | done | AppImage and tarball, both built in CI. |
+| Windows x86-64 / ARM64 | done | D3D12 or Vulkan; ARM64 via llvm-mingw. |
+| Direct3D 11 backend (Windows) | partial | Compiled into the shipped Dawn for both architectures, ordered after D3D12 and selectable as `MELEE_BACKEND=d3d11`. The adapter enumerates and the fail-over to D3D12 is proven, but no working D3D11 device has been observed; Wine/Proton cannot create one (`CreateDeviceContextState` returns `E_INVALIDARG`), so it is unverified on real Windows and on the Intel Gen7 hardware it exists for. |
+| Android arm64 | done | Drawn on-screen GameCube overlay with opacity, deadzone and haptics settings; hides itself when a physical gamepad is connected. |
+| iOS arm64 | partial | Sideloadable IPA on Metal, cross-built from Linux. Touch input is fixed invisible screen regions (stick on the left half, face buttons bottom right) with no drawn overlay, no calibration and no gamepad auto-hide -- the Android overlay is Android-only. |
+| macOS Apple Silicon / Intel | partial | Apple Silicon tested; the Intel job is `continue-on-error` in CI, so a release can ship without an Intel build and none has been run on Intel hardware. |
+| PAL disc (GALP01) | partial | Experimental: USA game code on PAL data, English (UK) text, NTSC 60 Hz. Trophy tables are stubbed out rather than read, and there is no reference hash, so PAL images always verify as unknown. |
+| Widescreen 16:9 / window aspect | partial | VS, Sudden Death and Training only; menus, results and cutscenes stay at the original 73:60. |
+| Wide HUD anchoring | done | Separate on/off toggle from the aspect setting, and only moves anything while widescreen is on. Anchors the timer and the 2-4 player HUD groups (damage, stocks, tags); a 1-player HUD keeps its original placement. No configurable margins. |
+| Custom texture packs (Dolphin format) | done | `tex1_*` `.dds` / `.png` including sidecar mips and TLUT hashes, scanned recursively, reloadable from the F1 menu. |
+| Custom soundtrack (`.ogg` / `.wav`) | done | Replaces any track the game streams, not just stage BGM. Files are decoded whole into RAM (not streamed) and loop end to end, so a track's own loop point is ignored. |
+| Unlock Everything / Frozen Stadium / Free camera | done | Cheats tab in the launcher and the F1 menu. |
+| Multi-bus audio (Master / Music / SFX) | done | Three sliders; Master is the output stream gain, Music and SFX are per-voice. |
+| In-app update check | done | Polls GitHub releases, downloads with progress. |
+| Controller rumble | done | SDL gamepads through the game's own `PADControlMotor` calls, and the Android device vibrator when the pad has no rumble. Controller LED / port-colour sync is not implemented. |
+| 1000 Hz GameCube adapter (WUP-028) | partial | Implemented and wired, not yet confirmed against a physical adapter. Raw 0x21 reports are read through SDL's hidapi on the 1000 Hz input thread, so the game would see the controller's real 8-bit values instead of SDL's rescaled ones; adapter slot N is PAD port N, and the slot motors are driven from the game's rumble state. `MELEE_GC_ADAPTER=0` hands the device back to SDL's driver. Linux needs a udev rule; the log prints it. |
+| UCF (dashback, shield drop) | done | UCF 0.8x rules; launcher Gameplay page / F1 port menu, default off, `MELEE_UCF=1`. Reads the octagon-clamped stick rather than UCF's pre-clamp raw queue, which only differs past the 80-unit rim. |
+| Discord Rich Presence | planned | Deferred until API credentials are available. |
+| Extended hazardless stages | planned | Whispy, Randall, FoD platforms. Only Pokémon Stadium is implemented. |
+| 2-player keyboard remapping | planned | The keyboard is port 1 on a fixed layout. |
+| High-refresh interpolation | planned | |
+| Training tools (hitboxes, savestates, frame advance) | planned | |
+| Replay recording (`.slp`) | planned | `src/pc/slp.h` defines the hook points; nothing implements them. |
+| Online play (LAN / direct IP) | partial | LAN/direct-IP plus signed internet Direct, Unranked and Ranked implemented. Public DHT storage verified; two-NAT and live ranked acceptance remain pending. See platform matrix below. |
+| RetroAchievements | planned | |
+
+The phases behind the planned rows, and why they are ordered that way, are in
+[ROADMAP.md](ROADMAP.md).
 
 ## Download
 
@@ -235,7 +270,126 @@ formatting standards, 64-bit portability rules, and verification procedures. Run
 ## Netplay (LAN and direct IP, prototype)
 
 Netplay is currently only supported for regular vanilla gameplay, but planned for MeleeVS.
-For more information check out [999sian/melee-pc](https://github.com/999sian/melee-pc) for the main branch for the PC Port
+For more information check out [999sian/melee-pc](https://github.com/999sian/melee-pc) for the main branch for the PC Port.
+
+Two copies of the game play a rollback match over UDP (`src/pc/net.c`;
+design and current state in [docs/netcode-plan.md](docs/netcode-plan.md)).
+Both must run the same build **and the same game image**, with no memory card
+(`--no-card`). The LAN lobby announces a 32-bit id of the disc it booted
+(region, revision, file-table shape and the DOL, so a code mod counts), and a
+peer on a different image is listed as incompatible before a single game
+packet is exchanged — same as a different build version. Internet friend-code
+pairing also binds build and disc identity; the legacy direct-IP environment
+path retains its older protocol-version-only check.
+
+In the menus: VS Mode → ONLINE → LAN PLAY finds other
+copies on the local network by mDNS and the first Start elects a host
+(lowest install id wins a tie). In the launcher or F1 Online tab, set your name
+and your friend's `NAME#XXXX` code, then choose DIRECT CONNECT. UNRANKED searches
+for an opponent; RANKED runs a rated best-of-three set. PROFILE shows your code
+and locally verified rating. Internet discovery may take about 30 seconds to
+bootstrap and some NATs cannot support a direct peer connection. Legacy
+`MELEE_LAN_DIRECT=ip:port` remains available for direct-IP sessions. The game port is UDP 41000 by default and discovery uses UDP
+5353 multicast; allow both through the firewall (Windows asks on first
+launch). The install id used for the election is `install_id` in
+`launcher.cfg`.
+
+If the link drops mid-match, the session no longer dies with it: after 7 s of
+silence it enters a reconnect phase and resumes where it left off if the peer
+comes back within 15 s and neither side's 64-frame input ring has been
+outrun. The lobby shows "reconnecting"; a failure that cannot be resumed says
+"Could not resume" instead of "Connection timed out".
+
+A peer that is *loading* is not a peer that is gone. Silence is measured from
+the last datagram the peer sent, not from how long this side has been
+waiting: a machine whose game thread is inside a stage load, a character
+load or a first-time shader compile keeps its sender running, so the link
+carries it however long it takes and the transition screen simply waits.
+Before that distinction existed, any load over 7 s froze both games on "NOW
+LOADING" and one over ~22 s ended the session outright, which is what a
+phone's first match cost.
+
+**What works where.** Only Linux x86-64 has played real matches, but a Linux
+recording now replays bit-identical on Windows, so the two builds compute the
+same game.
+
+| Platform | Netplay | Rollback | Notes |
+|---|---|---|---|
+| Linux x86-64 | yes | yes | the configuration everything below was measured on; longest run 36 minutes and 126k frames of match |
+| Windows x86-64 / ARM64 | implemented | enabled | PE ranges cover both supported toolchains. x86-64 restore runs under Wine; ARM64 compiler-bridge and linked-range checks pass. Full Windows rollback gameplay remains unverified |
+| macOS / iOS | builds; online gameplay unverified | enabled | Mach-O simulation sections support Intel/Apple Silicon macOS and ARM64 iOS. Cross-link/bridge checks pass; native restore is a macOS CI check. Device gameplay remains unverified |
+| Android | runs on a device; found and joined a PC over LAN | enabled; gameplay unverified | Measured on a Pixel 8 Pro against Linux x86-64: mDNS discovery, election, handshake and 1800+ frames of synced menus at 10-16 ms ping and 0 % loss, both peers entering the CSS on the same frame. No match has been played to the end yet. New ARM64/x86-64 NDK-linked restore fixtures pass (ARM64 under QEMU), but device rollback gameplay is still unproven. The lobby holds the Wi-Fi multicast lock while it is open |
+
+All supported builds require simulation snapshot sections and verify their
+boundaries after linking. Audio/worker state remains excluded. Menus and scene
+loading still synchronize without prediction; matches use rollback by default.
+Allocation failure and the explicit debugging switch can still fall back to
+lockstep. Unsupported compilers are rejected rather than producing a silently
+lockstep-only platform build.
+
+| Variable | Effect |
+|---|---|
+| `MELEE_NET=<host:port>` | Connect to that peer at boot, no lobby (`MELEE_NET_PLAYER` and the same `MELEE_SEED` on both sides). |
+| `MELEE_NET_PORT=<n>` | Local UDP game port (default 41000). Two copies on one machine need different ports. |
+| `MELEE_NET_PLAYER=0\|1` | Controller port the local player drives with `MELEE_NET`: 0 = P1/host, 1 = P2. |
+| `MELEE_NET_DELAY=<n>\|auto` | Input delay in frames (default `auto`: 1–4 from ping and jitter, re-evaluated every 600 frames, changed only between matches). |
+| `MELEE_NET_RECONNECT_MS=<ms>` | How long a broken link may take to resume (default 15000). `0` disables the reconnect phase: the session drops 7 s after the peer goes quiet, as it used to. Anything negative or unparseable falls back to the default. |
+| `MELEE_LAN_TEST=1\|host` | LAN lobby without the menu; `host` presses Start once the title is up. Both set to `host` exercises a simultaneous Start. |
+| `MELEE_LAN_DIRECT=<ip:port>` | Direct connect without the menu, at frame 300; set on both sides with the other's address. The lower `ip:port` hosts. |
+| `MELEE_NET_HANDSHAKE_TEST=1` | Run the RULES/READY handshake at frame 300 with `MELEE_NET`, no lobby. |
+| `MELEE_NET_STALL_TEST=<frame>[:<ms>]` | Park the guest's game thread for `ms` at that frame (default 10000), standing in for a load the netcode cannot shorten. The sender keeps running, so this is the "peer is loading, not gone" case; only player 1 does it, so one exported value stalls exactly one side. |
+| `MELEE_NET_RECORD=<file>` | Write the seed, then per frame the four pad states simulated and a state checksum. |
+| `MELEE_NET_REPLAY=<file>` | Feed a recording back in; reports the first frame whose checksum differs (`net: REPLAY DIVERGED`). Solo only. |
+| `MELEE_NET_STATE_LOG=<file>` | Write two lines per frame to that file: the readable state line, and the raw float bits of exactly the fields the checksum covers. Only meaningful with `MELEE_NET_RECORD`/`MELEE_NET_REPLAY`; this is how two platforms' runs are diffed down to the field that differs. |
+| `MELEE_INPUT_TRACE=1` | One `pad: ` line per change of port 0's virtual pad, with the focus and fifo state that produced it. |
+| `MELEE_NET_SYNCTEST=1` | Run every tick twice from a restored snapshot and compare state hashes; sound is off. Proves the snapshot covers everything a tick reads. |
+| `MELEE_NET_ROLLBACK=off` | Play the session in lockstep — no prediction, no snapshots. A bisecting tool, not a mode. |
+| `MELEE_NET_SYNC=off\|legacy` | Measure the clock offset but never act on it, or restore the pre-batch skip behaviour. |
+| `MELEE_NET_PAD_QTYPE=0` | Restore the raw pad queue's shifting overflow branch; the regression test for the input-slip fix. |
+| `MELEE_NET_AUDIO_JOURNAL=off`, `MELEE_NET_AUDIO_DEAF=off` | Restore the two audio behaviours netplay overrides for determinism; each is the regression test for its own defect. |
+| `MELEE_NET_RESIM_AUDIT=<k>` | Every 120 frames, roll back k frames and re-run them from unchanged inputs, comparing every snapshot region and checksum. The instrument that proves re-simulation is faithful. |
+| `MELEE_NET_EXIT_AFTER_FRAMES=<n>` | Disconnect (BYE) and exit at that frame, logging `net: test done at frame n`. |
+| `MELEE_NET_SIM_OOM_FRAME=<n>` | Fail the first snapshot taken at or after that frame, the way a failed allocation would, to exercise the lockstep fallback. |
+| `MELEE_NET_SIM_LOSS=<pct>` | Drop that share of outgoing packets. |
+| `MELEE_NET_SIM_DELAY_MS=<ms>` | Hold every outgoing packet that long. |
+| `MELEE_NET_SIM_DELAY_RX_MS=<ms>` | Hold every incoming packet that long (asymmetric links). |
+| `MELEE_NET_SIM_JITTER_MS=<ms>` | Uniform ±ms on the outgoing delay; reorders when larger than the delay. |
+| `MELEE_NET_SIM_REORDER=<pct>` | Hold that share of packets behind the next one. |
+| `MELEE_NET_SIM_DUP=<pct>` | Send that share of packets twice. |
+| `MELEE_NET_SIM_BURST=<n>` | Every 5 s drop n consecutive outgoing packets. |
+
+The link simulator's PRNG is seeded from `MELEE_NET_PORT`, so a run repeats.
+Every 600 frames the log prints rollbacks, stalls, ping, jitter, loss and
+snapshot cost; `net: DESYNC`, `net: cannot roll back` and `net: peer silent`
+are the lines that mean something went wrong. Two copies on one machine also
+need distinct `MELEE_CACHE_DIR` (pipeline cache) and `MELEE_KEY_FIFO` if you
+drive them with key injection. Keyboard keys only reach the game while the
+window has keyboard focus; `MELEE_KEY_FIFO` keys are deliberately exempt, so
+harnesses can still drive menus in background windows.
+
+A run that never leaves a menu proves nothing: outside a fight the state
+checksum covers only the four pads and the RNG seed, so two title screens can
+neither desync nor roll back. The harnesses below check that a match really
+started before they report anything.
+
+| Tool | What it does |
+|---|---|
+| `tools/net_test.py` | Two instances on this machine through a real match, asserting on both logs (both reach `net: test done`, exit 0, no DESYNC, no `peer silent`, no lost rollback). Direct mode boots straight into Link vs Mario via `MELEE_NET` + `MELEE_DEBUG_VS=1`; `--lan` walks the real menus into the LAN lobby and needs the shared LAN free; `--scenes` walks CSS and SSS too; `--oom FRAME` and `--disconnect` cover the snapshot-failure and hard-drop paths. |
+| `tools/net_acceptance.py` | The same across a link matrix (loss, delay, jitter, reorder, dup, burst, asymmetric rx) into one markdown table. |
+| `tools/net_lan_test.py` | Lobby paths a match never reaches: simultaneous Start, direct connect, a peer killed mid-lobby, the host killed while the guest connects. |
+| `tools/net_determinism.py` | Records one run and replays it on every platform reachable from this machine, reporting the first frame that differs. Android and macOS report SKIPPED rather than passing. |
+| `tools/net_fuzz.py`, `tools/net_lan_fuzz.py` | Malformed game datagrams and malformed mDNS records against a running instance. Both keep their crafted multicast on this host (`IP_MULTICAST_TTL 0`). |
+
+```sh
+python3 tools/net_test.py                                  # 2 min, clean link
+python3 tools/net_test.py --loss 5 --delay 30 --jitter --reorder
+python3 tools/net_test.py --lan --minutes 1
+python3 tools/net_test.py --fuzz                           # tools/net_fuzz.py hammers A's port
+python3 tools/net_determinism.py --only linux,linux-flip   # ~2 min, no Proton
+```
+
+`--exe build/melee`, `--disc ../melee.ciso`, `--port 42050` (B uses +1) and
+`--work /tmp/net_test` (logs in `a.log`/`b.log`) are the defaults.
 
 ## Documentation
 

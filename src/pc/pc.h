@@ -39,6 +39,7 @@ void pc_touch_apply(void);
  * origin-relative pad for a port to the virtual-pad merge (keyboard.c). */
 void pc_gcadapter_init(void);
 void pc_gcadapter_poll(void);
+void pc_gcadapter_apply(void); /* main-thread publication to virtual pads */
 struct PADStatus;
 bool pc_gcadapter_status(int port, struct PADStatus* out);
 /* HUD snapshot: raw[6] = stick x,y  c-stick x,y  L R as the adapter reports
@@ -50,6 +51,7 @@ uint64_t pc_gcadapter_report_count(void);
 /* Input latency meter (src/pc/input_poll.c): the 1000 Hz thread stamps each
  * sample; pc_frame_boundary records how old the sample the sim is about to
  * consume is. Stats cover the last 600 frames; any out-param may be NULL. */
+uint64_t pc_monotonic_ns(void);
 void pc_input_latency_record(void);
 bool pc_input_latency(float* mean_ms, float* max_ms, float* p99_ms);
 /* MELEE_INPUT_HUD=1: in-match controller diagnostic text (if/ifinput.c) and

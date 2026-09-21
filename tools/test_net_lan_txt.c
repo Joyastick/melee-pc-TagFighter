@@ -32,6 +32,7 @@
     } while (0)
 
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_mutex.h>
 #include <dolphin/dvd.h>
 
 static int g_rejects;      /* "dropped a malformed record" lines */
@@ -70,20 +71,43 @@ const char* pc_android_device_name(void) {
     return NULL;
 }
 
+static int g_connections, g_player;
+static void (*g_timer_stop_check)(void);
+static bool g_barrier_received;
+static int32_t g_frame = -1, g_scheduled = -1;
+static int g_polls, g_ready_after;
+static bool g_handshake_pending;
+static bool g_active = true;
+static int g_disconnect_after;
+int32_t pc_net_frame(void) {
+    return g_frame;
+}
+int32_t pc_net_start_frame(void) {
+    return g_scheduled;
+}
+void pc_net_poll(void) {
+    if (++g_polls == g_ready_after)
+        g_barrier_received = true;
+    if (g_polls == g_disconnect_after)
+        g_active = false;
+}
+
 bool pc_net_connect(const char* ip, uint16_t port, int player, uint32_t seed) {
     (void)ip;
     (void)port;
-    (void)player;
+    g_connections++;
+    g_player = player;
     (void)seed;
     return true;
 }
 void pc_net_disconnect(void) {}
 bool pc_net_active(void) {
-    return true;
+    return g_active;
 }
 int pc_net_peer_status(void) {
     return 0;
 }
+void pc_net_peer_status_clear(void) {}
 int pc_net_handshake_state(void) {
     return 0;
 }
@@ -100,11 +124,19 @@ int pc_net_recv_reliable(uint8_t* type, void* payload, int max) {
     (void)type;
     (void)payload;
     (void)max;
+    if (g_barrier_received) {
+        g_barrier_received = false;
+        *type = 0x11;
+        return 0;
+    }
     return -1;
 }
 bool pc_net_host_match(uint32_t seed, int32_t* start_frame) {
     (void)seed;
-    (void)start_frame;
+    if (g_handshake_pending && g_polls >= 2) {
+        *start_frame = g_scheduled;
+        return true;
+    }
     return false;
 }
 bool pc_net_guest_wait_match(uint32_t* seed, int32_t* start_frame) {
@@ -113,7 +145,20 @@ bool pc_net_guest_wait_match(uint32_t* seed, int32_t* start_frame) {
     return false;
 }
 
+SDL_Mutex* SDL_CreateMutex(void) {
+    return (SDL_Mutex*)1;
+}
+void SDL_LockMutex(SDL_Mutex* m) {
+    (void)m;
+}
+void SDL_UnlockMutex(SDL_Mutex* m) {
+    (void)m;
+}
+
 static uint64_t s_now = 1000;
+void SDL_DelayNS(Uint64 ns) {
+    s_now += ns;
+}
 Uint64 SDL_GetTicksNS(void) {
     return s_now;
 }
@@ -128,6 +173,9 @@ SDL_TimerID SDL_AddTimer(Uint32 interval, SDL_TimerCallback cb, void* ud) {
 }
 bool SDL_RemoveTimer(SDL_TimerID id) {
     (void)id;
+    if (g_timer_stop_check != NULL) {
+        g_timer_stop_check();
+    }
     return true;
 }
 
@@ -297,7 +345,160 @@ static void must_accept(const char* what, const char** pairs, size_t n, bool com
         compatible ? " (eligible)" : " (incompatible)");
 }
 
+/* No net session may open until a guest acknowledges the current proposal.
+ * Otherwise both peers can enter the blocking P1 wait on stale lobby data. */
+static void election_setup(uint64_t local, uint64_t peer) {
+    reset();
+    s_started = true;
+    s_sock4 = s_sock6 = -1;
+    s_id = local;
+    s_gen = 6;
+    s_state = 4;
+    s_hosting = false;
+    s_barrier_ns = 0;
+    s_timer = 0;
+    s_t0_ns = s_start_ns = s_announce_ns = s_now;
+    s_n = 1;
+    memset(&s_peers[0], 0, sizeof s_peers[0]);
+    s_peers[0].id = peer;
+    s_peers[0].gen = 6;
+    s_peers[0].seen_ns = s_now;
+    s_peers[0].p.compatible = true;
+    s_peers[0].p.port = 42100;
+    strcpy(s_peers[0].p.ip, "10.0.0.7");
+    strcpy(s_peers[0].p.name, "peer");
+    g_connections = 0;
+    g_player = -1;
+}
+
+static void election_record(uint64_t peer, uint64_t chosen, const char* state, const char* offer) {
+    char id[32], selected[32], st[32], ack[32];
+    snprintf(id, sizeof id, "id=%016llx", (unsigned long long)peer);
+    snprintf(selected, sizeof selected, "peer=%016llx", (unsigned long long)chosen);
+    snprintf(st, sizeof st, "state=%s", state);
+    snprintf(ack, sizeof ack, "offer=%s", offer != NULL ? offer : "");
+    const char* p[] = {s_v, "rev=0.1.2-test", s_disc, id, "name=peer", "port=42100", st, "gen=7",
+        "host=10.0.0.7:42100", selected, ack};
+    feed(INSTANCE, p, offer != NULL ? 11 : 10, 120, "10.0.0.7");
+}
+
+static void check_joining_on_timer_stop(void) {
+    assert(strcmp(state_txt(), "joining") == 0);
+    assert(announce_timer(NULL, 1, 500) == 500);
+}
+
+static void case_election(void) {
+    puts("\nelection: delayed ready records converge before opening a session");
+    election_setup(100, 200);
+    elect();
+    assert(g_connections == 0 && pc_lan_state(NULL) == 1);
+    election_record(200, 100, "starting", NULL);
+    pc_lan_poll();
+    assert(g_connections == 0 && pc_lan_is_host());
+    election_record(200, 100, "joining", "6"); /* previous proposal */
+    pc_lan_poll();
+    assert(g_connections == 0);
+    s_now += 14000000000ull; /* most of the proposal timeout was spent retrying */
+    election_record(200, 100, "joining", "7");
+    pc_lan_poll();
+    assert(g_connections == 1 && g_player == 0);
+    s_now += 2000000000ull;
+    pc_lan_poll();
+    assert(pc_lan_state(NULL) == 1); /* handshake gets its own full timeout */
+    pc_lan_poll();
+    assert(g_connections == 1); /* duplicate ack cannot reopen the session */
+    timer_stop();
+
+    election_setup(200, 100);
+    elect();
+    assert(g_connections == 0);
+    election_record(100, 200, "starting", NULL);
+    pc_lan_poll();
+    assert(g_connections == 1 && g_player == 1 && !pc_lan_is_host());
+    assert(strcmp(state_txt(), "joining") == 0);
+    assert(announce_timer(NULL, 1, 500) == 500); /* repeats while P2 waits for P1 */
+    s_barrier_ns = s_now;
+    g_barrier_received = true;
+    g_timer_stop_check = check_joining_on_timer_stop;
+    pc_lan_poll();
+    g_timer_stop_check = NULL;
+    assert(pc_lan_state(NULL) == 2);
+    assert(announce_timer(NULL, 1, 500) == 0); /* late callback no longer announces */
+
+    /* A single Start from the higher ID must still be able to host an idle
+     * lower-ID peer. Only two competing proposals need the tie-break. */
+    election_setup(100, 200);
+    s_state = 0;
+    election_record(200, 100, "starting", NULL);
+    pc_lan_poll();
+    assert(g_connections == 1 && g_player == 1);
+    timer_stop();
+
+    election_setup(100, 200);
+    elect();
+    s_now += TIMEOUT_NS + 1;
+    pc_lan_poll();
+    assert(pc_lan_state(NULL) == 3 && g_connections == 0);
+    s_started = false;
+}
+
+static void case_ready_frame_fence(void) {
+    election_setup(100, 200);
+    s_state = 1;
+    s_offer_pending = false;
+    s_barrier_ns = s_now;
+    s_start_frame = g_scheduled = 120;
+    g_frame = 119;
+    g_polls = 0;
+    g_ready_after = 3;
+    pc_lan_poll();
+    assert(s_state == 1 && g_polls == 0);
+    g_frame = 120;
+    pc_lan_poll();
+    assert(s_state == 2 && g_frame == 120 && g_polls == 3);
+
+    /* The host must also park before READY has completed its handshake. */
+    s_state = 1;
+    s_hosting = true;
+    s_barrier_ns = 0;
+    s_t0_ns = s_now;
+    g_handshake_pending = true;
+    g_polls = 0;
+    g_ready_after = 3;
+    pc_lan_poll();
+    assert(s_state == 2 && g_frame == 120 && g_polls == 3);
+    g_handshake_pending = false;
+
+    /* A missing barrier times out on this same simulation frame. */
+    s_state = 1;
+    s_barrier_ns = s_now - TIMEOUT_NS + 2000000;
+    g_ready_after = 0;
+    pc_lan_poll();
+    assert(s_state == 3 && g_frame == 120);
+
+    s_state = 1;
+    s_barrier_ns = s_now;
+    g_frame = 121;
+    g_barrier_received = true;
+    pc_lan_poll();
+    assert(s_state == 3); /* a late barrier cannot enter on a different frame */
+    s_state = 1;
+    s_barrier_ns = s_now;
+    g_frame = 120;
+    g_polls = 0;
+    g_disconnect_after = g_ready_after = 2;
+    g_barrier_received = false;
+    pc_lan_poll();
+    assert(s_state == 3); /* a queued barrier cannot override disconnect */
+    g_active = true;
+    g_disconnect_after = 0;
+    g_barrier_received = false;
+    g_frame = g_scheduled = -1;
+    s_started = false;
+}
+
 int main(int argc, char** argv) {
+    case_ready_frame_fence();
     set_image(argc > 1 && strcmp(argv[1], "b") == 0 ? 1 : 0);
 
     /* The module state pc_lan_start() would have built. */
@@ -306,14 +507,14 @@ int main(int argc, char** argv) {
     snprintf(s_proto, sizeof s_proto, "%d", PC_NET_PROTO_VERSION);
     snprintf(s_name, sizeof s_name, "self");
 
-    const char* id = disc_id();
+    const char* id = pc_lan_disc_id();
     printf("image %s: disc id %s, rev %s, proto %s\n", s_image == 0 ? "a" : "b", id, pc_app_rev(),
         s_proto);
     assert(strlen(id) == 8);
     for (const char* p = id; *p != '\0'; p++) {
         assert((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'));
     }
-    assert(strcmp(disc_id(), id) == 0); /* cached, stable within a run */
+    assert(strcmp(pc_lan_disc_id(), id) == 0); /* cached, stable within a run */
 
     /* `good` is written for proto 4 and disc 00000000; retarget it at this
      * build's version and this process's image so the suite is self-consistent. */
@@ -542,11 +743,12 @@ int main(int argc, char** argv) {
         assert(inet_pton(AF_INET6, "fe80::1", &v6.sin6_addr) == 1);
         v6.sin6_scope_id = 3;
         char text[46];
-        addr_text((const struct sockaddr*)&v6, text, sizeof text);
+        net_addr_text((const struct sockaddr*)&v6, text, sizeof text);
         assert(strcmp(text, "fe80::1%3") == 0);
-        printf("  addr_text(fe80::1 scope 3) = %s\n", text);
+        printf("  net_addr_text(fe80::1 scope 3) = %s\n", text);
     }
 
+    case_election();
     printf("\nOK\n");
     return 0;
 }

@@ -106,7 +106,7 @@ static inline void sock_startup(void) {}
 #define WINDOW 7      /* predicted frames allowed before a hard stall */
 #define SNAPS 8       /* snapshot ring, one per predicted frame; > WINDOW */
 #define FRAME_US ((int32_t)(pc_sim_period_ns() / 1000)) /* the boundary's pacing target */
-#define STALL_TIMEOUT_MS 7000
+#define STALL_TIMEOUT_MS 3000
 #define CONNECT_TIMEOUT_MS 60000
 #define SYNC_INTERVAL 30 /* frames between time-sync decisions (Slippi) */
 #define SYNC_HOLDOFF 120 /* frames between skip/advance bursts */
@@ -155,6 +155,8 @@ typedef struct Ack {
 #define REL_MAX 256
 #define REL_RESUME 0x12 /* net.c's resume exchange, dispatched by on_rel */
 #define REL_DELAY 0x13  /* the host's input-delay pick, dispatched by on_rel */
+#define REL_CHAT 0x15   /* fixed quick-chat phrase, consumed before caller queue */
+#define REL_SCENE 0x14  /* the scene-exit hand-off, dispatched by on_rel */
 typedef struct Rel {
     Hdr h; /* 'R' */
     uint8_t seq;
@@ -217,6 +219,15 @@ typedef struct DelayMsg {
     uint32_t frame;
 } __attribute__((packed)) DelayMsg;
 
+/* Payload of REL_SCENE (net.c): the frame the sender's scene asked to end
+ * on. Both peers leave on max(theirs, ours) + SCENE_HANDOFF, so a load that
+ * costs one peer more ticks than the other cannot put the next scene on
+ * different frames (docs/netcode-plan.md section 5.2). */
+typedef struct SceneMsg {
+    uint32_t seq;   /* exits the sender has completed: pairs the two halves */
+    uint32_t frame; /* the frame its scene asked to end on */
+} __attribute__((packed)) SceneMsg;
+
 _Static_assert(sizeof(WirePad) == 8, "wire layout");
 _Static_assert(sizeof(Hdr) == 7, "wire layout");
 _Static_assert(sizeof(Packet) == 26 + REDUNDANCY * 8, "wire layout");
@@ -227,6 +238,7 @@ _Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 22, "wire layout");
 _Static_assert(sizeof(Ready) == 24, "wire layout");
 _Static_assert(sizeof(Resume) == 20 && sizeof(Resume) % 4 == 0, "wire layout");
 _Static_assert(sizeof(DelayMsg) == 8, "wire layout");
+_Static_assert(sizeof(SceneMsg) == 8, "wire layout");
 
 /* Datagrams parked by the simulator; release_ns 0 marks a free slot. Sent in
  * release order, so plain delay stays FIFO and jitter reorders. */
@@ -355,6 +367,8 @@ uint32_t rules_hash(Rules ru, uint32_t session);
 uint32_t ready_hash(Ready rd, uint32_t session);
 Hdr hdr(uint8_t magic);
 bool addr_eq(const struct sockaddr_storage* a, const struct sockaddr_storage* b);
+/* net_lan.c; text form of a datagram source, for logs and getaddrinfo(). */
+void net_addr_text(const struct sockaddr* sa, char* out, size_t cap);
 
 /* ---- net_sim.c -------------------------------------------------------- */
 
@@ -387,6 +401,16 @@ void time_sync(void);
 /* The host's REL_DELAY announcement (on_rel dispatches it here, like
  * REL_RESUME); game thread. */
 void net_delay_rel(const void* payload, int len);
+
+/* A REL_SCENE payload from the peer (on_rel dispatches it here, like
+ * REL_DELAY): the frame its scene asked to end on. */
+void net_scene_rel(const void* payload, int len);
+
+/* A silent freeze: the transmit timer notices the game thread has stopped
+ * ticking and asks it for a stack (src/pc/net_watchdog.c). */
+void net_watchdog_arm(void);
+void net_watchdog_tick(int32_t frame);
+void net_watchdog_heartbeat(void);
 void sync_reset(void);
 
 /* ---- net_snapshot.c --------------------------------------------------- */
@@ -394,8 +418,8 @@ void sync_reset(void);
 bool snapshot_take(Snapshot* s, int32_t frame);
 const char* snapshot_unusable(const Snapshot* s);
 void snapshot_restore(const Snapshot* s);
-/* Non-NULL when this platform's linker cannot bracket the decomp's statics
- * (Windows, Apple): snapshot_take refuses and the session runs lockstep. */
+/* Non-NULL for missing/invalid simulation ranges. Normal builds provide
+ * validated ELF, PE or Mach-O sections; fixtures can exercise the fallback. */
 const char* snapshot_state_region_missing(void);
 Snapshot* snap_slot(int32_t f); /* rollback ring entry for frame f */
 void snaps_free(void);

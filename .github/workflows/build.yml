@@ -57,7 +57,8 @@ jobs:
             libxfixes-dev libxss-dev libxkbcommon-dev libxtst-dev \
             libwayland-dev wayland-protocols libdecor-0-dev \
             libasound2-dev libpulse-dev libdbus-1-dev libudev-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgbm-dev
+            libgl1-mesa-dev libegl1-mesa-dev libgbm-dev \
+            libusb-1.0-0-dev
 
       - name: Configure
         # Same dependency providers as tools/package_linux.sh: prebuilt Dawn
@@ -75,6 +76,11 @@ jobs:
         run: ninja -C build-tests-${{ matrix.build_type }} unit_tests
 
       - name: Run unit tests
+        # The python-driven tests (tools/net_test_support.py) look for the
+        # build in ./build unless told otherwise, and this job builds into
+        # build-tests-<type>.
+        env:
+          MELEE_TEST_BUILD: ${{ github.workspace }}/build-tests-${{ matrix.build_type }}
         run: ctest --test-dir build-tests-${{ matrix.build_type }} -L melee --output-on-failure
 
   linux:
@@ -102,7 +108,8 @@ jobs:
             libxfixes-dev libxss-dev libxkbcommon-dev libxtst-dev \
             libwayland-dev wayland-protocols libdecor-0-dev \
             libasound2-dev libpulse-dev libdbus-1-dev libudev-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libgbm-dev
+            libgl1-mesa-dev libegl1-mesa-dev libgbm-dev \
+            libusb-1.0-0-dev
 
       - name: Build and package
         env:
@@ -172,6 +179,49 @@ jobs:
           path: dist/Melee-Windows-${{ matrix.arch }}-*.zip
           if-no-files-found: error
 
+  android:
+    name: Android (arm64-v8a)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # The decomp needs scalar_storage_order, which the NDK's Clang does
+          # not implement, so tools/gcc_launcher.py routes melee_game through
+          # this cross compiler with the NDK sysroot.
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build cmake gcc-aarch64-linux-gnu
+          # nod has no Android prebuilt, so aurora builds it from Rust source.
+          rustup target add aarch64-linux-android
+          # aurora uses std::jthread/std::stop_token, which the runner's
+          # newest NDK libc++ does not expose. r26 is the version this port
+          # is developed against.
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;26.3.11579264' > /dev/null
+
+      - name: Build APK
+        env:
+          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.1.9' }}
+          MELEE_KEYSTORE_BASE64: ${{ secrets.MELEE_KEYSTORE_BASE64 }}
+          MELEE_KEYSTORE_PASSWORD: ${{ secrets.MELEE_KEYSTORE_PASSWORD }}
+          MELEE_KEY_ALIAS: ${{ secrets.MELEE_KEY_ALIAS }}
+          MELEE_KEY_PASSWORD: ${{ secrets.MELEE_KEY_PASSWORD }}
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/26.3.11579264"
+          tools/build_android.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64
+          path: dist/Melee-Android-arm64.apk
+          if-no-files-found: error
+
   macos:
     name: macOS (${{ matrix.arch }})
     strategy:
@@ -198,9 +248,12 @@ jobs:
           # into the .app with the other dylibs by package_macos.sh.
           brew install gcc cmake ninja sdl3 zstd libpng freetype
 
+      - name: Verify native rollback snapshot restore
+        run: python3 tools/test_snapshot_platforms.py SnapshotPlatforms.test_native_mac_restore
+
       - name: Build and package
         env:
-          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.1.8' }}
+          MELEE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.1.9' }}
         run: tools/package_macos.sh
 
       - uses: actions/upload-artifact@v4

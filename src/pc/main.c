@@ -9,6 +9,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,82 @@ int melee_main(void);
 
 #if defined(__ANDROID__)
 #include <android/log.h>
+#endif
+
+#if defined(__ANDROID__)
+/* Android writes crash backtraces to a protobuf tombstone under /data, which
+ * an unrooted device only surfaces through `adb bugreport` -- two minutes per
+ * iteration, and the rotation drops them faster than that when the app is
+ * crash-looping. So unwind in-process and put the frames straight in logcat.
+ * dladdr gives the library and the nearest exported symbol; the offsets are
+ * what `addr2line -f -C -e libmelee.so` wants. */
+#include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
+#include <unwind.h>
+
+typedef struct {
+    int n;
+} MeleeUnwindState;
+
+static _Unwind_Reason_Code melee_unwind_frame(struct _Unwind_Context* ctx, void* arg) {
+    MeleeUnwindState* st = (MeleeUnwindState*)arg;
+    uintptr_t pc = _Unwind_GetIP(ctx);
+    if (pc == 0 || st->n >= 32) {
+        return _URC_END_OF_STACK;
+    }
+    Dl_info info;
+    memset(&info, 0, sizeof info);
+    if (dladdr((void*)pc, &info) != 0 && info.dli_fname != NULL) {
+        const char* base = strrchr(info.dli_fname, '/');
+        __android_log_print(ANDROID_LOG_FATAL, "melee", "  #%02d pc %012zx  %s (%s+%zu)", st->n,
+            (size_t)(pc - (uintptr_t)info.dli_fbase), base ? base + 1 : info.dli_fname,
+            info.dli_sname ? info.dli_sname : "?",
+            info.dli_saddr ? (size_t)(pc - (uintptr_t)info.dli_saddr) : (size_t)0);
+    } else {
+        __android_log_print(ANDROID_LOG_FATAL, "melee", "  #%02d pc %016zx  ?", st->n, (size_t)pc);
+    }
+    st->n++;
+    return _URC_NO_REASON;
+}
+
+/* Handlers displaced by ours. Android installs debuggerd's SIGABRT/SIGSEGV
+ * handler at process start, and that is what writes the tombstone -- with
+ * the abort message, which is the only place a scudo or FORTIFY diagnosis
+ * appears. Resetting to SIG_DFL instead of chaining loses it: the default
+ * action just kills the process, so an in-process backtrace is bought at
+ * the price of every tombstone (measured: no tombstone for any crash this
+ * session, while /data/tombstones still held last week's). */
+static struct sigaction s_prev_sa[NSIG];
+
+static void melee_fatal_signal(int sig, siginfo_t* si, void* uc) {
+    (void)uc;
+    __android_log_print(ANDROID_LOG_FATAL, "melee", "FATAL signal %d at %p (tid %d)", sig,
+        si ? si->si_addr : NULL, (int)gettid());
+    MeleeUnwindState st = {0};
+    _Unwind_Backtrace(melee_unwind_frame, &st);
+    /* Hand back to whoever had it, so a real tombstone is still written. */
+    if (sig >= 0 && sig < NSIG) {
+        sigaction(sig, &s_prev_sa[sig], NULL);
+    } else {
+        signal(sig, SIG_DFL);
+    }
+    raise(sig);
+}
+
+static void melee_install_crash_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = melee_fatal_signal;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    const int sigs[] = {SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE};
+    for (size_t i = 0; i < sizeof sigs / sizeof sigs[0]; i++) {
+        sigaction(sigs[i], &sa, &s_prev_sa[sigs[i]]);
+    }
+}
+#else
+static void melee_install_crash_handler(void) {}
 #endif
 
 /* A log file sink, so a double-clicked build still leaves a diagnosable
@@ -212,6 +289,10 @@ static void usage(const char* argv0) {
 }
 
 #include "pc/input_poll.h"
+#include "pc/net.h"
+#include "pc/net_match.h"
+#include "pc/net_lan.h"
+#include <signal.h>
 
 static void pc_shutdown_once(void) {
     static bool done;
@@ -219,6 +300,9 @@ static void pc_shutdown_once(void) {
         return;
     }
     done = true;
+    pc_net_match_stop();
+    pc_net_disconnect();
+    pc_lan_stop();
     /* Stop producers before joining DMA and destroying platform resources.
      * An unjoined ARQ worker aborts in std::thread's static destructor. */
     pc_input_poll_shutdown();
@@ -227,6 +311,12 @@ static void pc_shutdown_once(void) {
     pc_textures_shutdown();
     ARQReset();
     aurora_shutdown();
+}
+
+static void pc_on_signal_exit(int sig) {
+    (void)sig;
+    pc_exit_requested = true;
+    exit(0);
 }
 
 static const struct {
@@ -301,7 +391,65 @@ static AuroraBackend backend_from_env(void) {
     return BACKEND_AUTO;
 }
 
+/* Android has no way to hand a process an environment: `am start` passes
+ * extras, not env, so every MELEE_* knob -- the netplay fixtures, the heap
+ * check, the log file -- is unreachable on a phone, which is exactly where
+ * they are hardest to do without. Read them from a file next to the disc
+ * instead, one NAME=VALUE per line, '#' comments ignored, existing
+ * environment always winning so a shell-set value is never overridden.
+ * Harmless on desktop: no file, no effect. */
+static void pc_env_file_bootstrap(void) {
+    const char* paths[] = {
+#if defined(__ANDROID__)
+        "/sdcard/Android/data/dev.melee.game/files/melee-env.txt",
+#endif
+        "melee-env.txt",
+    };
+    for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
+        FILE* f = fopen(paths[i], "r");
+        if (f == NULL) {
+#if defined(__ANDROID__)
+            /* Straight to logcat: this runs before the aurora log callback is
+             * installed, so pc_log_line() would be dropped and the knobs would
+             * look silently inert. */
+            __android_log_print(
+                ANDROID_LOG_INFO, "melee", "env: no %s (errno %d)", paths[i], errno);
+#endif
+            continue;
+        }
+        char line[512];
+        while (fgets(line, sizeof line, f) != NULL) {
+            char* s = line;
+            while (*s == ' ' || *s == '\t') {
+                s++;
+            }
+            if (*s == '#' || *s == '\n' || *s == '\0') {
+                continue;
+            }
+            char* eq = strchr(s, '=');
+            if (eq == NULL) {
+                continue;
+            }
+            *eq = '\0';
+            char* val = eq + 1;
+            size_t n = strlen(val);
+            while (n > 0 && (val[n - 1] == '\n' || val[n - 1] == '\r' || val[n - 1] == ' ')) {
+                val[--n] = '\0';
+            }
+            SDL_setenv_unsafe(s, val, 0); /* 0: never clobber a real environment value */
+        }
+        fclose(f);
+#if defined(__ANDROID__)
+        __android_log_print(ANDROID_LOG_INFO, "melee", "env: applied %s", paths[i]);
+#endif
+        pc_log_line("env: applied %s", paths[i]);
+        return;
+    }
+}
+
 MELEE_EXPORT int main(int argc, char* argv[]) {
+    melee_install_crash_handler(); /* before anything can crash */
+    pc_env_file_bootstrap();       /* before anything calls getenv() */
 #if defined(_WIN32)
     SetUnhandledExceptionFilter(crash_handler);
 #endif
@@ -339,21 +487,53 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
                 fprintf(stderr, "%s: more than one disc given (%s, %s)\n", argv[0], disc, d);
                 usage(argv[0]);
             }
-            FILE* f = fopen(d, "rb");
-            if (d[0] == '\0' || f == NULL) {
+            /* A `content://` URI is not a filesystem path. On Android the
+             * disc arrives as one from the file picker, and it is opened
+             * through SDL_IOStream (`pc_open_nod_disc`, src/pc/disc_open.h);
+             * `fopen` cannot open one, so probing with it rejected every
+             * disc a phone can actually hand us. */
+            const bool uri = strncmp(d, "content://", 10) == 0;
+            FILE* f = uri ? NULL : fopen(d, "rb");
+            if (d[0] == '\0' || (!uri && f == NULL)) {
                 fprintf(stderr, "%s: cannot open disc %s\n", argv[0], d);
+#if defined(__ANDROID__)
+                /* exit() runs static destructors while the Java UI thread is
+                 * still drawing, which aborts it inside minikin with
+                 * "FORTIFY: pthread_mutex_lock called on a destroyed mutex":
+                 * a crash report for what is really a bad path. Carry on
+                 * into the launcher with no disc, exactly as if the app had
+                 * been started without one. */
+                continue;
+#else
                 exit(2);
+#endif
             }
-            fclose(f);
+            if (f != NULL) {
+                fclose(f);
+            }
             disc = d;
         }
     }
+
+    /* RmlUi resolves a document's relative assets (launcher.rml's discord.png)
+     * against this. Aurora otherwise defaults it to the executable's own
+     * directory, where those files are not: they ship under resources/. The
+     * trailing separator matters, the path is concatenated as-is. */
+    static char resources_path[4096];
+    const char* base_path = SDL_GetBasePath();
+#if defined(__ANDROID__)
+    resources_path[0] = '\0'; /* assets come from the APK, not a directory */
+#else
+    snprintf(
+        resources_path, sizeof resources_path, "%sresources/", base_path != NULL ? base_path : "");
+#endif
 
     AuroraConfig config = {
         /* appName doubles as the window title; the save/cache dirs stay
          * pinned so a renamed test window still uses the same memory card. */
         .appName = getenv("MELEE_WINDOW_TITLE") ? getenv("MELEE_WINDOW_TITLE") : "melee-pc",
         .userPath = SDL_GetPrefPath(NULL, "melee-pc_TagFighter"),
+        .resourcesPath = resources_path[0] != '\0' ? resources_path : NULL,
         /* MELEE_CACHE_DIR: two instances on one machine (netplay testing)
          * must not share the pipeline-cache SQLite file. */
         .cachePath = getenv("MELEE_CACHE_DIR") ? getenv("MELEE_CACHE_DIR") :
@@ -382,6 +562,80 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
     pc_launcher_configure(&config);
 
     const AuroraInfo info = aurora_initialize(argc, argv, &config);
+
+    /* Built-in fallback mappings for common 3rd-party GameCube adapters
+     * (DragonRise / Mayflash in PC mode) so they work out-of-the-box even if
+     * external database files are missing. */
+    static const char* const k_builtin_mappings[] = {
+        /* Mayflash / DragonRise 4-port adapter (PC mode) - Linux */
+        "03000000790000004318000010010000,Mayflash GameCube "
+        "Adapter,a:b1,b:b0,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b2,y:b3,platform:"
+        "Linux,",
+        "03000000790000004418000010010000,Mayflash GameCube "
+        "Controller,a:b1,b:b0,dpdown:b14,dpleft:b15,dpright:b13,dpup:b12,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b2,y:b3,platform:"
+        "Linux,",
+        "03000000790000004618000010010000,GameCube "
+        "Adapter,a:b1,b:b2,dpdown:b14,dpleft:b15,dpright:b13,dpup:b12,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b0,y:b3,platform:"
+        "Linux,",
+        /* Mayflash / DragonRise (PC mode) - Windows */
+        "03000000790000004318000000000000,Mayflash GameCube "
+        "Adapter,a:b1,b:b2,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,leftshoulder:b4,"
+        "lefttrigger:a3,leftx:a0,lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,"
+        "start:b9,x:b0,y:b3,platform:Windows,",
+        "03000000790000004418000000000000,Mayflash GameCube "
+        "Controller,a:b1,b:b2,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,lefttrigger:a3,leftx:"
+        "a0,lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b0,y:b3,"
+        "platform:Windows,",
+        "03000000790000004618000000000000,GameCube "
+        "Adapter,a:b1,b:b2,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b0,y:b3,platform:"
+        "Windows,",
+        /* Mayflash / DragonRise (PC mode) - macOS */
+        "03000000790000004318000000010000,Mayflash GameCube "
+        "Adapter,a:b4,b:b0,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,lefttrigger:a12,leftx:a0,"
+        "lefty:a4,rightshoulder:b28,righttrigger:a16,rightx:a20,righty:a8,start:b36,x:b8,y:b12,"
+        "platform:Mac OS X,",
+        "03000000790000004418000000010000,Mayflash GameCube "
+        "Controller,a:b1,b:b2,dpdown:b14,dpleft:b15,dpright:b13,dpup:b12,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b0,y:b3,platform:"
+        "Mac OS X,",
+        "03000000790000004618000000010000,GameCube "
+        "Adapter,a:b1,b:b2,dpdown:b14,dpleft:b15,dpright:b13,dpup:b12,lefttrigger:a3,leftx:a0,"
+        "lefty:a1,rightshoulder:b7,righttrigger:a4,rightx:a5,righty:a2,start:b9,x:b0,y:b3,platform:"
+        "Mac OS X,",
+        /* Mayflash (Android) */
+        "6d6179666c617368206c696d69746564,Mayflash GameCube "
+        "Adapter,a:b22,b:b21,dpdown:b12,dpleft:b13,dpright:b14,dpup:b11,lefttrigger:b25,leftx:a0,"
+        "lefty:a1,rightshoulder:b28,righttrigger:b26,rightx:a5,righty:a2,start:b30,x:b23,y:b24,"
+        "platform:Android,",
+    };
+    for (size_t i = 0; i < sizeof(k_builtin_mappings) / sizeof(k_builtin_mappings[0]); i++) {
+        SDL_AddGamepadMapping(k_builtin_mappings[i]);
+    }
+
+    int mappings_loaded = SDL_AddGamepadMappingsFromFile("resources/gamecontrollerdb.txt");
+    if (mappings_loaded < 0) {
+        char res_path[512];
+        const char* base = SDL_GetBasePath();
+        if (base != NULL) {
+            snprintf(res_path, sizeof(res_path), "%sresources/gamecontrollerdb.txt", base);
+            mappings_loaded = SDL_AddGamepadMappingsFromFile(res_path);
+        }
+    }
+    if (config.userPath != NULL && config.userPath[0] != '\0') {
+        char user_db[512];
+        snprintf(user_db, sizeof(user_db), "%s/gamecontrollerdb.txt", config.userPath);
+        int user_loaded = SDL_AddGamepadMappingsFromFile(user_db);
+        if (user_loaded > 0) {
+            mappings_loaded = (mappings_loaded > 0 ? mappings_loaded : 0) + user_loaded;
+        }
+    }
+    if (mappings_loaded > 0) {
+        pc_log_line("input: loaded %d gamepad mappings from gamecontrollerdb.txt", mappings_loaded);
+    }
     /* Record which backend was actually selected and the adapter it landed on.
      * Without this the log cannot say whether a run went through D3D12 or
      * Vulkan, or on which GPU/driver, which is the first thing worth knowing
@@ -407,6 +661,8 @@ MELEE_EXPORT int main(int argc, char* argv[]) {
      * live, its device-lost callback reports FATAL and log_callback aborts.
      * Run the shutdown from atexit so every exit path goes through it. */
     atexit(pc_shutdown_once);
+    signal(SIGINT, pc_on_signal_exit);
+    signal(SIGTERM, pc_on_signal_exit);
 
     const int launched = pc_launcher_run(disc, info.window);
     if (launched != 1)

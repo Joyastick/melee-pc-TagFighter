@@ -8,6 +8,12 @@
 #include "gmmain_lib.h"
 #include "gmopening.h"
 #include "types.h"
+
+#ifdef TARGET_PC
+#include <stdlib.h>
+#include "gmboot.h"
+#include "pc/net.h"
+#endif
 #include <melee/db/db.h>
 #include <melee/lb/lbarchive.h>
 #include <melee/lb/lbaudio_ax.h>
@@ -163,6 +169,19 @@ HSD_GObj* gmTitle_801A165C(void)
         int second;
         gm_801692E8(lbTime_GetTimeInSeconds(), &time);
         second = time.second;
+#ifdef TARGET_PC
+        /* Retail stirs the shared RNG by the wall-clock seconds-of-minute so
+         * the attract demo differs between boots. That makes the seed a
+         * function of WHEN this machine reached the title, and the seed is
+         * folded into the netplay checksum (src/pc/net_snapshot.c:148):
+         * measured phone<->PC, two machines eight wall-seconds apart stirred
+         * 41 times against 49 and desynced on the spot, and it is equally
+         * fatal to a recording replayed on another device. Offline play is
+         * untouched and still gets a different demo every boot. */
+        if (pc_net_deterministic()) {
+            second = 0;
+        }
+#endif
         while (second != 0) {
             HSD_Rand();
             second--;
@@ -272,11 +291,21 @@ void gm_Scene_Title_OnFrame(void)
         return;
     }
     frame_count++;
+#ifdef TARGET_PC
+    if (getenv("MELEE_NO_ATTRACT") != NULL || pc_boot_scene() == GM_ONLINE) {
+        if (frame_count > 600) {
+            frame_count = 0;
+        }
+    } else
+#endif
     if (frame_count > 600) {
         tmp = gm_GetCurrentSceneExitData();
         *tmp = 0;
         gm_801A4B60();
-    } else if (input & HSD_PAD_START) {
+        return;
+    }
+
+    if (input & HSD_PAD_START) {
         lbAudioAx_80026F2C(0x1C);
         lbAudioAx_8002702C(0xC, 0);
         lbAudioAx_80027168();

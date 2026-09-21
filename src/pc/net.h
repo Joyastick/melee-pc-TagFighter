@@ -3,6 +3,7 @@
 #define PC_NET_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -17,15 +18,38 @@ extern "C" {
 /* Wire protocol version; a peer with another one is refused (both sides
  * report PEER_INCOMPATIBLE). Bump on any change to the packet layouts,
  * Rules or the handshake. */
-#define PC_NET_PROTO_VERSION 5
+/* Version 6 requires sequenced scene exits and acknowledged LAN election. */
+#define PC_NET_PROTO_VERSION 6
 void pc_net_init(void);
+void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
+/* Presentation-only quick chat is available in connected noncombat scenes. */
+bool pc_net_chat_available(void);
+/* True when the simulation must be reproducible elsewhere: netplay,
+ * record, replay or sync test. Guards machine-seeded retail behaviour. */
+bool pc_net_deterministic(void);
+
+/* Netplay scene hand-off: true while the scene that asked to end must keep
+ * ticking, so both peers leave it on the same frame however long their loads
+ * took (src/melee/gm/gmscene.c, docs/netcode-plan.md section 5.2). */
+bool pc_net_scene_hold(void);
 /* Controller port the local player drives (0 = P1/host, 1 = P2/guest). */
 int pc_net_local_player(void);
 
 /* Frame of the tick being simulated (-1 before the first); identical on both
  * peers, so a scene change scheduled for a given frame lands in sync. */
 int32_t pc_net_frame(void);
+/* Scheduled lobby exit, including a still-pending host handshake. */
+int32_t pc_net_start_frame(void);
+/* Service transport without advancing simulation (lobby start fence). */
+void pc_net_poll(void);
+/* Internet rendezvous transfers its already-bound IPv4 socket. Ownership
+ * transfers on success only; no new NAT mapping is created. */
+bool pc_net_connect_socket(
+    intptr_t socket, const char* ip, uint16_t port, int player, uint32_t seed);
+typedef bool (*PcNetDatagramHandler)(const void*, size_t, uint32_t, uint16_t);
+void pc_net_set_datagram_handler(PcNetDatagramHandler handler);
+bool pc_net_send_datagram(const void* data, size_t size, uint32_t address, uint16_t port);
 
 /* RNG seed agreed for the session (pc_net_connect / match handshake). */
 uint32_t pc_net_seed(void);
@@ -50,7 +74,8 @@ void pc_net_sync(void);
 
 /* Called after each tick. Returns true when the tick must be run again
  * (rollback re-simulation or the MELEE_NET_SYNCTEST self-check). */
-bool pc_net_after_tick(void);
+/* Finish rollback/bookkeeping, but defer fresh advances during scene exit. */
+bool pc_net_after_tick(bool scene_ending);
 
 /* Called by the frame boundary (src/pc/vi.c) after the pad alarm ran; the
  * returned ns are added to the next pacing wait. Time-sync skips are paid
@@ -59,6 +84,8 @@ uint64_t pc_net_pace_adjust_ns(void);
 
 /* True while re-simulating: sound/music/rumble starts must be suppressed. */
 bool pc_net_resim(void);
+/* Reconcile physical motors after rollback; hardware state is not snapshotted. */
+void pc_net_rumble_command(unsigned port, unsigned command);
 
 /* The simulation asks the audio engine two questions whose answers live
  * outside every snapshot and move in real time: "did this sound start, and
@@ -122,6 +149,7 @@ enum {
     PC_NET_PEER_RESUME
 };
 int pc_net_peer_status(void);
+void pc_net_peer_status_clear(void);
 
 #ifdef __cplusplus
 }

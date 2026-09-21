@@ -49,6 +49,7 @@ import time
 # boot seen and check_match() fails a row whose match did not get its minutes.
 BOOT_FRAMES = 9000
 CACHE_ROOT = "/tmp/melee_net_cache"  # kept between runs; keyed by port, never shared
+LOAD_STALL_FRAME = 900  # --load-stall: session up, menus lockstep, every frame waits
 SIM_ENV = {  # CLI flag -> (env knob, value) in src/pc/net.c's link simulator
     "jitter": ("MELEE_NET_SIM_JITTER_MS", "20"),
     "reorder": ("MELEE_NET_SIM_REORDER", "10"),
@@ -99,8 +100,11 @@ class Instance:
         cache = os.path.join(CACHE_ROOT, str(port))
         os.makedirs(cache, exist_ok=True)
         e = dict(os.environ)
+        # A prior direct/replay run must not silently change a LAN fixture.
+        for key in ("MELEE_DEBUG_VS", "MELEE_NET", "MELEE_NET_PLAYER", "MELEE_NET_REPLAY"):
+            e.pop(key, None)
         e.update({
-            "SDL_VIDEO_DRIVER": "x11",
+            "SDL_VIDEO_DRIVER": os.environ.get("SDL_VIDEO_DRIVER", os.environ.get("SDL_VIDEODRIVER", "x11")),
             "MELEE_VSYNC": "0",
             "MELEE_NET_PORT": str(port),
             "MELEE_CACHE_DIR": cache,
@@ -457,61 +461,13 @@ def drive_css(a, b, want=1):
     return False
 
 
-# SSS anchors. The scene opens with mnStageSel_804D6CAE = 30, "the cursor is
-# over no cell" (mnstagesel.c:581), and 30 is confirmed by START alone
-# (:193-198) - A cannot commit it. Measured on this build the cursor never
-# leaves 30 at all: /tmp/sf_scenes4 swept the whole clamped cursor range
-# (x [-27,27], y [-19,19], :387-399) with 60 A presses over 6 rows and got not
-# one `sss:` line on either peer, so the cell hit test (:403-417) never
-# matched. Driving the cursor is therefore not a way to pick a stage here, and
-# the row confirms cell 30 instead: online that sends the cell rather than a
-# stage (netStageSel_SendPick, :216-222), both peers exchange picks and the
-# resolve rolls the stage from the shared seed (netStageSel_Random, :97-111,
-# :980-995), so both sides agree without another message.
+# Confirm through just one port: the other peer must see the synchronized input.
 PICKED_RX = re.compile(r"sss: we picked (\d+)")
 
 
 def drive_sss(a, b, want=1):
-    """SSS: one Start on each instance, then let the scene resolve the stage
-    and leave on its own.
-
-    Both instances have to be pressed, unlike every other scene in the flow:
-    online the SSS reads ONLY the local player's port
-    (mnStageSel_804D50A0 = pc_net_local_player(), :585, used at :952-954)
-    because each player picks a stage of their own, so a Start on the host's
-    pad is invisible to the guest's scene. Measured: /tmp/sf_scenes2 pressed
-    only A and got `sss: we picked 30` on a alone, then timed out waiting for
-    b.
-
-    A pick of 30 is only safe to confirm because the resolve re-rolls it
-    through netStageSel_Random; that roll used to be able to land on the
-    RANDOM button itself (entry 29, stkind 0), which starts a match with no
-    stage - measured in /tmp/sf_scenes3 as `sss: picks P1=30 P2=30 -> 30`
-    followed by GmRst/SdRst loads and not one Gr* archive. The stage-archive
-    wait below is what holds that down, and it names the picked cells when it
-    fails so the next reader does not have to re-derive it."""
-    insts = (a, b)
-
-    if not press_until(insts, "Return", 9, r"sss: we picked", want=want, tries=8, each=6.0):
-        print("net_test: no 'sss: we picked' on both after Start on the SSS", flush=True)
-        return False
-    cells = [int(PICKED_RX.findall(i.text())[want - 1]) for i in insts]
-    print(f"net_test: SSS picks a={cells[0]} b={cells[1]}", flush=True)
-    for inst in insts:
-        if not inst.wait_log(r"sss: picks P1=", 30):
-            print(f"net_test: [{inst.name}] the two SSS picks never resolved", flush=True)
-            return False
-    # Nothing else to press: once both picks are in, mnStageSel_804D6CAF
-    # reaches 2 and the scene resolves the stage and leaves on its own
-    # (:980-995). A Start here would land in the loading match and pause it.
-    # The match hand-off is reported, not asserted: on this build the SSS
-    # hands the match stkind 0 and the loader asks for the empty stage name
-    # "Gr.dat" (see check_scenes). The row asserts what it can reach.
-    for inst in insts:
-        note = ("entered a match" if inst.wait_log(SCENE_FILE["match"], 30)
-                else "NO stage archive: stkind 0 reaches the stage loader (game-side)")
-        print(f"net_test: [{inst.name}] after picks {cells}: {note}", flush=True)
-    return True
+    return press_until((a, b), "Return", 9, r"sss: we picked", want=want,
+                       tries=8, each=6.0)
 
 
 # L+R+A+Start on the pauser's own pad ends a paused VS match as NO CONTEST
@@ -521,62 +477,72 @@ LRAS = "Q+E+X+Return"
 
 
 # ---- was this a match at all? ------------------------------------------
-# MELEE_NET_RECORD writes "MRC1" + seed, then per fresh tick the four PADStatus
+# MELEE_NET_RECORD writes "MRC2" + seed, then per fresh tick the four PADStatus
 # simulated and the frame checksum (net_snapshot.c:36-113). frame_checksum only
 # folds fighter position, facing, percent, motion id and stocks while in_fight()
 # (:117-139), so at a menu it is a pure function of the four pads and the RNG
 # seed and moves only when a key is pressed, while a running match moves it
 # every single frame. That is the one signal that separates a real row from the
 # title screen - where this whole matrix used to pass with rollbacks 0.
-# FrameRecord = four PADStatus + u32 checksum. PADStatus is 16 bytes in this
+# FrameRecord = four PADStatus + u32 checksum + u32 tick-start seed.
+# PADStatus is 16 bytes in this
 # build, not the 12 the GameCube header's 11 used bytes suggest (measured with
-# the build's own flags: `sizeof(PADStatus)=16`), so the stride is 68 and
+# the build's own flags: `sizeof(PADStatus)=16`), so the stride is 72 and
 # record_stride_ok() refuses a file that does not divide by it rather than
 # reading garbage checksums.
-REC = 68
-CK_OFF = REC - 4
+REC = 72
+CK_OFF = 64
+REC_FORMATS = {b"MRC1": 68, b"MRC2": REC}  # retain access to earlier captures
 MATCH_WINDOW = 600
 MATCH_RATIO = 0.5
 MATCH_MIN = 1800  # frames of moving state a row has to get, i.e. 30 s of match
 
 
-def record_stride_ok(size):
-    """A recording is "MRC1" + seed once per session plus whole records."""
-    return any((size - 8 * h) % REC == 0 for h in range(1, 13))
+def record_stride_ok(size, stride=REC):
+    """A recording has magic + seed once per session plus whole records."""
+    return any((size - 8 * h) % stride == 0 for h in range(1, 13))
 
 
 def record_base(data):
     """Offset of the first record. A session restart rewrites the header
     mid-file (session_reset takes net.frame back to 0), so the last header
     that leaves a whole number of records is the live one."""
+    magic = data[:4]
+    stride = REC_FORMATS.get(magic)
+    if stride is None:
+        raise RuntimeError(f"unknown recording magic {magic!r}")
     p = len(data)
     while True:
-        p = data.rfind(b"MRC1", 0, p)
+        p = data.rfind(magic, 0, p)
         if p < 0:
             return 0
-        if (len(data) - p - 8) % REC == 0:
+        if (len(data) - p - 8) % stride == 0:
             return p + 8
 
 
 def record_cks(path, tail=None):
     """Frame checksums, oldest first (index = net.frame within the session).
-    `tail` reads only the last N records; records end at EOF, so seeking back
-    a multiple of the stride stays aligned whatever headers precede it."""
+    `tail` returns the last N records of the latest session, excluding any
+    earlier session header. MRC1 captures remain readable after MRC2 ships."""
     try:
-        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            data = f.read()
     except OSError:
         return []
-    if size > 8 and not record_stride_ok(size):
-        raise RuntimeError(f"{path}: {size} bytes is not a whole number of {REC}-byte records; "
+    if not data:
+        return []
+    size = len(data)
+    stride = REC_FORMATS.get(data[:4])
+    if stride is None:
+        raise RuntimeError(f"{path}: unknown recording magic {data[:4]!r}")
+    if size > 8 and not record_stride_ok(size, stride):
+        raise RuntimeError(f"{path}: {size} bytes is not a whole number of {stride}-byte records; "
                            "sizeof(PADStatus) changed and REC needs remeasuring")
-    with open(path, "rb") as f:
-        if tail is not None and size > 8 + tail * REC:
-            f.seek(size - tail * REC)
-            body = f.read()
-        else:
-            data = f.read()
-            body = data[record_base(data):]
-    return [body[i * REC + CK_OFF:i * REC + REC] for i in range(len(body) // REC)]
+    body = data[record_base(data):]
+    if tail is not None:
+        body = body[-tail * stride:] if tail > 0 else b""
+    return [body[i * stride + CK_OFF:i * stride + CK_OFF + 4]
+            for i in range(len(body) // stride)]
 
 
 def moved(cks):
@@ -666,15 +632,18 @@ def check_match(inst):
 
 
 def drive_scenes(a, b):
-    """The online set as far as it goes on this build: LAN lobby -> CSS ->
-    SSS -> both picks resolved. Every hop waits for its own evidence (the
-    scene's own archive load, `lobby: entering CSS`, `sss: we picked`,
-    `sss: picks`), and check_scenes() then asserts the two logs agree.
-    It stops at the resolved pick because the match hand-off is broken
-    game-side on this build - see check_scenes' docstring for the measurement
-    - so there is no match to play, quit with L+R+A+Start, or come back round
-    from through the results screen."""
-    return drive_lan(a, b)
+    """Play, leave a match through results, then start a rematch."""
+    if not drive_lan(a, b) or not wait_match((a, b)):
+        return False
+    settle((a, b), 2100)  # require sustained gameplay before ending the game
+    press((a,), "Return", 9, 1.0)
+    if not press_until((a, b), LRAS, 9, r"online: enter RESULTS", tries=4,
+                       each=8.0, on=(a,)):
+        return False
+    if not press_until((a, b), "Return", 9, r"online: enter CSS", want=2,
+                       tries=12, each=5.0):
+        return False
+    return drive_css(a, b, want=2) and drive_sss(a, b, want=2)
 
 
 def check_entry(a, b):
@@ -699,41 +668,18 @@ STATS_RX = re.compile(r"net: frame (\d+), rollbacks (\d+) \(max depth (\d+), los
 # Scene-flow anchors: the online lobby's frame-stamped hand-off into the CSS
 # (gmonlinemode.c:378), the SSS's resolved pick (mnstagesel.c:89), the peer we
 # actually elected (net_lan.c:663,677), the stage archive a match loads, the
-# barrier field STATS_RX stops short of, and the snapshot report
+# snapshot report
 # (net_snapshot.c:382).
 CSS_RX = re.compile(r"lobby: entering CSS at frame (\d+), seed (\d+)")
 PICKS_RX = re.compile(r"sss: picks P1=(-?\d+) P2=(-?\d+) -> (-?\d+)")
 CONNECT_RX = re.compile(r"lan: connect (\d+\.\d+\.\d+\.\d+):(\d+) as P(\d)")
 STAGE_RX = re.compile(r"\[FileCache\] (?:LOOSE )?HIT: (Gr[A-Za-z0-9]+)\.(?:dat|usd)")
-BARRIER_RX = re.compile(r"net: frame (\d+),.*?barrier (-?\d+)")
 OOM_RX = re.compile(r"net: out of memory for snapshots at frame (\d+), lockstep from here")
 SNAP_RX = re.compile(r"net:\s+snapshot take [\d.]+ ms \(max [\d.]+, n (\d+)\)")
 
 
 def check_scenes(a, b):
-    """--scenes: what a single log cannot show. Both peers must have elected
-    each other (not a third lobby on the LAN), left the lobby for the CSS on
-    the same frame from the same seed - the one hand-off the flow itself
-    frame-stamps - and resolved their two SSS picks to the same stage. What
-    happens between those anchors is covered by the checksum stream: net.c
-    compares a per-frame checksum with the peer on almost every frame, so "no
-    DESYNC" over the run is the frame-by-frame agreement.
-
-    The set deliberately stops at the resolved stage pick, and this row does
-    NOT assert a match: on this build the online SSS hands the match a stkind
-    of 0 and the stage loader then asks for the file "Gr.dat" - the empty
-    stage name - which is what a stkind of 0 spells. Measured in
-    /tmp/sf_scenes5 on build 0f24e508: `sss: picks P1=30 P2=30 -> 30`, then 20
-    requests for Gr.dat, no real stage archive, and `net: DESYNC at frame
-    4992` on the frame the fighters first appear (both peers dumped
-    p0=(-60,25) p1=(-30,50) m322 s3 at f4993, so the fighters and the 3-stock
-    rules were right and only the stage was not). That is game-side and not
-    this file's to fix; asserting a match here would either fail forever or,
-    worse, be relaxed until it passed on a stageless match.
-
-    The rollback barrier is deliberately NOT compared: it is raised to
-    frame+120 by any game-thread disc request (net.c:1091-1097) and the two
-    sides issue those 1-2 frames apart, measured, so it is not an assertion."""
+    """Require both peers to complete the same frame-exact set flow."""
     fails = []
     for inst, peer in ((a, b), (b, a)):
         got = CONNECT_RX.findall(inst.text())
@@ -752,18 +698,53 @@ def check_scenes(a, b):
         if min(got) < 1:
             fails.append(f"{scene.upper()} loaded {got[0]}/{got[1]} times (want 1 each)")
     picks = [PICKS_RX.findall(inst.text()) for inst in (a, b)]
-    if not all(picks):
-        fails.append(f"{len(picks[0])}/{len(picks[1])} 'sss: picks' lines (want 1 each: both "
+    if min(map(len, picks)) < 2:
+        fails.append(f"{len(picks[0])}/{len(picks[1])} 'sss: picks' lines (want 2 each: both "
                      "peers' picks have to resolve to one stage)")
-    elif picks[0][0] != picks[1][0]:
-        fails.append(f"SSS picks differ: a {picks[0][0]} b {picks[1][0]}")
+    elif picks[0] != picks[1]:
+        fails.append(f"SSS picks differ: a {picks[0]} b {picks[1]}")
+    transitions = [re.findall(r"online: enter (CSS|SSS|VS|RESULTS) at frame (\d+)",
+                              inst.text()) for inst in (a, b)]
+    expected = ["CSS", "SSS", "VS", "RESULTS", "CSS", "SSS", "VS"]
+    for inst, events in zip((a, b), transitions):
+        if [scene for scene, frame in events][:len(expected)] != expected:
+            fails.append(f"{inst.name}: incomplete set flow: {events}")
+        resolved = re.findall(r"sss: resolved cell (\d+) stage (\d+)", inst.text())
+        if not STAGE_RX.search(inst.text()) and not (len(resolved) >= 2 and
+                all(0 <= int(cell) < 29 and 2 <= int(stage) <= 32 for cell, stage in resolved)):
+            fails.append(f"{inst.name}: no valid resolved stage or stage archive loaded")
+    if transitions[0] != transitions[1]:
+        fails.append(f"scene transition frames differ: {transitions}")
+    return fails
+
+
+def check_load_stall(a, b):
+    """--load-stall: B's game thread parks mid-run while its tx timer keeps
+    sending (MELEE_NET_STALL_TEST, net.c). That is a load -- a stage, a
+    character, a first-time shader compile on a phone -- not a lost peer, so
+    the link must carry it with no reconnect phase at all. "peer silent" is
+    already a failure pattern for every row; what this adds is that the
+    session must not even be *interrupted*, because a reconnect that is
+    entered on a talking peer is the bug that dropped phone<->PC sessions at
+    the CSS->match hand-off (silence was timed from the start of the wait
+    rather than from the last datagram).
+
+    The stall must also actually have happened: an injection that silently
+    did nothing would pass every other assertion in the row."""
+    fails = []
+    if "net: stall test:" not in b.text():
+        fails.append("b never ran the stall injection (MELEE_NET_STALL_TEST did not fire)")
+    for inst in (a, b):
+        if "interrupted at frame" in inst.text():
+            fails.append(f"{inst.name} opened a reconnect phase for a peer that never "
+                         "stopped sending")
     return fails
 
 
 def check_oom(inst, oom_frame):
     """--oom: the counters, not just the log line. A snapshot that cannot be
-    taken pins the barrier at INT32_MAX (net.c:961-964), which stops every
-    further prediction, so snapshots must have been taken before the failure
+    taken disables further prediction while preserving earlier rollback
+    snapshots, so snapshots must have been taken before the failure
     and none after it, and the run has to carry on to its exit frame in sync
     (summarize() and check_match() cover that half). Ordering is read off the
     log rather than frame numbers because the FileCache lines carry none."""
@@ -794,12 +775,10 @@ def check_oom(inst, oom_frame):
     elif any(after[1:]):  # the first report still counts takes from before the failure
         fails.append(f"snapshots still taken after the failure (n {after}): the session did not "
                      "drop to lockstep")
-    bar = BARRIER_RX.findall(text)
-    if not bar:
-        fails.append("no barrier field in the stats lines")
-    elif int(bar[-1][1]) != 2147483647:
-        fails.append(f"barrier {bar[-1][1]} at the end, want INT32_MAX (lockstep for the "
-                     "session)")
+    # Snapshot failure must leave earlier rollback snapshots usable. The old
+    # INT32_MAX barrier assertion required the very bug this test exercises.
+    # No further takes above, and no lost rollback/desync in summarize(),
+    # check the fallback's behavior without invalidating that history.
     return fails
 
 
@@ -1133,6 +1112,16 @@ def parse_args(argv=None):
     ap.add_argument("--stall", type=float, default=0, metavar="SECONDS",
                     help="SIGSTOP B mid-match for SECONDS, then SIGCONT: inside the reconnect "
                          "window the session must survive, past it it must expire with status 2")
+    ap.add_argument("--state-log", action="store_true",
+                    help="write per-frame state dumps to <work>/a.state and b.state")
+    ap.add_argument("--cold-cache", action="store_true",
+                    help="disable archive prewarm on A and enable it on B; delay A's DVD "
+                         "reads by 1.5 ms. Loose-file cache reads bypass the DVD delay, "
+                         "so this does not guarantee different scene-entry frames")
+    ap.add_argument("--load-stall", type=float, default=0, metavar="SECONDS",
+                    help="park B's game thread for SECONDS mid-run while its sender keeps "
+                         "running (a load, not a lost peer): the session must carry it with no "
+                         "reconnect phase, however long it is")
     ap.add_argument("--reconnect-ms", type=int, default=15000,
                     help="MELEE_NET_RECONNECT_MS for --stall (net.c's own default is 15000)")
     ap.add_argument("--fuzz", action="store_true", help="run tools/net_fuzz.py against A")
@@ -1168,8 +1157,25 @@ def run(args):
     sim_a = dict(sim)
     if args.oom:
         sim_a["MELEE_NET_SIM_OOM_FRAME"] = str(args.oom)
+    if args.cold_cache:
+        # Exercise prewarm asymmetry, even if the shell disabled it globally.
+        # OS caches remain warm; loose-file reads bypass the DVD delay below.
+        # Verify actual scene transitions instead of assuming different timing.
+        sim_a["MELEE_PREWARM"] = "0"
+        sim["MELEE_PREWARM"] = "1"
+        # Aurora's DVD readFromHandle hook delays reads that reach that layer.
+        sim_a["MELEE_DISC_READ_DELAY_US"] = "1500"
+    if args.load_stall:
+        # B only, and well past boot so the session is established: the wait
+        # this exercises is the one a scene hand-off makes, not the connect.
+        sim["MELEE_NET_STALL_TEST"] = f"{LOAD_STALL_FRAME}:{int(args.load_stall * 1000)}"
     shutil.rmtree(args.work, ignore_errors=True)
     os.makedirs(args.work)
+    if args.state_log:
+        # Per-frame state dumps beside the logs, so a DESYNC can be diffed
+        # field by field (src/pc/net_snapshot.c).
+        sim_a["MELEE_NET_STATE_LOG"] = os.path.join(args.work, "a.state")
+        sim["MELEE_NET_STATE_LOG"] = os.path.join(args.work, "b.state")
     a = Instance("a", args.exe, args.disc, args.work, args.port, args.port + 1, sim_a, args.lan)
     b = Instance("b", args.exe, args.disc, args.work, args.port + 1, args.port, sim, args.lan)
     print(f"net_test: {'lan' if args.lan else 'direct'} loss={args.loss}% delay={args.delay}ms "
@@ -1218,6 +1224,9 @@ def run(args):
         # a 7 s hiccup on a loaded machine must not end a 60-minute soak.
         term = (r"net: DESYNC", r"peer silent for \d+ ms at frame \d+, leaving netplay",
                 r"net: disconnected", r"cannot roll back")
+        # A deliberate load stall is exactly "no frame progress", so the
+        # watchdog has to outlast it or the row kills the run it is measuring.
+        quiet_budget = 25 + args.load_stall
         last_frame, last_progress = -1, time.time()
         while time.time() < deadline and (a.proc.poll() is None or b.proc.poll() is None):
             time.sleep(1)
@@ -1227,8 +1236,9 @@ def run(args):
             fr = max([int(x) for x in re.findall(r"net: frame (\d+)", texts)] or [-1])
             if fr > last_frame:
                 last_frame, last_progress = fr, time.time()
-            elif time.time() - last_progress > 25 and last_frame >= 0:
-                print("net_test: no frame progress for 25 s, giving up", flush=True)
+            elif time.time() - last_progress > quiet_budget and last_frame >= 0:
+                print(f"net_test: no frame progress for {quiet_budget:.0f} s, giving up",
+                      flush=True)
                 break
     finally:
         if work is not None:
@@ -1242,14 +1252,13 @@ def run(args):
             print("net_test: killed a run that would not exit (per-instance FAIL below)",
                   flush=True)
     # Cross-instance assertions belong to neither log; they ride on A's row.
-    # --scenes stops before any match, so the frame-exact match-entry check
-    # has nothing to compare; its frame-exactness is covered there by the
-    # identical `lobby: entering CSS at frame N, seed S` on both peers.
-    extra = [] if args.scenes else check_entry(a, b)
+    extra = check_entry(a, b)
     extra += check_scenes(a, b) if args.scenes else check_oom(a, args.oom) if args.oom else []
+    if args.load_stall:
+        extra += check_load_stall(a, b)
     results = []
     for inst in (a, b):
-        fails, line, st = summarize(inst, need_match=not args.scenes)
+        fails, line, st = summarize(inst, need_match=True)
         if inst is a:
             fails = fails + extra
         print(line)
