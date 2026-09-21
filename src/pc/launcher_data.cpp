@@ -407,9 +407,9 @@ bool save_preferences(
          << prefs.check_updates << "\ncustom_textures " << prefs.custom_textures << "\nunlock_all "
          << prefs.unlock_all << "\nhud_mode " << prefs.hud_mode << "\nfrozen_stadium "
          << prefs.frozen_stadium << "\nfree_camera " << prefs.free_camera << "\nucf " << prefs.ucf
-         << "\ntag_on_y " << prefs.tag_on_y
-         << "\nmusic_volume " << prefs.music_volume << "\nsfx_volume " << prefs.sfx_volume
-         << "\ninstall_id " << std::hex << prefs.install_id << std::dec << '\n';
+         << "\ntag_on_y " << prefs.tag_on_y << "\nmusic_volume " << prefs.music_volume
+         << "\nsfx_volume " << prefs.sfx_volume << "\ninstall_id " << std::hex << prefs.install_id
+         << std::dec << '\n';
     auto data = text.str();
     size_t done = 0;
     bool ok = true;
