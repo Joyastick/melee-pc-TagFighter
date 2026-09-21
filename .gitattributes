@@ -2,7 +2,7 @@
 * text=auto
 
 # Enforce Unix-style line endings.
-text eol=lf
+* text eol=lf
 
 # Always use CRLF for Windows batch scripts
 *.bat  text eol=crlf
