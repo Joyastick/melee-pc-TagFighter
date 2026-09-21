@@ -44,15 +44,11 @@ bool TagAssist_IsTagBattleOn(void);
 /// Bitmask (HSD_PAD_* from sysdolphin/baselib/controller.h) of whichever
 /// single extra GCC button the F1 menu's "MeleeVS: Tag Bind" setting
 /// currently maps alongside D-Pad Down for calling/tagging, or 0 if that
-/// setting is "Off" (D-Pad Down only). ftCo_Jump_GetInput reads this to stop
-/// treating the same button as a jump input whenever it's X or Y.
+/// setting is "Off" (D-Pad Down only). Fighter_Spaghetti_8006AD10
+/// (fighter.c) reads this to strip a tag-bound X/Y/L/R out of that
+/// fighter's own input each frame, so it stops also working as jump/shield
+/// -- see that call site's own comment.
 u32 TagAssist_ExtraBindMask(void);
-
-/// -1 if neither GCC shoulder button should give up shielding right now,
-/// 0 if L is the current tag bind, 1 if R is. See its own doc comment
-/// (tag_assist.c) for why shield needs this instead of a bitmask like
-/// TagAssist_ExtraBindMask.
-int TagAssist_SuppressedShoulderSide(void);
 
 /// Turns Tag Battle on and arms TagAssist_ConsumeAutoPopulate for the CSS
 /// setup that follows. Call from the main menu's "TAG BATTLE" entry, before

@@ -139,29 +139,27 @@
 ///
 /// The F1 menu's "MeleeVS: Tag Bind" setting picks one more GCC button that
 /// also calls/tags, on top of D-Pad Down (see TagAssist_ExtraBindMask and
-/// pc_get_tag_bind's index table, pc.h). If that button is X or Y,
-/// Fighter_Spaghetti_8006AD10 (fighter.c) strips it out of the fighter's
-/// own held/pressed_buttons every frame so it stops counting as a jump
-/// input anywhere in that fighter's own code -- there wasn't just the one
-/// ftCo_Jump_GetInput call site to patch, so the fix has to live upstream
-/// of all of them instead. Any other tag-bind pick can double up with
-/// whatever else retail already binds it to (e.g. Start still pauses too)
-/// -- same kind of known overlap as the D-Pad Down/down-taunt case above.
+/// pc_get_tag_bind's index table, pc.h). If that button is X, Y, L or R,
+/// Fighter_Spaghetti_8006AD10 (fighter.c) also strips it out of the
+/// fighter's own held/pressed_buttons every frame so it stops working as
+/// jump/shield anywhere in that fighter's own code -- there isn't just one
+/// jump (or one shield) call site to patch, so that fix has to live
+/// upstream of all of them instead. Any other tag-bind pick can double up
+/// with whatever else retail already binds it to (e.g. Start still pauses
+/// too) -- same kind of known overlap as the D-Pad Down/down-taunt case
+/// above.
 ///
-/// L and R each get their own entry, but they can't be read the same way
-/// as every other digital button: a normal (even hard) shield press only
-/// reliably sets HSD_PAD_LR, retail's own "either shoulder" flag
-/// (Fighter_Spaghetti_8006AD10_Inner1, fighter.c OR's it into held_buttons
-/// for any analog squeeze past the shield deadzone) -- the individual
-/// HSD_PAD_L/HSD_PAD_R bits only assert on a genuine full mechanical
-/// click, which most controllers/adapters rarely produce during real play.
-/// So instead of the fighter's processed (and already L/R-merged)
-/// pressed_buttons, kTagBindL/kTagBindR are checked against the RAW
-/// per-side analog trigger values HSD_PadGameStatus[].nml_analogL/R still
-/// carry (see TagAssist_ShoulderEdgePressed) against the same
-/// analog_shoulder_deadzone threshold retail's own shield uses, with this
-/// module's own frame-to-frame edge tracking since there's no ready-made
-/// "just crossed the deadzone" bit for a single side.
+/// Because of that same upstream stripping, TagAssist_TagInputPressed
+/// (below) deliberately does NOT read the fighter's own pressed_buttons
+/// for its own detection -- by the time this module would see it, a
+/// tag-bound X/Y/L/R has already been zeroed there. It reads straight from
+/// HSD_PadGameStatus with its own edge tracking instead, upstream of that
+/// strip. L and R specifically are synthesized from the raw analog
+/// trigger value against the same analog_shoulder_deadzone threshold
+/// retail's own shield uses, not the digital HSD_PAD_L/HSD_PAD_R bits --
+/// those only assert on a genuine full mechanical click (rare during real
+/// shielding), which is also why fighter.c's own shield-suppression zeroes
+/// the analog value rather than just clearing a bit.
 enum {
     kTagBindOff,
     kTagBindA,
@@ -180,7 +178,7 @@ enum {
 /// Incremented once per frame, unconditionally, every scene -- see
 /// TagAssist_Tick and its call site in gmscene.c. Drives
 /// TAG_ASSIST_FIRST_CALL_GRACE_FRAMES gating and, below,
-/// TagAssist_ShoulderEdgePressed's once-per-frame snapshot.
+/// TagAssist_TagInputPressed's once-per-frame snapshot.
 static u32 sFrameCounter;
 
 u32 TagAssist_ExtraBindMask(void)
@@ -192,8 +190,8 @@ u32 TagAssist_ExtraBindMask(void)
         [kTagBindX] = HSD_PAD_X,
         [kTagBindY] = HSD_PAD_Y,
         [kTagBindZ] = HSD_PAD_Z,
-        // kTagBindL/kTagBindR have no bit here -- TagAssist_ShoulderEdgePressed
-        // handles them instead, see this function's own doc comment.
+        [kTagBindL] = HSD_PAD_L,
+        [kTagBindR] = HSD_PAD_R,
         [kTagBindStart] = HSD_PAD_START,
         [kTagBindDpadUp] = HSD_PAD_DPADUP,
         [kTagBindDpadLeft] = HSD_PAD_DPADLEFT,
@@ -203,8 +201,8 @@ u32 TagAssist_ExtraBindMask(void)
     if (!TagAssist_IsTagBattleOn()) {
         // Tag Battle off: the F1 menu's tag-bind setting is a pure Tag
         // Battle feature and shouldn't touch an ordinary VS Mode match --
-        // without this, picking X/Y here would silently break jump (see
-        // ftCo_Jump_GetInput) in every other mode too.
+        // without this, picking X/Y/L/R here would silently break
+        // jump/shield in every other mode too.
         return 0;
     }
     bind = pc_get_tag_bind();
@@ -214,88 +212,41 @@ u32 TagAssist_ExtraBindMask(void)
     return kBindMasks[bind];
 }
 
-/// -1 if neither shoulder should give up shielding right now (Tag Battle
-/// off, or the tag bind isn't L/R), 0 if L is the current tag bind, 1 if R
-/// is. Read from Fighter_Spaghetti_8006AD10 (fighter.c) so binding tag to
-/// a shoulder button gives that side up entirely instead of double-booking
-/// with shield -- same idea as TagAssist_ExtraBindMask dropping X/Y from
-/// jump input, but shield can't be handled that way: HSD_PAD_LR and
-/// fp->input.triggers[0] are already an L-or-R merge by the time any of
-/// the many places that check them run (see this fighter.c call site's own
-/// comment), so suppressing one side has to happen right where that merge
-/// happens, not downstream.
-int TagAssist_SuppressedShoulderSide(void)
+/// True the first frame `controller_slot`'s raw controller state matches
+/// the currently-configured tag input (D-Pad Down, always, OR'd with
+/// whatever TagAssist_ExtraBindMask names) -- false every other frame,
+/// including while still held. Reads HSD_PadGameStatus directly with this
+/// module's own per-slot edge tracking rather than the fighter's own
+/// held/pressed_buttons; see this section's own doc comment for why.
+static bool TagAssist_TagInputPressed(u8 controller_slot)
 {
-    if (!TagAssist_IsTagBattleOn()) {
-        return -1;
-    }
-    switch (pc_get_tag_bind()) {
-    case kTagBindL:
-        return 0;
-    case kTagBindR:
-        return 1;
-    default:
-        return -1;
-    }
-}
-
-/// True the frame `controller_slot`'s L or R analog trigger (whichever the
-/// tag-bind setting currently points at) first crosses
-/// p_ftCommonData->analog_shoulder_deadzone -- false every other frame,
-/// including while it's held past that point, and false outright if the
-/// tag bind isn't L or R. See TagAssist_ExtraBindMask's doc comment for why
-/// this can't just be another bit in that function's table.
-static bool TagAssist_ShoulderEdgePressed(u8 controller_slot)
-{
-    static bool sHeldPrevFrame[4][2];   // previous frame's held state
-    static bool sEdgeThisFrame[4][2];  // just crossed the deadzone this frame
+    static u32 sPrevMask[4];
+    static u32 sEdgeMask[4];
     static u32 sSnapshotFrame = (u32)-1;
-    int bind = pc_get_tag_bind();
-    int side;
 
-    if (bind == kTagBindL) {
-        side = 0;
-    } else if (bind == kTagBindR) {
-        side = 1;
-    } else {
-        return false;
-    }
     if (controller_slot >= 4) {
         return false;
     }
 
     // Multiple call sites can ask this on the same game frame; only
-    // actually advance the held/edge snapshot the first time, so a later
-    // call this frame doesn't see its own edge already consumed.
+    // actually advance the snapshot the first time, so a later call this
+    // frame doesn't see its own edge already consumed.
     if (sSnapshotFrame != sFrameCounter) {
         int i;
         sSnapshotFrame = sFrameCounter;
         for (i = 0; i < 4; i++) {
-            bool lHeld = HSD_PadGameStatus[i].nml_analogL >
-                         p_ftCommonData->analog_shoulder_deadzone;
-            bool rHeld = HSD_PadGameStatus[i].nml_analogR >
-                         p_ftCommonData->analog_shoulder_deadzone;
-            sEdgeThisFrame[i][0] = lHeld && !sHeldPrevFrame[i][0];
-            sEdgeThisFrame[i][1] = rHeld && !sHeldPrevFrame[i][1];
-            sHeldPrevFrame[i][0] = lHeld;
-            sHeldPrevFrame[i][1] = rHeld;
+            u32 mask = HSD_PadGameStatus[i].button;
+            if (HSD_PadGameStatus[i].nml_analogL > p_ftCommonData->analog_shoulder_deadzone) {
+                mask |= HSD_PAD_L;
+            }
+            if (HSD_PadGameStatus[i].nml_analogR > p_ftCommonData->analog_shoulder_deadzone) {
+                mask |= HSD_PAD_R;
+            }
+            sEdgeMask[i] = mask & ~sPrevMask[i];
+            sPrevMask[i] = mask;
         }
     }
-    return sEdgeThisFrame[controller_slot][side];
-}
-
-static inline HSD_Pad TagAssist_TriggerMask(void)
-{
-    return HSD_PAD_DPADDOWN | TagAssist_ExtraBindMask();
-}
-#define TAG_ASSIST_PRESSED TagAssist_TriggerMask()
-
-/// Combines the digital TAG_ASSIST_PRESSED check with the L/R analog-edge
-/// case above -- use this everywhere a call site used to check
-/// `buttons & TAG_ASSIST_PRESSED` directly.
-static inline bool TagAssist_InputTriggered(HSD_Pad buttons, u8 controller_slot)
-{
-    return (buttons & TAG_ASSIST_PRESSED) != 0 || TagAssist_ShoulderEdgePressed(controller_slot);
+    return (sEdgeMask[controller_slot] & (HSD_PAD_DPADDOWN | TagAssist_ExtraBindMask())) != 0;
 }
 
 /// How long a called assist stays out before auto-benching.
@@ -1121,8 +1072,7 @@ static void TagAssist_TryCallAssist(TeamState* team)
     }
     if (team->is_cpu_team) {
         // CPU partner: point decides when to call it in, same as ever.
-        triggerPressed = TagAssist_InputTriggered(
-            pointFp->input.pressed_buttons, pointFp->x618_player_id);
+        triggerPressed = TagAssist_TagInputPressed(pointFp->x618_player_id);
     } else {
         // Real second player: only their own button calls them in. Can't
         // read assistFp->input for this -- TagAssist_SetBenched's freeze
@@ -1130,13 +1080,10 @@ static void TagAssist_TryCallAssist(TeamState* team)
         // input-population block for a benched fighter (the same `if
         // (!fp->x221F_b3)` gate that wraps the call into this module's own
         // per-frame hook), so a benched player's real button press never
-        // reaches assistFp->input at all. Read the raw controller state
-        // directly instead -- a plain "currently held" check (not
-        // edge-detected) is fine for the digital case, since the
-        // assist_out guard above already makes this a one-shot trigger no
-        // matter how many frames the button stays held.
-        triggerPressed = TagAssist_InputTriggered(
-            HSD_PadGameStatus[assistFp->x618_player_id].button, assistFp->x618_player_id);
+        // reaches assistFp->input at all -- moot anyway, since
+        // TagAssist_TagInputPressed always reads raw controller state
+        // rather than any fighter's own input.
+        triggerPressed = TagAssist_TagInputPressed(assistFp->x618_player_id);
     }
     if (!triggerPressed) {
         return;
@@ -1803,7 +1750,7 @@ static void TagAssist_TryTag(TeamState* team)
     Fighter_GObj* newPoint;
     Fighter_GObj* newAssist;
 
-    if (!TagAssist_InputTriggered(pointFp->input.pressed_buttons, pointFp->x618_player_id)) {
+    if (!TagAssist_TagInputPressed(pointFp->x618_player_id)) {
         return;
     }
     if (team->tags_this_call >= TAG_MAX_TAGS_PER_CALL) {
@@ -2015,7 +1962,7 @@ static void TagAssist_TryReviveFallenPartner(TeamState* team, Fighter* pointFp)
     Fighter_GObj* fallen;
     Fighter* fallenFp;
 
-    if (!TagAssist_InputTriggered(pointFp->input.pressed_buttons, pointFp->x618_player_id)) {
+    if (!TagAssist_TagInputPressed(pointFp->x618_player_id)) {
         return;
     }
     if (Player_GetStocks(pointFp->player_id) <= 1) {
