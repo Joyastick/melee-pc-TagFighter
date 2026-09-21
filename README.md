@@ -21,7 +21,7 @@ This repository is a fork of
 Melee built from [doldecomp/melee](https://github.com/doldecomp/melee) on top
 of [aurora](https://github.com/encounter/aurora) (GX/OS/PAD/DVD/CARD/THP
 compatibility layer with a WebGPU backend) and SDL3. Everything melee-pc
-provides — the native build, launcher, settings overlay, HD texture packs,
+provides - the native build, launcher, settings overlay, HD texture packs,
 custom soundtrack streaming, and so on — still applies here; this fork adds
 the Tag Fighter mod on top of it. For melee-pc's own feature list, porting
 notes, and contributing guide, see
@@ -42,76 +42,17 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 ## Tag Fighter roadmap
 
-### Completed
-
-- [x] Grounded assist calls, implemented for every character.
-- [x] Air assist calls, implemented for every character.
-- [x] Tag Battle toggle in the character-select rules screen -- off by
-  default, so vanilla Melee (including normal Team Battle) is completely
-  unaffected until it's turned on.
-- [x] Player-driven Red/Blue team pairing and point-character selection,
-  replacing the old fixed Port1+3/Port2+4 layout.
-- [x] Tagging between characters (swapping which fighter is point mid-match,
-  not just a timed assist call) -- including control handoff for a Solo
-  Play (human+CPU) team, so the human always ends up playing whichever
-  fighter is currently point.
-- [x] Point-elimination promotion: if point runs out of stocks, the assist
-  is promoted to point instead of softlocking the team, with a manual
-  stock-share revival to bring a permanently-eliminated teammate back once
-  the survivor has a spare stock.
-- [x] Duo Play (human+human team) confirmed working -- the same
-  team-pairing and tag mechanic Solo Play uses covers two humans sharing a
-  team with no CPU-specific control-handoff code path involved. The assist
-  cameo now runs 4 seconds (up from 3) and allows up to 3 tags per call
-  (each on its own 20-frame cooldown) instead of one tag ending the cameo.
-- [x] Solo Play's CPU assist behaves passively (idle, no attacking, but
-  still works its way back toward the stage if knocked off) for the whole
-  time it's out on either a tag or a plain call, instead of fighting/
-  taunting like a genuine opponent or, on a plain call, having no AI at
-  all after its scripted move finished.
-- [x] Dedicated **MELEE VS** entry in the main menu's VS submenu, replacing
-  the old CSS-only Z+A hotkey -- jumps straight into character select with
-  all 4 doors already open and paired 2v2 (Red/Blue by port, Human or CPU
-  by controller presence), doors locked to CPU/Player so the mode can't
-  drop below 4 players, and the VS Mode/Team Battle/Tag Battle switch
-  locked for the rest of that CSS session.
-- [x] Dedicated Tag Battle art in the character-select screen: a two-tone
-  "MeleeVS" title in place of the borrowed "TEAM BATTLE" banner, and a
-  colored **POINT** tag on whichever door is currently each team's point
-  character. Z now claims point from anywhere on a door's card, not just
-  its team-color button.
-- [x] Fixed Ice Climbers' Nana and Zelda/Sheik's dormant transform half
-  occasionally going CPU-controlled (or losing their own AI) several tags
-  into a match -- both are now kept in sync with control-role swaps the
-  same way retail keeps them in sync with a normal port assignment.
-- [x] Nametags during an assist call: the point character shows
-  **Point: N** (how many more tags this call still allows), and the
-  called-out assist shows a live countdown (to a tenth of a second) to
-  when it auto-benches -- both hidden whenever no assist is out, so
-  there's nothing on screen outside an active call.
-- [x] Tagging in is instant: the fighter you tag into immediately cancels
-  whatever it was doing (its own assist move, idle loop, anything) and you
-  get full control the moment the tag lands. Skipped whenever that fighter
-  genuinely couldn't have acted anyway -- hitstun, being grabbed, frozen,
-  buried, asleep, and the roster's other exotic "stuck" states all play
-  out naturally first, so a tag (or the timer running out) can never be
-  used to escape a combo or a throw for free. The assist's own auto-bench
-  respects the same rule and happens right on schedule once its timer
-  expires, instead of waiting out however long its current move had left
-  to play.
-- [x] Fixed the camera tightening up right after a teammate is eliminated:
-  the eliminated fighter's camera tracking stayed active even though they're
-  now just parked at the spawn platform for the rest of the match, and each
-  extra stale tracked fighter shrinks the framing margin the camera gives
-  everyone else.
+### It features: 
+[x] Assists for every character - Press D-Pad Down to perform a predetermined assist move for each character
+[x] Active Tag - When both characters are on the screen at the same time, press D-Pad Down to swap 'Point' between them
+[x] Multiple 'Freestyle' tags - Ability to active tag 3 times per assist call
+[x] 2XKO-Like Duos - Team up with your friends to create crazy combos
+[x] Tag Animation Canceling - Cancel any animation the character was in (besides getting hit/grabbed) into full control of the character
 
 ### Planned
 
 - [] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
-  for now, same as melee-pc's own online support)
-
-The phases behind the planned rows, and why they are ordered that way, are in
-[ROADMAP.md](ROADMAP.md).
+  for now, same as melee-pc's own online 
 
 ## Download
 
@@ -143,7 +84,7 @@ tools/build_android.sh      # dist/Melee-Android-arm64.apk (signed release)
 
 ## Playing MeleeVS
 
-Tag Battle has its own entry in the main menu, so a normal VS Mode or Team
+MeleeVS has its own entry in the main menu, so a normal VS Mode or Team
 Battle match plays exactly like vanilla Melee and is unaffected by any of
 this.
 
