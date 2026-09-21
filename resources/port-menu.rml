@@ -22,6 +22,7 @@
 <div class="setting"><div class="description"><h3>Hazardless stages</h3><p>Lock Pokémon Stadium in neutral mode without transformations.</p></div><button id="frozen-stadium">Off</button></div>
 <div class="setting"><div class="description"><h3>Free camera</h3><p>Unlock 360° orbital rotation and zoom distance in pause mode.</p></div><button id="free-camera">Normal</button></div>
 <div class="setting"><div class="description"><h3>Universal Controller Fix</h3><p>UCF 0.8x dashback and shield-drop consistency on any controller.</p></div><button id="ucf">Off</button></div>
+<div class="setting"><div class="description"><h3>Tag Battle: tag on Y</h3><p>Y also calls in/tags your partner, alongside D-Pad Down. Disables Y as a jump button.</p></div><button id="tag-on-y">Off</button></div>
 </div>
 <div id="page-audio" class="page">
 <div class="setting"><div class="description"><h3>Master volume</h3><p>Left/right or drag to adjust.</p></div><div class="slider-control"><input type="range" id="volume" min="0" max="100" step="5" value="100" /><span id="volume-val" class="slider-value">100%</span></div></div>

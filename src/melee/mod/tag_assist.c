@@ -22,6 +22,7 @@
 #include <melee/mp/mpcoll.h>
 #include <melee/mp/mplib.h>
 #include <melee/pl/player.h>
+#include <pc/pc.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/jobj.h>
 #include <sysdolphin/baselib/random.h>
@@ -135,7 +136,15 @@
 /// D-Pad Down calls in your assist. Note this can also fire alongside
 /// retail's own down-taunt if that's bound to the same input in a given
 /// state -- known v1 overlap, revisit if that's a problem in practice.
-#define TAG_ASSIST_PRESSED HSD_PAD_DPADDOWN
+///
+/// When the F1 menu's "Tag on Y" setting is on, Y calls/tags too (and
+/// ftCo_Jump_GetInput stops treating Y as a jump button, so the two never
+/// fight over the same press).
+static inline HSD_Pad TagAssist_TriggerMask(void)
+{
+    return HSD_PAD_DPADDOWN | (pc_is_tag_on_y_enabled() ? HSD_PAD_Y : 0);
+}
+#define TAG_ASSIST_PRESSED TagAssist_TriggerMask()
 
 /// How long a called assist stays out before auto-benching.
 /// 300 = 5 seconds at 60fps.

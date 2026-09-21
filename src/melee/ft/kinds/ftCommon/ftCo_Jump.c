@@ -26,6 +26,7 @@
 #include <melee/ft/inlines.h>
 #include <melee/ft/kinds/ftPeach/ftpeachfloat.h>
 #include <melee/ft/types.h>
+#include <pc/pc.h>
 
 ftCo_JumpInput ftCo_Jump_GetInput(Fighter_GObj* gobj)
 {
@@ -36,7 +37,9 @@ ftCo_JumpInput ftCo_Jump_GetInput(Fighter_GObj* gobj)
         return JumpInput_LStick;
     }
 
-    if (fp->input.pressed_buttons & HSD_PAD_XY) {
+    // Y is repurposed as the tag-in button when that setting is on (see
+    // TagAssist_TriggerMask, tag_assist.c) -- X alone still jumps.
+    if (fp->input.pressed_buttons & (pc_is_tag_on_y_enabled() ? HSD_PAD_X : HSD_PAD_XY)) {
         return JumpInput_XY;
     }
 
