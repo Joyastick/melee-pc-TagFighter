@@ -1,6 +1,6 @@
 # MeleeVS - Melee Tag Fighter
 
-**Now in Beta!** A gameplay mod for Super Smash Bros. Melee
+A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
 a partner "assist" fighter mid-match, similar to *Marvel vs. Capcom* switching
 or *2XKO*-style assist calls, instead of Melee's normal
@@ -99,6 +99,11 @@ is GPL-3.0-or-later. Details under [License](#license).
   respects the same rule and happens right on schedule once its timer
   expires, instead of waiting out however long its current move had left
   to play.
+- [x] Fixed the camera tightening up right after a teammate is eliminated:
+  the eliminated fighter's camera tracking stayed active even though they're
+  now just parked at the spawn platform for the rest of the match, and each
+  extra stale tracked fighter shrinks the framing margin the camera gives
+  everyone else.
 
 ### Planned
 
@@ -113,12 +118,12 @@ The phases behind the planned rows, and why they are ordered that way, are in
 Tag Fighter builds (with the mod included) are on
 [this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases) --
 not upstream's, which only ever ships vanilla melee-pc. Grab the
-`Melee-Windows-x86_64-vX.Y.Z-beta.zip` asset from the latest release, unzip
+`Melee-Windows-x86_64-vX.Y.Z.zip` asset from the latest release, unzip
 it, and run `melee.exe` (see [Running](#running) below for disc requirements).
 
 ```sh
-./Melee-x86_64-vX.Y.Z-beta.AppImage                  # open the launcher
-./Melee-x86_64-vX.Y.Z-beta.AppImage /path/to/melee.iso
+./Melee-x86_64-vX.Y.Z.AppImage                  # open the launcher
+./Melee-x86_64-vX.Y.Z.AppImage /path/to/melee.iso
 ```
 
 No disc data is needed to build. The two HSD font atlases are pixel data from
@@ -131,8 +136,8 @@ NDK (`ANDROID_NDK_HOME`) and a JDK 17. Each sets its output version from the
 `MELEE_VERSION` environment variable (defaults to `0.0.0` when unset).
 
 ```sh
-tools/package_linux.sh      # dist/Melee-x86_64-vX.Y.Z-beta.AppImage + tarball
-tools/package_windows.sh    # dist/Melee-Windows-x86_64-vX.Y.Z-beta.zip
+tools/package_linux.sh      # dist/Melee-x86_64-vX.Y.Z.AppImage + tarball
+tools/package_windows.sh    # dist/Melee-Windows-x86_64-vX.Y.Z.zip
 tools/build_android.sh      # dist/Melee-Android-arm64.apk (signed release)
 ```
 
