@@ -196,11 +196,44 @@ u32 TagAssist_ExtraBindMask(void)
         [kTagBindDpadLeft] = HSD_PAD_DPADLEFT,
         [kTagBindDpadRight] = HSD_PAD_DPADRIGHT,
     };
-    int bind = pc_get_tag_bind();
+    int bind;
+    if (!TagAssist_IsTagBattleOn()) {
+        // Tag Battle off: the F1 menu's tag-bind setting is a pure Tag
+        // Battle feature and shouldn't touch an ordinary VS Mode match --
+        // without this, picking X/Y here would silently break jump (see
+        // ftCo_Jump_GetInput) in every other mode too.
+        return 0;
+    }
+    bind = pc_get_tag_bind();
     if (bind < 0 || (unsigned)bind >= sizeof(kBindMasks) / sizeof(kBindMasks[0])) {
         return 0;
     }
     return kBindMasks[bind];
+}
+
+/// -1 if neither shoulder should give up shielding right now (Tag Battle
+/// off, or the tag bind isn't L/R), 0 if L is the current tag bind, 1 if R
+/// is. Read from Fighter_Spaghetti_8006AD10 (fighter.c) so binding tag to
+/// a shoulder button gives that side up entirely instead of double-booking
+/// with shield -- same idea as TagAssist_ExtraBindMask dropping X/Y from
+/// jump input, but shield can't be handled that way: HSD_PAD_LR and
+/// fp->input.triggers[0] are already an L-or-R merge by the time any of
+/// the many places that check them run (see this fighter.c call site's own
+/// comment), so suppressing one side has to happen right where that merge
+/// happens, not downstream.
+int TagAssist_SuppressedShoulderSide(void)
+{
+    if (!TagAssist_IsTagBattleOn()) {
+        return -1;
+    }
+    switch (pc_get_tag_bind()) {
+    case kTagBindL:
+        return 0;
+    case kTagBindR:
+        return 1;
+    default:
+        return -1;
+    }
 }
 
 /// True the frame `controller_slot`'s L or R analog trigger (whichever the

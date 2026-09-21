@@ -1856,6 +1856,21 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                 tempf1 = HSD_PadGameStatus[fp->x618_player_id].nml_analogR;
                 tempf0 = HSD_PadGameStatus[fp->x618_player_id].nml_analogL;
 
+                // If the F1 menu's tag-bind setting has claimed this side
+                // for tagging (see TagAssist_SuppressedShoulderSide), drop
+                // its analog value here so a light shield squeeze on that
+                // side can't also engage shield -- this is the one place
+                // L and R's analog values are still distinguishable before
+                // they're merged into a single triggers[0] just below.
+                switch (TagAssist_SuppressedShoulderSide()) {
+                case 0:
+                    tempf0 = 0.0f;
+                    break;
+                case 1:
+                    tempf1 = 0.0f;
+                    break;
+                }
+
                 fp->input.triggers[0] = (tempf0 > tempf1) ? tempf0 : tempf1;
             }
 
@@ -1894,6 +1909,19 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
             } else {
                 fp->input.held_buttons[0] =
                     HSD_PadGameStatus[fp->x618_player_id].button;
+                // Also strip a genuine full click of whichever side the
+                // tag-bind setting has claimed (see the trigger-merge
+                // suppression above) -- without this, a hard press would
+                // still OR HSD_PAD_LR in below via its own raw digital bit
+                // even with the analog value already zeroed.
+                switch (TagAssist_SuppressedShoulderSide()) {
+                case 0:
+                    fp->input.held_buttons[0] &= ~HSD_PAD_L;
+                    break;
+                case 1:
+                    fp->input.held_buttons[0] &= ~HSD_PAD_R;
+                    break;
+                }
             }
 
             if (gm_8016B0FC()) {
