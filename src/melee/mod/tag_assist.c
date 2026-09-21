@@ -1286,13 +1286,42 @@ static bool TagAssist_IsInDeathSequence(Fighter_GObj* gobj)
 /// state the player couldn't have acted out of anyway.
 ///
 /// Deliberately does NOT cover states the player voluntarily chose to be
-/// in -- attacks, dodges/rolls, shielding, a committed tech/getup option --
-/// those are meant to still get cut short exactly like the original
-/// tag-cancel behavior, only genuinely uncontrollable states are exempted.
+/// in -- attacks, ground dodges/rolls, shielding, a committed tech/getup
+/// option -- those are meant to still get cut short exactly like the
+/// original tag-cancel behavior, only genuinely uncontrollable states are
+/// exempted.
+///
+/// Air dodge is the one deliberate exception to that rule: unlike a ground
+/// dodge or a whiffed attack, tagging out of it (or out of the landing lag
+/// it leads into) would hand a free escape from air dodge's own core
+/// risk/reward, the same way tagging out of hitstun would -- so it's
+/// treated as "can't act" too, even though the player chose to start it.
 static bool TagAssist_CantAct(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     FtMotionId id = fp->motion_id;
+    // Tracks, per player slot, whether the fighter is still somewhere in
+    // an air-dodge-originated chain -- ftCo_MS_EscapeAir covers the dodge
+    // itself and its own in-air end lag if it's never interrupted by
+    // landing, but landing mid-dodge (ftCo_EscapeAir.c's collision
+    // callback) hands off to ftCo_MS_LandingFallSpecial, the same shared
+    // landing-lag state most special-move landings also use -- so seeing
+    // that state alone can't tell an air-dodge landing apart from, say, a
+    // whiffed Up Special's. Remembering "was this fighter just in
+    // EscapeAir" across frames is what makes that distinction, so only an
+    // air-dodge-caused LandingFallSpecial gets exempted here, not every
+    // other kind.
+    static bool sAirDodgeChain[8];
+    u8 slot = fp->player_id < 8 ? fp->player_id : 0;
+
+    if (id == ftCo_MS_EscapeAir) {
+        sAirDodgeChain[slot] = true;
+        return true;
+    }
+    if (id == ftCo_MS_LandingFallSpecial && sAirDodgeChain[slot]) {
+        return true;
+    }
+    sAirDodgeChain[slot] = false;
 
     // Held by an ordinary grab -- every one of these is the victim's own
     // "being carried/damaged/struggling" motion ID for a given grab type,
