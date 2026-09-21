@@ -144,6 +144,17 @@
 /// fight over the same press; any other pick can double up with whatever
 /// else retail already binds it to (e.g. Start still pauses too) -- same
 /// kind of known overlap as the D-Pad Down/down-taunt case above.
+///
+/// L and R share one "Shield" entry instead of getting their own, and it
+/// checks HSD_PAD_LR rather than HSD_PAD_L/HSD_PAD_R specifically. Retail's
+/// own shield input (Fighter_Spaghetti_8006AD10_Inner1, fighter.c) treats
+/// any analog squeeze past the shield deadzone as equivalent to a full
+/// digital click, OR-ing the same HSD_PAD_LR flag into held_buttons either
+/// way -- but it never fabricates the individual HSD_PAD_L/HSD_PAD_R bits
+/// for an analog-only press, only a genuine full mechanical click does
+/// that. Most players (and some GC-adapter/controller combos) never
+/// actually reach that click during normal shielding, so binding tag to
+/// the raw HSD_PAD_R bit looked like it silently did nothing.
 u32 TagAssist_ExtraBindMask(void)
 {
     static const HSD_Pad kBindMasks[] = {
@@ -153,8 +164,7 @@ u32 TagAssist_ExtraBindMask(void)
         HSD_PAD_X,
         HSD_PAD_Y,
         HSD_PAD_Z,
-        HSD_PAD_L,
-        HSD_PAD_R,
+        HSD_PAD_LR,  // Shield (L/R)
         HSD_PAD_START,
         HSD_PAD_DPADUP,
         HSD_PAD_DPADLEFT,

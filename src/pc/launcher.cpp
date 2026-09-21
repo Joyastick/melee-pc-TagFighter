@@ -70,9 +70,11 @@ constexpr const char* tab_ids[] = {"tab-graphics", "tab-audio", "tab-cheats", "t
 constexpr const char* page_ids[] = {"page-graphics", "page-audio", "page-cheats", "page-controls"};
 constexpr int tab_count = 4;
 // Order must match kBindMasks in tag_assist.c (see pc_get_tag_bind, pc.h) --
-// index 0 is "Off" (D-Pad Down only), the rest name one extra GCC button.
-constexpr const char* kTagBindNames[] = {
-    "Off", "A", "B", "X", "Y", "Z", "L", "R", "Start", "D-Pad Up", "D-Pad Left", "D-Pad Right"};
+// index 0 is "Off" (D-Pad Down only), the rest name one extra GCC button. L
+// and R share one "Shield" entry: see TagAssist_ExtraBindMask's comment for
+// why they can't be told apart as separate binds.
+constexpr const char* kTagBindNames[] = {"Off", "A", "B", "X", "Y", "Z", "Shield (L/R)", "Start",
+    "D-Pad Up", "D-Pad Left", "D-Pad Right"};
 constexpr int kTagBindCount = int(sizeof(kTagBindNames) / sizeof(kTagBindNames[0]));
 int tab_index(const Rml::String& id) {
     for (int i = 0; i < tab_count; ++i)
