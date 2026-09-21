@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches: ['**']
-    tags: ['v*']
+    tags: ['MeleeVS-v*']
   pull_request:
   workflow_dispatch:
 
@@ -312,7 +312,7 @@ jobs:
   release:
     name: Publish release
     needs: [tests, linux, windows, ios, macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/MeleeVS-v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write

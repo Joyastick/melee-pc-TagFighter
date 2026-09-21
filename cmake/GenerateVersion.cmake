@@ -1,12 +1,21 @@
-# Regenerates version_git.h from the nearest vX.Y.Z(-suffix) git tag on every
-# build, so MELEE_APP_VERSION (src/pc/version.cpp) can't go stale the way a
-# hand-bumped #define did. Invoked as an ALL custom target -- see CMakeLists.txt.
+# Regenerates version_git.h from the nearest MeleeVS-vX.Y.Z(-suffix) git tag
+# on every build, so MELEE_APP_VERSION (src/pc/version.cpp) can't go stale the
+# way a hand-bumped #define did. Invoked as an ALL custom target (see
+# CMakeLists.txt).
+#
+# The match pattern is scoped to the "MeleeVS-" prefix, not bare "v[0-9]*",
+# because upstream melee-pc's own tags (v0.1.10.1-beta, etc.) are reachable
+# ancestors of this branch after a merge, and an unscoped match could resolve
+# to one of theirs instead of ours; a coincidentally identical bare version
+# number would make two genuinely different, mutually-desyncing builds
+# report the same pc_app_rev() and pass the netplay compatibility check
+# (src/pc/net_match.c, src/pc/net_lan.c).
 find_package(Git QUIET)
 
 set(_version "")
 if (GIT_FOUND)
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" describe --tags --match "v[0-9]*" --dirty
+        COMMAND "${GIT_EXECUTABLE}" describe --tags --match "MeleeVS-v[0-9]*" --dirty
         WORKING_DIRECTORY "${SRC_DIR}"
         OUTPUT_VARIABLE _version
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -17,7 +26,7 @@ if (GIT_FOUND)
     endif ()
 endif ()
 
-set(_content "// Generated at build time by cmake/GenerateVersion.cmake -- do not edit.\n")
+set(_content "// Generated at build time by cmake/GenerateVersion.cmake, do not edit.\n")
 if (_version)
     string(APPEND _content "#define MELEE_APP_VERSION \"${_version}\"\n")
 endif ()
