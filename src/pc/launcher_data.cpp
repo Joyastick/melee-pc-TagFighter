@@ -372,10 +372,10 @@ Preferences load_preferences(const std::filesystem::path& path) {
             }
         } else if (key == "tag_bind") {
             int value;
-            // kTagBindNames (launcher.cpp) / kBindMasks (tag_assist.c) have
-            // 11 entries (0 = Off through 10 = D-Pad Right); keep this bound
-            // in sync if that list ever grows.
-            if (row >> value && value >= 0 && value <= 10)
+            // kTagBindNames (launcher.cpp) / the kTagBind* enum
+            // (tag_assist.c) have 12 entries (0 = Off through 11 = D-Pad
+            // Right); keep this bound in sync if that list ever grows.
+            if (row >> value && value >= 0 && value <= 11)
                 prefs.tag_bind = value;
         } else if (key == "hud_mode") {
             int value;
