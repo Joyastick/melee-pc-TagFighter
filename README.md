@@ -1,5 +1,7 @@
 # MeleeVS - Melee Tag Fighter
 
+![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
+
 A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
 a partner "assist" fighter mid-match, similar to *Marvel vs. Capcom* switching
@@ -38,7 +40,7 @@ is GPL-3.0-or-later. Details under [License](#license).
 > [bug report form](https://github.com/999sian/melee-pc/issues/new?template=bug_report.yml);
 > questions on [Discord](https://discord.gg/aurt34svq).
 
-![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
+
 
 ## Tag Fighter roadmap
 
