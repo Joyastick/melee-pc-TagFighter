@@ -2,7 +2,7 @@
 <head><title>Melee-PC</title><link type="text/rcss" href="launcher.rcss" /></head>
 <body>
   <div id="shell">
-    <div class="topline"><span class="brand">MELEE / PC</span><span class="edition">TagFighter <span id="app-version">v0.1.8-beta</span> · PC base <span id="upstream-version">v0.1.8-beta</span> · NTSC-U 1.02</span></div>
+    <div class="topline"><span class="brand">MELEE / PC</span><span class="edition"><span id="app-version">v0.1.8-beta</span> · PC base <span id="upstream-version">v0.1.8-beta</span> · NTSC-U 1.02</span></div>
     <div class="hero"><div class="eyebrow">SUPER SMASH BROS.</div><h1>MELEE <span class="mod-tag">with MeleeVS mod</span></h1><p class="mod-subtitle">MeleeVS, a 2v2 Assist Tag Fighter</p></div>
     <div id="home">
       <div id="update-card" class="update-card" style="display: none;">
