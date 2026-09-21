@@ -1349,7 +1349,7 @@ public:
         label("menu-status", "Canceled.");
         refresh_bindings();
     }
-    void apply(const Rml::String& id) {
+    void apply(const Rml::String& id, bool reverse = false) {
         if (id == "resume") {
             toggle();
             return;
@@ -1414,7 +1414,7 @@ public:
         } else if (id == "ucf") {
             prefs.ucf = !prefs.ucf;
         } else if (id == "tag-bind") {
-            prefs.tag_bind = (prefs.tag_bind + 1) % kTagBindCount;
+            prefs.tag_bind = (prefs.tag_bind + (reverse ? -1 : 1) + kTagBindCount) % kTagBindCount;
         } else if (id == "unlock-all") {
             prefs.unlock_all = !prefs.unlock_all;
         } else if (id == "backend") {
@@ -1605,6 +1605,15 @@ public:
                 drag(target->GetId(), event.GetParameter<float>("value", 0.0f));
             return;
         }
+        bool reverse = false;
+        if (event.GetId() == Rml::EventId::Mouseup) {
+            // Left-button mouseup already turned into its own Click event
+            // above (or will, once RmlUi finishes processing this same
+            // physical click) -- only the right button needs handling here.
+            if (event.GetParameter<int>("button", 0) != 1)
+                return;
+            reverse = true;
+        }
         if (binding >= 0)
             return;
         auto* target = event.GetTargetElement();
@@ -1612,7 +1621,7 @@ public:
             target = target->GetParentNode();
         if (!target || target == document)
             return;
-        apply(target->GetId());
+        apply(target->GetId(), reverse);
     }
 };
 PortMenu port_menu;
@@ -1645,6 +1654,10 @@ extern "C" void pc_menu_init(SDL_Window* window) {
     port_menu.document->AddEventListener(Rml::EventId::Click, &port_menu);
     port_menu.document->AddEventListener(Rml::EventId::Keydown, &port_menu);
     port_menu.document->AddEventListener(Rml::EventId::Change, &port_menu);
+    // Right-click cycles a setting backward. EventId::Click only ever fires
+    // for the left button (RmlUi's Context::ProcessMouseButtonUp), so
+    // catching the right button needs the lower-level Mouseup event instead.
+    port_menu.document->AddEventListener(Rml::EventId::Mouseup, &port_menu);
     // Focus does not bubble; the capture pass still reaches the document.
     port_menu.document->AddEventListener(Rml::EventId::Focus, &port_menu, true);
     aurora_set_resampler(static_cast<AuroraSampler>(prefs.filter_mode));
