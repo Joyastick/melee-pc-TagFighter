@@ -1801,6 +1801,19 @@ static void TagAssist_PromoteAssistToPoint(TeamState* team)
         newPointFp->cpu.kind = team->saved_cpu_kind;
     }
 
+    // oldPoint is kept alive (revivable via TagAssist_TryReviveFallenPartner)
+    // rather than destroyed, but it's parked at the spawn platform for the
+    // rest of the match -- its camera box was never touched by the promotion
+    // above and is still Active from when it was the controlled point, so
+    // the camera's own "keep every active subject in frame" bounding-box
+    // logic (Camera_8002958C) kept folding this stale off-stage position in
+    // forever, one more per elimination, forcing an ever-wider zoom-out.
+    // Same fix TagAssist_SetBenched already applies when parking the assist.
+    Fighter* oldPointFp = GET_FIGHTER(oldPoint);
+    if (oldPointFp->x890_cameraBox != NULL) {
+        Camera_80028F5C(oldPointFp->x890_cameraBox, CmSubjectState_Inactive);
+    }
+
     team->point = newPoint;
     team->assist = NULL;
     team->assist_out = false;
