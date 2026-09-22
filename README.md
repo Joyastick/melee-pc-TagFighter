@@ -43,7 +43,7 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 
 
-## Tag Fighter roadmap
+## MeleeVS Features and Roadmap
 
 ### It features: 
 [x] Assists for every character - Press D-Pad Down to perform a predetermined assist move for each character
@@ -56,45 +56,10 @@ is GPL-3.0-or-later. Details under [License](#license).
 
 [x] Tag Animation Canceling - Cancel any animation the character was in (besides getting hit/grabbed) into full control of the character
 
-### Planned
+### Planned Roadmap
 
-[] Online play, built on melee-pc's rollback netcode (LAN/direct IP only
-  for now, same as melee-pc's own online play)
-
-**This table is the single source of truth for feature status.** The release
-notes, the project site and `ROADMAP.md` defer to it; when they disagree, this
-table is right and the other one is stale.
-
-| Feature | Status | Note |
-|---|---|---|
-| Linux x86-64 / aarch64 | done | AppImage and tarball, both built in CI. |
-| Windows x86-64 / ARM64 | done | D3D12 or Vulkan; ARM64 via llvm-mingw. |
-| Direct3D 11 backend (Windows) | partial | Compiled into the shipped Dawn for both architectures, ordered after D3D12 and selectable as `MELEE_BACKEND=d3d11`. The adapter enumerates and the fail-over to D3D12 is proven, but no working D3D11 device has been observed; Wine/Proton cannot create one (`CreateDeviceContextState` returns `E_INVALIDARG`), so it is unverified on real Windows and on the Intel Gen7 hardware it exists for. |
-| Android arm64 | done | Drawn on-screen GameCube overlay with opacity, deadzone and haptics settings; hides itself when a physical gamepad is connected. |
-| iOS arm64 | partial | Sideloadable IPA on Metal, cross-built from Linux. Touch input is fixed invisible screen regions (stick on the left half, face buttons bottom right) with no drawn overlay, no calibration and no gamepad auto-hide -- the Android overlay is Android-only. |
-| macOS Apple Silicon / Intel | partial | Apple Silicon tested; the Intel job is `continue-on-error` in CI, so a release can ship without an Intel build and none has been run on Intel hardware. |
-| PAL disc (GALP01) | partial | Experimental: USA game code on PAL data, English (UK) text, NTSC 60 Hz. Trophy tables are stubbed out rather than read, and there is no reference hash, so PAL images always verify as unknown. |
-| Widescreen 16:9 / window aspect | partial | VS, Sudden Death and Training only; menus, results and cutscenes stay at the original 73:60. |
-| Wide HUD anchoring | done | Separate on/off toggle from the aspect setting, and only moves anything while widescreen is on. Anchors the timer and the 2-4 player HUD groups (damage, stocks, tags); a 1-player HUD keeps its original placement. No configurable margins. |
-| Custom texture packs (Dolphin format) | done | `tex1_*` `.dds` / `.png` including sidecar mips and TLUT hashes, scanned recursively, reloadable from the F1 menu. |
-| Custom soundtrack (`.ogg` / `.wav`) | done | Replaces any track the game streams, not just stage BGM. Files are decoded whole into RAM (not streamed) and loop end to end, so a track's own loop point is ignored. |
-| Unlock Everything / Frozen Stadium / Free camera | done | Cheats tab in the launcher and the F1 menu. |
-| Multi-bus audio (Master / Music / SFX) | done | Three sliders; Master is the output stream gain, Music and SFX are per-voice. |
-| In-app update check | done | Polls GitHub releases, downloads with progress. |
-| Controller rumble | done | SDL gamepads through the game's own `PADControlMotor` calls, and the Android device vibrator when the pad has no rumble. Controller LED / port-colour sync is not implemented. |
-| 1000 Hz GameCube adapter (WUP-028) | partial | Implemented and wired, not yet confirmed against a physical adapter. Raw 0x21 reports are read through SDL's hidapi on the 1000 Hz input thread, so the game would see the controller's real 8-bit values instead of SDL's rescaled ones; adapter slot N is PAD port N, and the slot motors are driven from the game's rumble state. `MELEE_GC_ADAPTER=0` hands the device back to SDL's driver. Linux needs a udev rule; the log prints it. |
-| UCF (dashback, shield drop) | done | UCF 0.8x rules; launcher Gameplay page / F1 port menu, default off, `MELEE_UCF=1`. Reads the octagon-clamped stick rather than UCF's pre-clamp raw queue, which only differs past the 80-unit rim. |
-| Discord Rich Presence | planned | Deferred until API credentials are available. |
-| Extended hazardless stages | planned | Whispy, Randall, FoD platforms. Only Pokémon Stadium is implemented. |
-| 2-player keyboard remapping | planned | The keyboard is port 1 on a fixed layout. |
-| High-refresh interpolation | planned | |
-| Training tools (hitboxes, savestates, frame advance) | planned | |
-| Replay recording (`.slp`) | planned | `src/pc/slp.h` defines the hook points; nothing implements them. |
-| Online play (LAN / direct IP) | partial | LAN/direct-IP plus signed internet Direct, Unranked and Ranked implemented. Public DHT storage verified; two-NAT and live ranked acceptance remain pending. See platform matrix below. |
-| RetroAchievements | planned | |
-
-The phases behind the planned rows, and why they are ordered that way, are in
-[ROADMAP.md](ROADMAP.md).
+[] Early Fall 2026 - 2 Player Online Play (Direct Connect): Can connect to one other MeleeVS player with Rollback Netcode
+[] Late Fall 2026 - 4 Player Online Play (Direct Connect): Can connect with up to 4 total MeleeVS players with Rollback Netcode
 
 ## Download
 
