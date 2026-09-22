@@ -59,6 +59,7 @@ is GPL-3.0-or-later. Details under [License](#license).
 ### Planned Roadmap
 
 [] Early Fall 2026 - 2 Player Online Play (Direct Connect): Can connect to one other MeleeVS player with Rollback Netcode
+
 [] Late Fall 2026 - 4 Player Online Play (Direct Connect): Can connect with up to 4 total MeleeVS players with Rollback Netcode
 
 ## Download
