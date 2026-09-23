@@ -86,7 +86,15 @@
 #define LOST_NS 5000000000ull
 #define TIMEOUT_NS 15000000000ull
 #define ELECTION_NS 100000000ull /* ready -> host decision: a simultaneous Start is seen first */
-#define REL_READY_BARRIER 0x11   /* reliable type: "my handshake is done" (net_lan.h) */
+/* A starting proposal is only honored from a peer whose lobby/ready record we
+ * saw at least this long ago (2 announce periods): a genuine host always
+ * broadcasts lobby state before it claims to be starting, so a record that
+ * appears out of nowhere already starting with our peer id is a spoof
+ * (LAN-SPOOF-AUTOJOIN). ponytail: trust-on-observation only; a determined
+ * attacker with a longer presence still gets through — the real fix is a
+ * signed proposal keyed by the peer's ed25519 identity. */
+#define LOBBY_DWELL_NS (2 * ANNOUNCE_NS)
+#define REL_READY_BARRIER 0x11 /* reliable type: "my handshake is done" (net_lan.h) */
 /* Ubuntu's clang-format (what CI installs) and 22.x disagree on the spacing
  * of a braced-list macro body and neither accepts the other's output, so the
  * two macros below are pinned. The marker comment must be exactly this, with
@@ -106,6 +114,7 @@ typedef struct Entry {
     uint32_t gen;      /* gen= of the latest record */
     uint32_t last_gen; /* gen= of the starting record we last joined on */
     uint64_t seen_ns;
+    uint64_t lobby_ns; /* first sighting in a lobby/ready state; 0 = never seen so */
     PcLanPeer p;
 } Entry;
 
@@ -596,8 +605,13 @@ static bool parse_txt(const mdns_record_txt_t* txt, size_t n, Txt* out) {
     } else if (seen & KBIT(K_OFFER)) {
         return reject(RJ_STRAY);
     }
-    out->e.p.compatible =
-        strcmp(out->rev, pc_app_rev()) == 0 && strcmp(out->disc, pc_lan_disc_id()) == 0;
+    static int ignore_rev = -1;
+    if (ignore_rev < 0) {
+        const char* e = getenv("MELEE_LAN_IGNORE_REV");
+        ignore_rev = e != NULL && (e[0] == '1' || strcmp(e, "true") == 0);
+    }
+    bool rev_ok = (ignore_rev > 0) || (strcmp(out->rev, pc_app_rev()) == 0);
+    out->e.p.compatible = rev_ok && strcmp(out->disc, pc_lan_disc_id()) == 0;
     return true;
 }
 
@@ -619,6 +633,12 @@ void net_addr_text(const struct sockaddr* sa, char* out, size_t cap) {
         size_t len = strlen(out);
         snprintf(out + len, cap - len, "%%%u", (unsigned)a6->sin6_scope_id);
     }
+}
+
+/* Two printed addresses from the same family: a ':' means IPv6, and
+ * net_addr_text() prints a v4-mapped v6 source as plain IPv4. */
+static bool ip_same_family(const char* a, const char* b) {
+    return (strchr(a, ':') != NULL) == (strchr(b, ':') != NULL);
 }
 
 static int on_record(int sock, const struct sockaddr* from, size_t addrlen, mdns_entry_type_t entry,
@@ -666,6 +686,19 @@ static int on_record(int sock, const struct sockaddr* from, size_t addrlen, mdns
     while (i < s_n && s_peers[i].id != e.id) {
         i++;
     }
+    /* The id is whatever the announcer claims, so once an id has been seen
+     * from an address, records for it arriving from a DIFFERENT address of
+     * the same family are someone else using that name: they would otherwise
+     * repoint the address the lobby is about to dial, or (as a goodbye) evict
+     * a peer mid-handshake. A second address family is the same machine
+     * announcing twice and is still accepted. */
+    if (i < s_n && !ip_same_family(s_peers[i].p.ip, e.p.ip)) {
+        /* other family: handled below, the IPv4 address stays preferred */
+    } else if (i < s_n && strcmp(s_peers[i].p.ip, e.p.ip) != 0) {
+        pc_log_line(
+            "lan: ignoring a record for %s from %s (it is %s)", e.p.name, e.p.ip, s_peers[i].p.ip);
+        return 0;
+    }
     if (ttl == 0) { /* goodbye */
         if (i < s_n) {
             drop(i);
@@ -692,6 +725,9 @@ static int on_record(int sock, const struct sockaddr* from, size_t addrlen, mdns
         }
     } else {
         e.last_gen = s_peers[i].last_gen;
+        /* Carried across updates so a lobby->starting transition keeps its
+         * observation history (a wholesale overwrite would reset it). */
+        e.lobby_ns = s_peers[i].lobby_ns;
         /* Seen on both families: keep the IPv4 address. */
         if (strchr(e.p.ip, ':') != NULL && strchr(s_peers[i].p.ip, ':') == NULL) {
             memcpy(e.p.ip, s_peers[i].p.ip, sizeof e.p.ip);
@@ -699,6 +735,12 @@ static int on_record(int sock, const struct sockaddr* from, size_t addrlen, mdns
     }
     e.seen_ns = SDL_GetTicksNS();
     e.p.host = e.state == ST_STARTING;
+    /* Trust-on-observation (LOBBY_DWELL_NS): stamp the first sighting in a
+     * non-starting state; a record that arrives already claiming starting
+     * never sets it and is never joined. */
+    if ((e.state == ST_LOBBY || e.state == ST_READY) && e.lobby_ns == 0) {
+        e.lobby_ns = e.seen_ns;
+    }
     s_peers[i] = e;
     return 0;
 }
@@ -1142,7 +1184,9 @@ static void poll_connecting(uint64_t now) {
             }
             /* Both Start announcements may have been lost. Resolve the two
              * proposals before either host can block waiting for P2. */
-            if (e->state == ST_STARTING && e->id < s_id && e->gen > e->last_gen) {
+            if (e->state == ST_STARTING && e->id < s_id && e->gen > e->last_gen &&
+                e->lobby_ns != 0 && now - e->lobby_ns >= LOBBY_DWELL_NS)
+            {
                 e->last_gen = e->gen;
                 connect_as_guest(e);
                 return;
@@ -1242,7 +1286,7 @@ void pc_lan_poll(void) {
         for (int i = 0; i < s_n; i++) {
             Entry* e = &s_peers[i];
             if (e->state == ST_STARTING && e->peer_id == s_id && e->p.compatible &&
-                e->gen > e->last_gen)
+                e->gen > e->last_gen && e->lobby_ns != 0 && now - e->lobby_ns >= LOBBY_DWELL_NS)
             {
                 e->last_gen = e->gen;
                 connect_as_guest(e);

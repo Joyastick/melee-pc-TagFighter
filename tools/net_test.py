@@ -19,7 +19,7 @@ results, CSS, SSS, rematch - and the cross-log assertions in check_scenes()
 --oom FRAME: MELEE_NET_SIM_OOM_FRAME on A, so its first
 snapshot at/after FRAME fails like a realloc would; check_oom() asserts the
 session drops to lockstep and finishes anyway. --disconnect: B SIGKILLed
-mid-match (no BYE), asserting A times the peer out within the documented 7 s
+mid-match (no BYE), asserting A times the peer out within the stall timeout
 and keeps its frame loop running. --stall SECONDS: B SIGSTOPped mid-match,
 asserting the reconnect window (net.c:639-832) survives an interruption
 inside it and expires with status 2 past it. --fuzz: tools/net_fuzz.py
@@ -50,6 +50,15 @@ import time
 BOOT_FRAMES = 9000
 CACHE_ROOT = "/tmp/melee_net_cache"  # kept between runs; keyed by port, never shared
 LOAD_STALL_FRAME = 900  # --load-stall: session up, menus lockstep, every frame waits
+# A direct session derives a datagram key from its handshake nonces like any
+# other (src/pc/net_handshake.c), but only once that handshake completes a few
+# hundred frames into boot; before it there is nothing to authenticate with
+# unless the peers were started with a shared secret. Every fixture here sets
+# one, so the matrix exercises the authenticated path from the first datagram
+# rather than the window no player should be exposed to; tools/net_fuzz.py
+# reads this to tag its own datagrams. A LAN fixture leaves it unset and keys
+# off the handshake.
+NET_KEY = "melee-pc net fixture key"
 SIM_ENV = {  # CLI flag -> (env knob, value) in src/pc/net.c's link simulator
     "jitter": ("MELEE_NET_SIM_JITTER_MS", "20"),
     "reorder": ("MELEE_NET_SIM_REORDER", "10"),
@@ -89,6 +98,27 @@ def fifo_write(path, line, tries=100):
         f.write(line + "\n")
 
 
+def wait_port_free(port, timeout=30):
+    """Block until `port` can be bound, or give up. The previous run's
+    instances hold their UDP port through aurora's GPU teardown, which takes
+    seconds; starting on top of that makes the new instances fail to bind and
+    play unconnected offline games that look like a desync."""
+    import socket
+    deadline = time.time() + timeout
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.bind(("", port))
+            return True
+        except OSError:
+            if time.time() > deadline:
+                print(f"net_test: UDP {port} still in use after {timeout}s", flush=True)
+                return False
+            time.sleep(0.5)
+        finally:
+            s.close()
+
+
 class Instance:
     def __init__(self, name, exe, disc, work, port, peer_port, env, lan):
         self.name = name
@@ -101,7 +131,8 @@ class Instance:
         os.makedirs(cache, exist_ok=True)
         e = dict(os.environ)
         # A prior direct/replay run must not silently change a LAN fixture.
-        for key in ("MELEE_DEBUG_VS", "MELEE_NET", "MELEE_NET_PLAYER", "MELEE_NET_REPLAY"):
+        for key in ("MELEE_DEBUG_VS", "MELEE_NET", "MELEE_NET_PLAYER", "MELEE_NET_REPLAY",
+                    "MELEE_NET_KEY"):
             e.pop(key, None)
         e.update({
             "SDL_VIDEO_DRIVER": os.environ.get("SDL_VIDEO_DRIVER", os.environ.get("SDL_VIDEODRIVER", "x11")),
@@ -118,6 +149,7 @@ class Instance:
             e["MELEE_NET"] = f"127.0.0.1:{peer_port}"
             e["MELEE_NET_PLAYER"] = "0" if name == "a" else "1"
             e["MELEE_DEBUG_VS"] = "1"
+            e["MELEE_NET_KEY"] = NET_KEY
         e.update(env)
         e.pop("MELEE_LOG_FILE", None)  # stderr is captured below; avoid double lines
         self.log = open(self.log_path, "wb")
@@ -490,9 +522,9 @@ LRAS = "Q+E+X+Return"
 # the build's own flags: `sizeof(PADStatus)=16`), so the stride is 72 and
 # record_stride_ok() refuses a file that does not divide by it rather than
 # reading garbage checksums.
-REC = 72
+REC = 76
 CK_OFF = 64
-REC_FORMATS = {b"MRC1": 68, b"MRC2": REC}  # retain access to earlier captures
+REC_FORMATS = {b"MRC1": 68, b"MRC2": 72, b"MRC3": 76, b"MRC4": REC}  # earlier captures stay readable
 MATCH_WINDOW = 600
 MATCH_RATIO = 0.5
 MATCH_MIN = 1800  # frames of moving state a row has to get, i.e. 30 s of match
@@ -644,6 +676,19 @@ def drive_scenes(a, b):
                        tries=12, each=5.0):
         return False
     return drive_css(a, b, want=2) and drive_sss(a, b, want=2)
+
+
+def check_delay(a, b):
+    """Auto delay is decided by one side and applied by frame number, so both
+    peers must land every change on the same frame (net_sync.c delay_apply).
+    A peer that applies one early or late writes its local sample into a
+    different ring slot than the other expects, which is the fairness half of
+    a desync and the half a checksum never sees. The menu/fight split makes
+    this fire several times a match instead of never, so it is worth pinning."""
+    applied = [re.findall(r"net: delay (\d+) -> (\d+) at frame (\d+)", i.text()) for i in (a, b)]
+    if applied[0] != applied[1]:
+        return [f"peers applied different delays: a {applied[0]} b {applied[1]}"]
+    return []
 
 
 def check_entry(a, b):
@@ -822,10 +867,20 @@ def summarize(inst, need_match=True):
     fails = []
     if not re.search(r"net: test done at frame (\d+)", text):
         fails.append("no 'net: test done'")
+    # A session that never came up makes every other number in this row
+    # meaningless: the instance plays a normal offline game, its checksum
+    # stream moves, check_match() sees a match, and the row reads like a
+    # netplay result. The usual cause is the previous run's processes still
+    # holding the UDP port, which looks from the outside exactly like two
+    # peers that went out of sync.
+    if re.search(r"net: bind\(\d+\) failed", text):
+        fails.append("netplay never started: bind failed (port still in use?)")
+    elif not re.search(r"net: rollback with ", text):
+        fails.append("netplay never started: no session line")
     if inst.proc.returncode != 0:
         fails.append(f"exit code {inst.proc.returncode}")
     # "peer silent" has to be the whole leaving-netplay line, not a substring:
-    # the benign `net: interrupted at frame N (peer silent 7000 ms),
+    # the benign `net: interrupted at frame N (peer silent 3000 ms),
     # reconnecting for up to M ms` that opens the reconnect phase contains the
     # same two words, and matching loosely failed a `--stall` row that had
     # resumed correctly (measured, /tmp/sf_acc "resume 11 s").
@@ -846,8 +901,8 @@ def summarize(inst, need_match=True):
     return fails, line, st
 
 
-# Documented stall limit (docs/netcode-plan.md §6.2, STALL_TIMEOUT_MS,
-# net_internal.h:100) plus room for the loaded machine to notice it.
+# STALL_TIMEOUT_MS (net_internal.h) plus room for the loaded machine to
+# notice it. 7 s until faf888914 shortened it to 3 s.
 PEER_GONE_S = 15
 
 
@@ -932,12 +987,12 @@ def run_disconnect(args):
 # The reconnect phase (net.c:639-832): a silence past STALL_TIMEOUT_MS opens a
 # bounded window instead of ending the session, and the frames predicted
 # across the interruption roll back as usual when the peer's input arrives.
-# MELEE_NET_RECONNECT_MS bounds the window (default 15 s, 0 = the hard drop
+# MELEE_NET_RECONNECT_MS bounds the window (default 3 s, 0 = the hard drop
 # the `disconnect` row covers). SIGSTOP is the honest interruption to test it
 # with: the stopped instance keeps its socket, so the datagrams it missed are
 # queued in its receive buffer when it continues, which is exactly what a
 # peer whose Wi-Fi came back sees. A killed process cannot resume at all.
-STALL_TIMEOUT_S = 7  # STALL_TIMEOUT_MS, src/pc/net_internal.h:100
+STALL_TIMEOUT_S = 3  # STALL_TIMEOUT_MS, src/pc/net_internal.h:114
 RESUME_SLACK_S = 25  # room for a loaded machine to notice and report
 
 
@@ -1122,8 +1177,8 @@ def parse_args(argv=None):
                     help="park B's game thread for SECONDS mid-run while its sender keeps "
                          "running (a load, not a lost peer): the session must carry it with no "
                          "reconnect phase, however long it is")
-    ap.add_argument("--reconnect-ms", type=int, default=15000,
-                    help="MELEE_NET_RECONNECT_MS for --stall (net.c's own default is 15000)")
+    ap.add_argument("--reconnect-ms", type=int, default=3000,
+                    help="MELEE_NET_RECONNECT_MS for --stall (net.c's own default is 3000)")
     ap.add_argument("--fuzz", action="store_true", help="run tools/net_fuzz.py against A")
     ap.add_argument("--fuzz-seconds", type=int, default=30)
     ap.add_argument("--exe", default=os.path.join(here, "..", "build", "melee"))
@@ -1176,6 +1231,8 @@ def run(args):
         # field by field (src/pc/net_snapshot.c).
         sim_a["MELEE_NET_STATE_LOG"] = os.path.join(args.work, "a.state")
         sim["MELEE_NET_STATE_LOG"] = os.path.join(args.work, "b.state")
+    wait_port_free(args.port)
+    wait_port_free(args.port + 1)
     a = Instance("a", args.exe, args.disc, args.work, args.port, args.port + 1, sim_a, args.lan)
     b = Instance("b", args.exe, args.disc, args.work, args.port + 1, args.port, sim, args.lan)
     print(f"net_test: {'lan' if args.lan else 'direct'} loss={args.loss}% delay={args.delay}ms "
@@ -1252,7 +1309,7 @@ def run(args):
             print("net_test: killed a run that would not exit (per-instance FAIL below)",
                   flush=True)
     # Cross-instance assertions belong to neither log; they ride on A's row.
-    extra = check_entry(a, b)
+    extra = check_entry(a, b) + check_delay(a, b)
     extra += check_scenes(a, b) if args.scenes else check_oom(a, args.oom) if args.oom else []
     if args.load_stall:
         extra += check_load_stall(a, b)

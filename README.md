@@ -90,7 +90,7 @@ table is right and the other one is stale.
 | High-refresh interpolation | planned | |
 | Training tools (hitboxes, savestates, frame advance) | planned | |
 | Replay recording (`.slp`) | planned | `src/pc/slp.h` defines the hook points; nothing implements them. |
-| Online play (LAN / direct IP) | partial | LAN/direct-IP plus signed internet Direct, Unranked and Ranked implemented. Public DHT storage verified; two-NAT and live ranked acceptance remain pending. See platform matrix below. |
+| Online play (LAN / direct IP) | partial | LAN/direct-IP plus signed internet Direct, Unranked and Ranked implemented. Every datagram is authenticated (protocol 8), so both peers must run the same build, and a connect code is 8 characters after the `#`. Public DHT storage verified; two-NAT and live ranked acceptance remain pending. See platform matrix below. |
 | RetroAchievements | planned | |
 
 The phases behind the planned rows, and why they are ordered that way, are in
@@ -285,7 +285,7 @@ path retains its older protocol-version-only check.
 In the menus: VS Mode → ONLINE → LAN PLAY finds other
 copies on the local network by mDNS and the first Start elects a host
 (lowest install id wins a tie). In the launcher or F1 Online tab, set your name
-and your friend's `NAME#XXXX` code, then choose DIRECT CONNECT. UNRANKED searches
+and your friend's `NAME#XXXXXXXX` code, then choose DIRECT CONNECT. UNRANKED searches
 for an opponent; RANKED runs a rated best-of-three set. PROFILE shows your code
 and locally verified rating. Internet discovery may take about 30 seconds to
 bootstrap and some NATs cannot support a direct peer connection. Legacy
@@ -329,14 +329,13 @@ lockstep-only platform build.
 
 | Variable | Effect |
 |---|---|
-| `MELEE_NET=<host:port>` | Connect to that peer at boot, no lobby (`MELEE_NET_PLAYER` and the same `MELEE_SEED` on both sides). |
+| `MELEE_NET=<host:port>` | Connect to that peer at boot, no lobby (`MELEE_NET_PLAYER` on both sides). The session runs the same RULES/READY handshake a lobby one does, hosted by `MELEE_NET_PLAYER=0`, so the seed, rules and unlock state are agreed rather than assumed and a disagreement refuses the session instead of desyncing later. `MELEE_SEED` is optional, and only the host's is used. |
 | `MELEE_NET_PORT=<n>` | Local UDP game port (default 41000). Two copies on one machine need different ports. |
 | `MELEE_NET_PLAYER=0\|1` | Controller port the local player drives with `MELEE_NET`: 0 = P1/host, 1 = P2. |
 | `MELEE_NET_DELAY=<n>\|auto` | Input delay in frames (default `auto`: 1–4 from ping and jitter, re-evaluated every 600 frames, changed only between matches). |
 | `MELEE_NET_RECONNECT_MS=<ms>` | How long a broken link may take to resume (default 15000). `0` disables the reconnect phase: the session drops 7 s after the peer goes quiet, as it used to. Anything negative or unparseable falls back to the default. |
 | `MELEE_LAN_TEST=1\|host` | LAN lobby without the menu; `host` presses Start once the title is up. Both set to `host` exercises a simultaneous Start. |
 | `MELEE_LAN_DIRECT=<ip:port>` | Direct connect without the menu, at frame 300; set on both sides with the other's address. The lower `ip:port` hosts. |
-| `MELEE_NET_HANDSHAKE_TEST=1` | Run the RULES/READY handshake at frame 300 with `MELEE_NET`, no lobby. |
 | `MELEE_NET_STALL_TEST=<frame>[:<ms>]` | Park the guest's game thread for `ms` at that frame (default 10000), standing in for a load the netcode cannot shorten. The sender keeps running, so this is the "peer is loading, not gone" case; only player 1 does it, so one exported value stalls exactly one side. |
 | `MELEE_NET_RECORD=<file>` | Write the seed, then per frame the four pad states simulated and a state checksum. |
 | `MELEE_NET_REPLAY=<file>` | Feed a recording back in; reports the first frame whose checksum differs (`net: REPLAY DIVERGED`). Solo only. |

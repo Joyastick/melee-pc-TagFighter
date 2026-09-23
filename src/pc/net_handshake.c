@@ -7,7 +7,9 @@
  * match-affecting from plan §5 item 7: the memcard GameRules, the
  * item/stage switches from GamePrefs and the frozen-stadium toggle. The
  * guest overwrites its copies (restored at disconnect) so CSS/SSS/match
- * read the same values on both peers.
+ * read the same values on both peers. Every session runs it: the lobby
+ * drives it from pc_lan_poll()/net_match.c, and a direct MELEE_NET session
+ * drives it itself from handshake_direct() at the bottom of this file.
  *
  * Unlock state gets the same treatment, but written for real: both sides
  * pin the whole unlock surface to pc_unlock_state_all() before RULES is
@@ -45,7 +47,6 @@
 #include <sysdolphin/baselib/random.h>
 
 #include <SDL3/SDL_timer.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* ---- nonce randomness -------------------------------------------------
@@ -113,12 +114,13 @@ static bool csprng(void* out, size_t n) {
 }
 #endif
 
-#define REL_RULES 0x01 /* host -> guest {seed, start_frame, nonce} */
-#define REL_READY 0x02 /* guest -> host {nonce, echo} */
 #define HS_TIMEOUT_MS 15000
 #define HS_LEAD_FRAMES 120 /* ponytail: 2 s for READY; a slower link misses the start */
 
 static uint64_t s_hs_t0;
+/* When a direct session was first seen waiting for the game's own rules to
+ * fill in. Bounded, or a run that never fills them plays on unagreed. */
+static uint64_t s_direct_idle_ns;
 static bool s_rules_on; /* a RULES set is in force (host or guest) */
 static bool s_rules_frozen;
 static bool s_rules_saved; /* guest: s_rules_orig holds its own values */
@@ -142,8 +144,22 @@ enum {
     LOG_READY_LEN = 1 << 7,
     LOG_READY_HASH = 1 << 8,
     LOG_READY_NONCE = 1 << 9,
+    LOG_RULES_INVALID = 1 << 10,
+    LOG_RULES_LATE = 1 << 11,
+    LOG_RULES_UNLOCK = 1 << 12,
+    LOG_RULES_NONCE = 1 << 13,
 };
 static uint32_t s_hs_logged; /* LOG_* classes already logged this session */
+/* A RULES or READY the reliable lane had no room for, kept in wire order so
+ * hs_poll() can put it out on a later frame. One slot is enough: neither
+ * side has two handshake messages to send, and the lane is the handshake's
+ * own (types < 0x10), so only an unacked predecessor can fill it. */
+static struct {
+    uint32_t session; /* the net.session it was built for */
+    uint8_t type;
+    uint8_t len; /* 0: nothing pending */
+    uint8_t wire[sizeof(Rules)];
+} s_hs_tx;
 
 uint32_t pc_net_seed(void) {
     return net.seed;
@@ -159,6 +175,49 @@ static void hs_done(void) {
     net.desync_reported = false; /* anything before start_frame was the lobbies differing */
     pc_log_line("net: handshake done seed=%u start_frame=%d (frame %d)", net.seed, net.start_frame,
         net.tick_frame);
+}
+
+/* Queue a handshake message, keeping it for a retry when the reliable lane
+ * refuses it (net_reliable.c, queue full). A refused send used to be logged
+ * and then treated as sent, which on the guest meant a "handshake done" the
+ * host never heard about: it waited out its 15 s timeout while this side
+ * believed the match was agreed. Same pattern as resume_send()/resume_poll()
+ * in net.c -- the poll the caller already runs every frame is the retry. */
+static bool hs_send(uint8_t type, const void* wire, int len) {
+    if (pc_net_send_reliable(type, wire, len)) {
+        s_hs_tx.len = 0;
+        return true;
+    }
+    s_hs_tx.session = net.session;
+    s_hs_tx.type = type;
+    s_hs_tx.len = (uint8_t)len;
+    memcpy(s_hs_tx.wire, wire, (size_t)len);
+    pc_log_line("net: %s not queued (reliable queue full), retrying",
+        type == REL_RULES ? "RULES" : "READY");
+    return false;
+}
+
+/* Retry whatever hs_send() could not queue; called from hs_poll() while the
+ * handshake is pending, so the handshake timeout bounds the retries. A READY
+ * that goes out here is what completes the guest's handshake, which is why
+ * hs_done() is reached from here rather than from on_rules(). */
+static void hs_flush(void) {
+    if (s_hs_tx.len == 0) {
+        return;
+    }
+    if (s_hs_tx.session != net.session) {
+        s_hs_tx.len = 0; /* built for a session that has since been torn down */
+        return;
+    }
+    if (!pc_net_send_reliable(s_hs_tx.type, s_hs_tx.wire, s_hs_tx.len)) {
+        return;
+    }
+    uint8_t type = s_hs_tx.type;
+    s_hs_tx.len = 0;
+    pc_log_line("net: %s queued on retry", type == REL_RULES ? "RULES" : "READY");
+    if (type == REL_READY) {
+        hs_done();
+    }
 }
 
 /* The match-affecting part of RULES, from (capture) or into (apply) the
@@ -278,11 +337,14 @@ void rules_restore(void) {
         pc_log_line("net: RULES restored own settings");
     }
     s_rules_on = false;
-    /* The session is over; its nonces must never be reused, and the next
-     * one gets a fresh log budget for each refusal class. */
+    /* The session is over; its nonces must never be reused, anything it
+     * still had to send dies with it, and the next one gets a fresh log
+     * budget for each refusal class. */
     s_nonce_local = s_nonce_peer = 0;
     s_remote_tag_bind = 0;
+    s_hs_tx.len = 0;
     s_hs_logged = 0;
+    s_direct_idle_ns = 0;
 }
 
 bool pc_net_rules(bool* unlock_all, bool* frozen_stadium) {
@@ -296,6 +358,21 @@ bool pc_net_rules(bool* unlock_all, bool* frozen_stadium) {
 
 int pc_net_remote_tag_bind(void) {
     return s_rules_on ? s_remote_tag_bind : 0;
+}
+
+/* The value ranges a RULES set has to be inside. Split out because
+ * rules_ready() below asks the same question about our own copies: the game
+ * zeroes them at boot and fills them in during it, and a zeroed set fails
+ * these exactly as a corrupt one does. */
+static const char* rules_values_invalid(const Rules* ru) {
+    if (ru->game.mode > 3 || ru->game.time_limit > 99 || ru->game.stock_count > 99 ||
+        ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 || ru->item_freq > 5 ||
+        ru->stage_mask == 0 || ru->game_mode > GAME_MODE_TAG_BATTLE ||
+        ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
+    {
+        return "value out of range";
+    }
+    return NULL;
 }
 
 /* What a RULES set must look like before it is applied, NULL when fine. The
@@ -312,20 +389,32 @@ static const char* rules_invalid(const Rules* ru) {
     if (ru->start_frame < 0 || ru->start_frame > net.tick_frame + RING * 4) {
         return "start_frame out of range";
     }
-    if (ru->game.mode > 3 || ru->game.time_limit > 99 || ru->game.stock_count > 99 ||
-        ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 || ru->item_freq > 5 ||
-        ru->stage_mask == 0 || ru->game_mode > GAME_MODE_TAG_BATTLE ||
-        ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
-    {
-        return "value out of range";
-    }
-    return NULL;
+    return rules_values_invalid(ru);
 }
 
 static void hs_drop(uint32_t cls, const char* what, const char* why) {
     if ((s_hs_logged & cls) == 0) {
         s_hs_logged |= cls;
         pc_log_line("net: %s ignored (%s)", what, why);
+    }
+}
+
+/* The agreed seed, applied as soon as this side learns it. Both peers also
+ * apply it entering start_frame (net.c), which is the frame that actually
+ * lines their RNG streams up: the two sides learn it a leg apart, so this
+ * earlier write is only there to have the seed in place for whatever a lobby
+ * draws on its way to the CSS, and the lobbies run different states until
+ * start_frame anyway.
+ *
+ * A direct session is the opposite case: its peers have been running the
+ * same boot, frame for frame, since frame 0, so writing the seed on two
+ * different frames is not a repair but the very divergence the handshake
+ * exists to prevent -- one side's draws restart from the seed while the
+ * other's carry on. So it waits for start_frame, which both reach on the
+ * same frame. */
+static void seed_apply(void) {
+    if (!net.direct) {
+        *HSD_RandSeedPtr = net.seed;
     }
 }
 
@@ -370,14 +459,16 @@ static void on_rules(const uint8_t* payload, int len) {
     }
     const char* bad = rules_invalid(&ru);
     if (bad != NULL) {
-        pc_log_line("net: RULES rejected: %s", bad);
-        net.hs = HS_FAILED;
+        /* Drop, never HS_FAILED: before the READY authenticates, anyone on
+         * the path can shape a RULES that fails these checks, and one forged
+         * datagram must not be able to kill the handshake. The genuine
+         * host's reliable lane retransmits (the dropped one is never acked),
+         * and a genuine persistent failure still ends in the 15 s timeout. */
+        hs_drop(LOG_RULES_INVALID, "RULES", bad);
         return;
     }
     if (ru.start_frame <= net.tick_frame) {
-        pc_log_line("net: RULES rejected: start_frame %d already reached (frame %d)",
-            ru.start_frame, net.tick_frame);
-        net.hs = HS_FAILED;
+        hs_drop(LOG_RULES_LATE, "RULES", "start_frame already reached");
         return;
     }
     /* Pin our unlock surface, then check the host's came out the same. Both
@@ -393,28 +484,35 @@ static void on_rules(const uint8_t* payload, int len) {
     unlock_force();
     uint32_t unlock_mine = unlock_hash_now();
     if (unlock_mine != ru.unlock_hash) {
-        pc_log_line("net: RULES rejected: unlock state mismatch (ours %08x/%016llx, host %08x)",
-            unlock_mine, (unsigned long long)pc_unlock_state_get(), ru.unlock_hash);
+        hs_drop(LOG_RULES_UNLOCK, "RULES", "unlock state mismatch");
         unlock_restore();
-        net.hs = HS_FAILED;
         return;
     }
     Ready rd = {nonce_local(), ru.nonce, unlock_mine, (uint8_t) pc_get_tag_bind(0), 0};
     if (rd.nonce == 0) {
-        pc_log_line("net: RULES rejected: no random source");
+        hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
         unlock_restore();
-        net.hs = HS_FAILED;
         return;
     }
     rd.hash = ready_hash(rd, net.session);
     s_nonce_peer = ru.nonce;
     net.seed = ru.seed;
     net.start_frame = ru.start_frame;
-    *HSD_RandSeedPtr = net.seed;
+    seed_apply();
+    /* The earliest moment this side holds both nonces, so the earliest one
+     * at which its datagrams can be authenticated: before the READY that
+     * carries our nonce has even gone out. The host cannot check a tag until
+     * that READY lands, which is why the receiver treats an unverifiable
+     * datagram as a peer that has not keyed yet until the first one that
+     * does verify (recv_inputs). Under tx_lock because the 4 ms timer stamps
+     * its resends with this key on its own thread. */
+    SDL_LockMutex(net.tx_lock);
+    net_key_session(ru.nonce, rd.nonce);
+    SDL_UnlockMutex(net.tx_lock);
     rules_apply(&ru, true);
     wire_ready(&rd);
-    if (!pc_net_send_reliable(REL_READY, &rd, sizeof rd)) {
-        pc_log_line("net: READY not queued, reliable queue full");
+    if (!hs_send(REL_READY, &rd, sizeof rd)) {
+        return; /* hs_poll() retries it, and finishes the handshake when it goes out */
     }
     hs_done();
 }
@@ -463,6 +561,13 @@ static void on_ready(const uint8_t* payload, int len) {
     }
     s_nonce_peer = rd.nonce;
     s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
+    /* This side's turn: the READY just authenticated is what carries the
+     * guest's nonce, so from here both peers hold the same three values and
+     * derive the same key without another message. Under tx_lock, like the
+     * guest's install above. */
+    SDL_LockMutex(net.tx_lock);
+    net_key_session(s_nonce_local, rd.nonce);
+    SDL_UnlockMutex(net.tx_lock);
     hs_done();
 }
 
@@ -479,7 +584,10 @@ void handshake_msg(uint8_t type, const uint8_t* payload, int len) {
 static bool hs_poll(int32_t* start_frame) {
     if (net.hs == HS_PENDING) {
         recv_inputs();
-        if (SDL_GetTicksNS() - s_hs_t0 > HS_TIMEOUT_MS * 1000000ull) {
+        hs_flush(); /* after recv_inputs: a 'K' just read may be what freed the slot */
+        /* Re-checked: recv_inputs() or the flush above may have just finished
+         * the handshake, and a done one is not timed out. */
+        if (net.hs == HS_PENDING && SDL_GetTicksNS() - s_hs_t0 > HS_TIMEOUT_MS * 1000000ull) {
             net.hs = HS_FAILED;
             pc_log_line("net: handshake timed out, no %s", net.hs_host ? "READY" : "RULES");
         }
@@ -506,7 +614,7 @@ bool pc_net_host_match(uint32_t seed, int32_t* start_frame) {
         net.hs = HS_PENDING;
         s_hs_t0 = SDL_GetTicksNS();
         net.seed = seed;
-        *HSD_RandSeedPtr = seed;
+        seed_apply();
         net.start_frame = net.tick_frame + HS_LEAD_FRAMES;
         Rules ru = {0};
         ru.seed = seed;
@@ -518,8 +626,9 @@ bool pc_net_host_match(uint32_t seed, int32_t* start_frame) {
         ru.hash = rules_hash(ru, net.session);
         rules_apply(&ru, false);
         wire_rules(&ru);
-        pc_net_send_reliable(REL_RULES, &ru, sizeof ru);
-        pc_log_line("net: RULES sent seed=%u start_frame=%d", seed, net.start_frame);
+        if (hs_send(REL_RULES, &ru, sizeof ru)) {
+            pc_log_line("net: RULES sent seed=%u start_frame=%d", seed, net.start_frame);
+        }
     }
     return hs_poll(start_frame);
 }
@@ -540,31 +649,77 @@ bool pc_net_guest_wait_match(uint32_t* seed, int32_t* start_frame) {
     return true;
 }
 
-/* MELEE_NET_HANDSHAKE_TEST=1: the lobby handshake without a lobby, from
- * frame 300, plus one caller-typed message each way at frame 600. */
-void handshake_test(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = getenv("MELEE_NET_HANDSHAKE_TEST") != NULL;
-    }
-    if (!on || net.tick_frame < 300 || net.hs == HS_FAILED) {
+/* ---- direct sessions ---------------------------------------------------
+ * MELEE_NET=host:port has no lobby to agree the match on its behalf, and
+ * until this ran it agreed nothing at all: two peers could start with
+ * different rules, different unlock progress and different MELEE_SEED
+ * values, and the transport would happily exchange inputs between two
+ * simulations that were never going to agree. A direct session now runs
+ * exactly the exchange above, so the same checks refuse the same
+ * disagreements -- and, since both nonces then exist, its datagrams get a
+ * derived key (net_key_session in on_rules/on_ready) instead of depending on
+ * MELEE_NET_KEY.
+ *
+ * Who hosts costs no round trip: MELEE_NET_PLAYER already names the two
+ * sides, and player 1 (net.local 0) is the host everywhere else in the
+ * netcode -- it names the session id (net.c), the lobby connects its host as
+ * player 0 (net_lan.c, net_match.c), and it announces the auto delay
+ * (net_sync.c). The seed is the host's, whatever MELEE_SEED gave it, or its
+ * own boot seed when that is unset: a direct session no longer needs
+ * MELEE_SEED at all to have both peers drawing from the same stream.
+ *
+ * Not at connect, though. pc_net_init() runs from pc_platform_init(), before
+ * the game installs gmMainLib_DefaultGameRules (gmmain.c:194) and before its
+ * card data exists, so the rules captured there are still the zeroed struct
+ * -- damage_ratio 0, stage_mask 0 -- which the guest's own rules_invalid()
+ * refuses. The MELEE_NET_HANDSHAKE_TEST hook this replaces waited for frame
+ * 300 for that reason; waiting for the values themselves is the same wait
+ * without the magic number. The guest waits for its own copies too, so that
+ * it does not start the 15 s timeout before the host could have sent
+ * anything: menus never predict (net.c's in_fight()), so the two peers cross
+ * that point within the input delay of each other.
+ *
+ * A refusal leaves net.hs at HS_FAILED, which pc_net_after_tick() turns into
+ * a disconnect -- there is no lobby here to report it to. */
+static bool rules_ready(void) {
+    Rules ru = {0};
+    rules_capture(&ru);
+    return rules_values_invalid(&ru) == NULL;
+}
+
+void handshake_direct(void) {
+    if (!net.direct || !net.active || net.hs == HS_DONE || net.hs == HS_FAILED) {
+        s_direct_idle_ns = 0;
         return;
     }
-    int32_t sf;
-    uint32_t seed;
+    if (net.hs == HS_IDLE) {
+        if (!rules_ready()) {
+            /* The game has not filled its own rules in yet. Waiting for the
+             * values rather than for a frame number is deliberate, but it has
+             * to be bounded: a run that never fills them (a headless build, a
+             * card-present prefs struct with stage_mask 0) used to sit here
+             * silently while the session ran with net.start_frame == -1 and
+             * each peer's own boot seed -- no agreement at all, and a desync
+             * the moment the two seeds differ. A direct session has no lobby
+             * to report that to, so it fails itself instead. */
+            uint64_t now = SDL_GetTicksNS();
+            if (s_direct_idle_ns == 0) {
+                s_direct_idle_ns = now;
+            } else if (now - s_direct_idle_ns > HS_TIMEOUT_MS * 1000000ull) {
+                net.hs = HS_FAILED;
+                pc_log_line("net: direct handshake never started; the local rules never "
+                            "filled in (%d ms)",
+                    HS_TIMEOUT_MS);
+            }
+            return;
+        }
+        s_direct_idle_ns = 0;
+    }
+    int32_t start_frame;
     if (net.local == 0) {
-        pc_net_host_match(1234, &sf);
+        pc_net_host_match(net.seed != 0 ? net.seed : *HSD_RandSeedPtr, &start_frame);
     } else {
-        pc_net_guest_wait_match(&seed, &sf);
-    }
-    if (net.tick_frame == 600) {
-        pc_net_send_reliable(0x10, "ping", 4);
-    }
-    uint8_t type;
-    char buf[REL_MAX];
-    int n = pc_net_recv_reliable(&type, buf, sizeof buf);
-    if (n >= 0) {
-        pc_log_line("net: reliable recv type %02x len %d '%.*s' at frame %d", type, n, n, buf,
-            net.tick_frame);
+        uint32_t seed;
+        pc_net_guest_wait_match(&seed, &start_frame);
     }
 }

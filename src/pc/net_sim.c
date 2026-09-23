@@ -49,8 +49,19 @@ Held* held_due(Held* held, uint64_t now) {
     return due;
 }
 
-/* Every outgoing datagram passes here (caller holds tx_lock). */
-void tx(const void* buf, size_t len) {
+/* Every outgoing datagram passes here (caller holds tx_lock), which is also
+ * where it gets its authentication tag: one choke point covers the input
+ * packets, the acks, the reliable lane and the BYE, and the copy that makes
+ * room for the tag is the same copy the held queue would make anyway. */
+void tx(const void* body, size_t body_len) {
+    uint8_t stamped[sizeof(Rel) + NET_MAC_LEN];
+    if (body_len > sizeof(Rel)) {
+        return; /* no sender builds one: a truncated datagram would be worse */
+    }
+    memcpy(stamped, body, body_len);
+    net_mac_stamp(stamped, body_len);
+    const void* buf = stamped;
+    size_t len = body_len + NET_MAC_LEN;
     uint64_t now = SDL_GetTicksNS();
     net.tx_pkts++;
     if (*(const uint8_t*)buf == 'M') {
@@ -69,7 +80,7 @@ void tx(const void* buf, size_t len) {
         return;
     }
     if (!net.sim_hold) {
-        sendto(net.sock, (const char*)buf, len, 0, (struct sockaddr*)&net.peer, net.peer_len);
+        net_sendto(buf, len);
         return;
     }
     int copies = net.sim_dup > 0 && (int)sim_rand(100) < net.sim_dup ? 2 : 1;
@@ -89,7 +100,13 @@ void tx(const void* buf, size_t len) {
             s_held[s_sim_swap].release_ns = (uint64_t)release + 1; /* right behind this one */
             s_sim_swap = -1;
         } else if (net.sim_reorder > 0 && (int)sim_rand(100) < net.sim_reorder) {
-            s_held[slot].release_ns = UINT64_MAX; /* until the next packet is queued */
+            /* Hold it so the next packet queued overtakes it, but only until a packet
+             * interval has passed: a successor that never comes because it was dropped,
+             * eaten by a burst or lost to a full queue, or because the session ended,
+             * must not strand this datagram. Real reordering delays packets, it does not
+             * lose them, and a simulator that invents a failure mode the link cannot have
+             * sends whoever reads the log chasing a bug that is not there. */
+            s_held[slot].release_ns = (uint64_t)release + pc_sim_period_ns();
             s_sim_swap = slot;
         }
     }
@@ -99,7 +116,10 @@ void tx(const void* buf, size_t len) {
 void tx_flush(void) {
     uint64_t now = SDL_GetTicksNS();
     for (Held* h; (h = held_due(s_held, now)) != NULL;) {
-        sendto(net.sock, (const char*)h->buf, h->len, 0, (struct sockaddr*)&net.peer, net.peer_len);
+        if (s_sim_swap >= 0 && h == &s_held[s_sim_swap]) {
+            s_sim_swap = -1; /* its deadline won; the slot is about to be free for reuse */
+        }
+        net_sendto(h->buf, h->len);
         h->release_ns = 0;
     }
 }

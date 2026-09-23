@@ -36,7 +36,7 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #endif
 
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
-#define MATCH_VERSION 2
+#define MATCH_VERSION 3         /* v3: hello.code grew 14 -> 18 (40-bit key suffix) */
 #define RETRY_MS 250
 #define TIMEOUT_MS 8000
 
@@ -46,7 +46,7 @@ typedef struct MatchHello {
     uint8_t version, type, mode, reserved;
     uint64_t nonce;
     uint8_t public_key[32], compatibility[20], topic[20];
-    char code[14];
+    char code[18];
     uint8_t signature[64];
 } MatchHello;
 typedef struct MatchOffer {
@@ -70,7 +70,7 @@ static PcNetIdentity identity;
 static enum PcNetMatchMode mode;
 static int state = PC_MATCH_FAIL;
 static const char* failure = "not started";
-static char target[14], opponent[14];
+static char target[18], opponent[18];
 static uint8_t peer_key[32], compatibility[20], topic[20], offer_hash[20];
 static uint64_t local_nonce, peer_nonce, deadline, next_send;
 static struct pc_dht_endpoint peer;
@@ -241,7 +241,16 @@ static void digest(void) {
      * as a build mismatch - see receive()'s compatibility check below. */
     int n = snprintf(text, sizeof text, "%s\n%s\n%u", pc_app_rev(), pc_lan_disc_id(),
         TagAssist_IsTagBattleOn() ? 1u : 0u);
-    pc_dht_sha1(text, n > 0 ? (size_t)n : 0, compatibility);
+    /* snprintf returns the length it WOULD have written, so an over-long
+     * MELEE_APP_REV (it is returned verbatim) would make the hash read past
+     * this stack buffer. Hash what is actually in it. */
+    if (n < 0) {
+        n = 0;
+    }
+    if ((size_t)n > sizeof text) {
+        n = (int)sizeof text;
+    }
+    pc_dht_sha1(text, (size_t)n, compatibility);
 }
 static bool send_packet(const void* p, size_t n, const struct pc_dht_endpoint* ep) {
     struct sockaddr_in to = {0};
@@ -257,10 +266,11 @@ static bool key_code_matches(const uint8_t key[32], const char* code) {
     uint8_t h[20];
     pc_dht_sha1(key, 32, h);
     static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    unsigned bits = (unsigned)h[0] << 12 | (unsigned)h[1] << 4 | h[2] >> 4;
+    uint64_t bits = (uint64_t)h[0] << 32 | (uint64_t)h[1] << 24 | (uint64_t)h[2] << 16 |
+                    (uint64_t)h[3] << 8 | h[4];
     size_t n = strlen(code);
-    for (int i = 0; i < 4; i++)
-        if (code[n - 4 + i] != a[(bits >> (15 - 5 * i)) & 31])
+    for (int i = 0; i < 8; i++)
+        if (code[n - 8 + i] != a[(bits >> (35 - 5 * i)) & 31])
             return false;
     return true;
 }
@@ -301,8 +311,12 @@ static bool accept_ack(const MatchAck* a) {
         return true;
     intptr_t fd = pc_dht_take_socket();
     char ip[INET_ADDRSTRLEN];
-    struct in_addr addr = {peer.address};
-    inet_ntop(AF_INET, &addr, ip, sizeof ip);
+    /* peer.address is already in network byte order, so hand it to inet_ntop
+     * as-is. Wrapping it in `struct in_addr addr = {peer.address}` truncates
+     * to the first octet wherever in_addr is a union with a u_char[4] member
+     * first (MinGW), which dialled 74.0.0.0 for a peer at 74.244.47.247 and
+     * left the match stuck until the connect timeout (#87). */
+    inet_ntop(AF_INET, &peer.address, ip, sizeof ip);
     pc_log_line(
         "match: accept_ack -> connecting socket as host to %s:%u (seed=%u)", ip, peer.port, seed);
     if (!pc_net_connect_socket(fd, ip, peer.port, 0, seed)) {
@@ -444,8 +458,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         }
         intptr_t fd = pc_dht_take_socket();
         char ip[INET_ADDRSTRLEN];
-        struct in_addr addr = {ep->address};
-        inet_ntop(AF_INET, &addr, ip, sizeof ip);
+        /* Network byte order already: see the host path above (#87). */
+        inet_ntop(AF_INET, &ep->address, ip, sizeof ip);
         pc_log_line("match: recv valid MatchOffer -> sending MatchAck and connecting socket as "
                     "guest to %s:%u (seed=%u)",
             ip, ep->port, seed);

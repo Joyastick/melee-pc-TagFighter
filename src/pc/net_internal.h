@@ -3,7 +3,8 @@
  * pc/net.h and pc/net_lan.h. Modules:
  *   net.c           session lifecycle, receive dispatch, input send/ack,
  *                   stall/barrier, rollback and the per-tick entry points
- *   net_wire.c      byte order, wire codecs, headers, pad conversion
+ *   net_wire.c      byte order, wire codecs, headers, pad conversion, and
+ *                   the session key and per-datagram MAC
  *   net_sim.c       link simulator (loss/delay/jitter/reorder/dup/burst);
  *                   every outgoing datagram goes through tx()
  *   net_reliable.c  stop-and-wait reliable channel ('R'/'K')
@@ -43,6 +44,10 @@
  *     is taken for such a frame; the barrier only rises within a session.
  *   - net.frame is the next fresh frame; net.tick_frame is the frame of the
  *     tick being run (frame - 1 outside a rollback, older during one).
+ *   - a datagram is authenticated before anything reads it: once one tag
+ *     has verified, recv_inputs accepts nothing that does not, so no state
+ *     below it (peer address, session id, rings, reliable lane) can be
+ *     moved by a datagram that is not the peer's.
  *   - net.tx_pkts/tx_inputs are counted under tx_lock and cleared by the
  *     game thread's report without it (a lost increment is a stat, not
  *     state). */
@@ -108,15 +113,35 @@ static inline void sock_startup(void) {}
 #define FRAME_US ((int32_t)(pc_sim_period_ns() / 1000)) /* the boundary's pacing target */
 #define STALL_TIMEOUT_MS 3000
 #define CONNECT_TIMEOUT_MS 60000
+/* The same wait for a session matchmaking just paired (net.connect_timeout_ms):
+ * the peer signed an offer moments ago, so silence now means a dead address. */
+#define MATCH_CONNECT_TIMEOUT_MS 10000
 #define SYNC_INTERVAL 30 /* frames between time-sync decisions (Slippi) */
 #define SYNC_HOLDOFF 120 /* frames between skip/advance bursts */
 #define IO_QUIET 120     /* frames a disc request keeps the barrier ahead */
+/* A session ends before its frame counter can get anywhere near the end of
+ * its range. Frames are absolute int32 on the wire and in every ring index,
+ * and the protocol has no wrap strategy: rather than invent serial-number
+ * comparisons for a case no match reaches, the session is bounded so the
+ * counter provably cannot get there. 100 million frames is nineteen days of
+ * continuous play, and the peers part cleanly with a reason when it lands
+ * instead of overflowing into undefined behaviour. */
+#define SESSION_MAX_FRAMES 100000000
 
 /* ---- wire format ------------------------------------------------------ */
 
 /* Multi-byte fields are big-endian on the wire (wire_* in net_wire.c); the
  * packed structs are the exact wire image with host-order fields. */
 #define WIRE_VERSION PC_NET_PROTO_VERSION
+
+/* Every datagram carries NET_MAC_LEN trailing bytes of keyed BLAKE2b over
+ * everything in front of them, header included (net_wire.c). Eight bytes is
+ * the tradeoff: a blind forgery costs 2^-64 per try against a receiver that
+ * answers nothing it rejects, while a wider tag would cost another 8 bytes
+ * on every one of the ~120 datagrams a second a session sends. The field is
+ * present from the first datagram -- zero-filled until the key exists -- so
+ * the length of each message type is one number rather than two. */
+#define NET_MAC_LEN 8
 
 /* 8-byte pad, same fields Slippi puts on the wire. */
 typedef struct WirePad {
@@ -142,6 +167,13 @@ typedef struct Packet {
     int32_t ck_frame; /* frame the checksum was taken before */
     uint32_t ck;
     uint8_t count;
+    /* GGPO's frame advantage: how many frames the sender's simulation is
+     * ahead of the newest input it has from us. Both peers send it, and the
+     * phase controller acts on the DIFFERENCE, which is the one form of the
+     * measurement with no clock, no round trip and no symmetric-path
+     * assumption in it (net_sync.c time_sync). Clamped to a byte; the window
+     * it can legitimately reach is WINDOW + delay. */
+    int8_t adv;
     WirePad pads[REDUNDANCY];
 } __attribute__((packed)) Packet;
 
@@ -153,6 +185,8 @@ typedef struct Ack {
 
 /* Reliable lobby message (stop-and-wait, net_reliable.c). */
 #define REL_MAX 256
+#define REL_RULES 0x01  /* host -> guest {seed, start_frame, nonce} (net_handshake.c) */
+#define REL_READY 0x02  /* guest -> host {nonce, echo} (net_handshake.c) */
 #define REL_RESUME 0x12 /* net.c's resume exchange, dispatched by on_rel */
 #define REL_DELAY 0x13  /* the host's input-delay pick, dispatched by on_rel */
 #define REL_CHAT 0x15   /* fixed quick-chat phrase, consumed before caller queue */
@@ -240,7 +274,7 @@ typedef struct SceneMsg {
 
 _Static_assert(sizeof(WirePad) == 8, "wire layout");
 _Static_assert(sizeof(Hdr) == 7, "wire layout");
-_Static_assert(sizeof(Packet) == 26 + REDUNDANCY * 8, "wire layout");
+_Static_assert(sizeof(Packet) == 27 + REDUNDANCY * 8, "wire layout");
 _Static_assert(sizeof(Ack) == 13, "wire layout");
 _Static_assert(sizeof(Rel) == 11 + REL_MAX, "wire layout");
 _Static_assert(sizeof(RelAck) == 8 && sizeof(Bye) == 8, "wire layout");
@@ -255,14 +289,15 @@ _Static_assert(sizeof(SceneMsg) == 8, "wire layout");
 typedef struct Held {
     uint64_t release_ns;
     uint16_t len;
-    uint8_t buf[sizeof(Rel)];
+    uint8_t buf[sizeof(Rel) + NET_MAC_LEN];
 } Held;
 #define HELD_MAX 128
 
 /* ---- snapshot ----------------------------------------------------------- */
 
 #define MAX_HEAPS 8
-#define MAX_REGIONS (3 + MAX_HEAPS)
+/* Two halves of the heap-descriptor array, data, bss, then one per heap. */
+#define MAX_REGIONS (4 + MAX_HEAPS)
 
 typedef struct Region {
     const char* name;
@@ -300,7 +335,13 @@ struct NetSession {
     struct sockaddr_storage peer;
     socklen_t peer_len;
     int local, remote, delay;
-    uint32_t session;   /* 0 on the guest until the host's first packet */
+    uint32_t session; /* 0 on the guest until the host's first packet */
+    /* How long to wait for the peer's first datagram, ms. CONNECT_TIMEOUT_MS
+     * for a session the user dialled by hand (the other end may simply be
+     * started later); much shorter for one matchmaking just paired, where the
+     * peer proved it was running moments ago and a silent one is a dead
+     * address, not a slow human. */
+    int connect_timeout_ms;
     int32_t frame;      /* next fresh frame to simulate */
     int32_t tick_frame; /* frame the last prepared tick simulates */
     bool resim;         /* re-running frames after a rollback */
@@ -320,6 +361,7 @@ struct NetSession {
     /* match handshake (net_handshake.c) */
     int hs; /* HS_* */
     bool hs_host;
+    bool direct;   /* MELEE_NET: no lobby, so the session agrees its own match */
     uint32_t seed; /* agreed RNG seed (0: none) */
     int32_t start_frame;
     int32_t ck_from; /* checksums before this frame are not compared */
@@ -375,6 +417,31 @@ void wire_ready(Ready* rd);
  * the guest's nonce because it does not exist yet when RULES is sent. */
 uint32_t rules_hash(Rules ru, uint32_t session);
 uint32_t ready_hash(Ready rd, uint32_t session);
+
+/* Per-session datagram authentication. The key is BLAKE2b over the session
+ * id and both handshake nonces, which is the one thing in the session an
+ * off-path attacker cannot see: it can guess the session id, but not two
+ * 64-bit CSPRNG draws that only ever travel inside the RULES/READY pair.
+ * Both peers derive it from the same three values, so neither has to send
+ * anything extra for it. net_key_direct() pins a key from a user-supplied
+ * secret instead, for the direct MELEE_NET sessions that run no handshake;
+ * a pinned key is never replaced by a derived one, so a session cannot rekey
+ * mid-flight and lose the datagrams that straddle the change. */
+void net_key_session(uint64_t host_nonce, uint64_t guest_nonce);
+void net_key_direct(const char* secret);
+void net_key_clear(void);
+bool net_key_ready(void);
+/* True when the key came from MELEE_NET_KEY rather than the handshake. Both
+ * peers then hold it from connect, so there is no leg of a handshake to wait
+ * out and an unauthenticated datagram is a forgery from the first one. */
+bool net_key_pinned(void);
+/* Write the tag for the len bytes at buf into buf[len..len+NET_MAC_LEN); the
+ * caller owns that room. Zeros while no key exists. */
+void net_mac_stamp(void* buf, size_t len);
+/* True when the tag after the len bytes at buf is this session's. False
+ * whenever no key exists: the caller decides what an unauthenticated
+ * datagram means at that point in the session. */
+bool net_mac_ok(const void* buf, size_t len);
 Hdr hdr(uint8_t magic);
 bool addr_eq(const struct sockaddr_storage* a, const struct sockaddr_storage* b);
 /* net_lan.c; text form of a datagram source, for logs and getaddrinfo(). */
@@ -400,12 +467,13 @@ void rel_reset(void);
 
 void handshake_msg(uint8_t type, const uint8_t* payload, int len);
 void rules_restore(void);
-void handshake_test(void);
+void handshake_direct(void);
 
 /* ---- net_sync.c ------------------------------------------------------- */
 
-void offset_note(int32_t off);
-void jitter_note(uint32_t rtt);
+/* One phase sample: the peer's frame advantage and ours (net.c on_inputs). */
+void adv_note(int remote_adv, int local_adv);
+void jitter_note(uint32_t rtt); /* one RTT sample, for the |dRTT| mean */
 uint32_t jitter_us(void);
 void time_sync(void);
 /* The host's REL_DELAY announcement (on_rel dispatches it here, like
@@ -441,13 +509,16 @@ const char* state_line(int32_t frame); /* one frame's recorded state line, "" if
 void record_open(void);
 bool record_active(void);
 void replay_feed(PADStatus* head);
-void record_frame(const PADStatus* head, uint32_t ck);
+void record_frame(const PADStatus* head, uint32_t ck, int32_t f);
+void record_confirm(int32_t upto);            /* write settled frames out in order */
+bool record_replay_scene_hold(int32_t frame); /* replay: hold to the recorded exit */
+bool net_local_idle(void); /* net.c; newest local sample has no stick or button */
 void synctest_before_tick(void);
 bool synctest_after_tick(void);
 
 /* ---- Snapshot ---- */
 const char* snapshot_describe(
     const Snapshot* s, char* buf, size_t n); /* one log line of metadata */
-void resim_note(int ticks, bool split);      /* re-run ticks this present; spilled into the next */
+void resim_note(int ticks); /* re-run ticks the deepest rollback of a present cost */
 
 #endif

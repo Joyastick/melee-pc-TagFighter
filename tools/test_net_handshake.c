@@ -73,6 +73,14 @@ uint64_t pc_unlock_state_all(void) {
 Uint64 SDL_GetTicksNS(void) {
     return s_now;
 }
+/* The handshake installs the session key under tx_lock (net_handshake.c); one
+ * thread here, so the lock itself is nothing. */
+void SDL_LockMutex(SDL_Mutex* m) {
+    (void)m;
+}
+void SDL_UnlockMutex(SDL_Mutex* m) {
+    (void)m;
+}
 void recv_inputs(void) {}
 GameRules* gmMainLib_GetGameRules(void) {
     return &s_game;
@@ -90,7 +98,11 @@ int pc_net_recv_reliable(uint8_t* t, void* p, int max) {
     return -1;
 }
 
+static bool s_send_full; /* the reliable lane has no room (net_reliable.c) */
 bool pc_net_send_reliable(uint8_t type, const void* payload, int len) {
+    if (s_send_full) {
+        return false;
+    }
     s_out_type = type;
     s_out_len = len;
     if (len > 0) {
@@ -246,7 +258,7 @@ static void forge_ready(
 
 int main(void) {
     const uint32_t sess_a = 0xa1b2c3d4, sess_b = 0x0badf00d, sess_c = 0x77c0ffee;
-    uint8_t rules_a[sizeof(Rules)], ready_a[sizeof(Ready)];
+    uint8_t rules_a[sizeof(Rules)], ready_a[sizeof(Ready)], key_guest[32];
     uint64_t host_nonce, guest_nonce;
     int32_t sf = -1;
     Side host, guest;
@@ -304,6 +316,10 @@ int main(void) {
         assert(rd.hash == ready_hash(rd, sess_a));
         assert(rd.unlock_hash == unlock_hash_now());
     }
+    /* The guest has both nonces now, so it has the datagram key (net_wire.c)
+     * before the READY it just built has even gone out. */
+    assert(net_key_ready());
+    memcpy(key_guest, s_key, sizeof key_guest);
     /* both peers now hold the same unlock state, each with its own saved */
     assert(s_unlock_live == s_unlock_all && s_unlock_orig == 0x000000ff00000000ull);
     side_save(&guest);
@@ -311,19 +327,49 @@ int main(void) {
     side_load(&host);
     handshake_msg(REL_READY, ready_a, (int)sizeof ready_a);
     assert(net.hs == HS_DONE && s_nonce_peer == guest_nonce);
+    /* ...and the host derives the same 32 bytes from the same session id and
+     * the same two nonces, with nothing sent for the key itself. */
+    assert(net_key_ready() && memcmp(s_key, key_guest, sizeof key_guest) == 0);
+    {
+        /* A datagram tagged under it verifies, one bit of the tag or of the
+         * body does not, and a key for another session id does not either --
+         * so a recording of this session is inert in the next one, whose
+         * nonces differ anyway. */
+        uint8_t dg[40 + NET_MAC_LEN];
+        memset(dg, 0x5A, sizeof dg);
+        net_mac_stamp(dg, 40);
+        assert(net_mac_ok(dg, 40));
+        dg[40] ^= 1;
+        assert(!net_mac_ok(dg, 40));
+        dg[40] ^= 1;
+        dg[7] ^= 1;
+        assert(!net_mac_ok(dg, 40));
+        dg[7] ^= 1;
+        net.session = sess_c;
+        net_key_clear();
+        net_key_session(host_nonce, guest_nonce);
+        assert(memcmp(s_key, key_guest, sizeof key_guest) != 0 && !net_mac_ok(dg, 40));
+        net.session = sess_a;
+        net_key_clear();
+        net_key_session(host_nonce, guest_nonce);
+        assert(memcmp(s_key, key_guest, sizeof key_guest) == 0);
+    }
     side_save(&host);
     printf("ok 1: exchange completes, host %016llx / guest %016llx bound both ways\n",
         (unsigned long long)host_nonce, (unsigned long long)guest_nonce);
 
-    /* ---- 2. that RULES replayed into the next session is refused ------- */
+    /* ---- 2. that RULES replayed into the next session is dropped ------- */
+    /* Drop-not-fail (a forged RULES must not kill the handshake); nothing is
+     * applied, the guest stays idle, and the genuine host's retransmit still
+     * completes the exchange below. */
     load_fresh(sess_b, 1);
     s_logn = 0;
     s_out_len = -1;
     handshake_msg(REL_RULES, rules_a, (int)sizeof rules_a);
-    assert(net.hs == HS_FAILED);
-    assert(log_count("net: RULES rejected: hash mismatch") == 1);
+    assert(net.hs == HS_IDLE);
+    assert(log_count("net: RULES ignored (hash mismatch)") == 1);
     assert(net.seed == 0 && net.start_frame == -1 && s_out_len == -1);
-    printf("ok 2: replayed RULES refused in a new session, nothing applied, no READY\n");
+    printf("ok 2: replayed RULES dropped in a new session, nothing applied, no READY\n");
 
     /* Positive control: the same rule values with this session's binding and
      * a fresh nonce are accepted, so it was the binding that refused above. */
@@ -361,7 +407,7 @@ int main(void) {
         assert(log_count("net: RULES ignored (already applied)") == 1 && s_logn == 1);
         printf("ok 5: re-arrival of the applied RULES logged as a duplicate, not a conflict\n");
 
-        /* ---- 4. a tampered hash is refused ------------------------------ */
+        /* ---- 4. a tampered hash is dropped ------------------------------ */
         uint8_t bad[sizeof(Rules)];
         memcpy(bad, rules_b, sizeof bad);
         bad[sizeof bad - 1] ^= 1u; /* last byte of .hash */
@@ -369,8 +415,8 @@ int main(void) {
         s_logn = 0;
         s_out_len = -1;
         handshake_msg(REL_RULES, bad, (int)sizeof bad);
-        assert(net.hs == HS_FAILED && net.seed == 0 && s_out_len == -1);
-        assert(log_count("net: RULES rejected: hash mismatch") == 1);
+        assert(net.hs == HS_IDLE && net.seed == 0 && s_out_len == -1);
+        assert(log_count("net: RULES ignored (hash mismatch)") == 1);
 
         /* the same, tampering a rule value instead of the hash */
         memcpy(bad, rules_b, sizeof bad);
@@ -378,15 +424,15 @@ int main(void) {
         load_fresh(sess_b, 1);
         s_logn = 0;
         handshake_msg(REL_RULES, bad, (int)sizeof bad);
-        assert(net.hs == HS_FAILED && log_count("net: RULES rejected: hash mismatch") == 1);
+        assert(net.hs == HS_IDLE && log_count("net: RULES ignored (hash mismatch)") == 1);
 
         /* a zero nonce never validates: an old peer or a stripped field */
         forge_rules(bad, rules_a, sess_b, 0, 777, 310);
         load_fresh(sess_b, 1);
         s_logn = 0;
         handshake_msg(REL_RULES, bad, (int)sizeof bad);
-        assert(net.hs == HS_FAILED && log_count("net: RULES rejected: no nonce") == 1);
-        printf("ok 6: tampered hash, tampered nonce and a zero nonce all refused\n");
+        assert(net.hs == HS_IDLE && log_count("net: RULES ignored (no nonce)") == 1);
+        printf("ok 6: tampered hash, tampered nonce and a zero nonce all dropped\n");
     }
 
     /* ---- 5. a forged or replayed READY cannot drive the host ----------- */
@@ -471,13 +517,13 @@ int main(void) {
         s_logn = 0;
         s_out_len = -1;
         handshake_msg(REL_RULES, ru_bad, (int)sizeof ru_bad);
-        assert(net.hs == HS_FAILED);
-        assert(log_count("net: RULES rejected: unlock state mismatch") == 1);
+        assert(net.hs == HS_IDLE);
+        assert(log_count("net: RULES ignored (unlock state mismatch)") == 1);
         assert(s_out_len == -1); /* no READY: nothing agreed */
         assert(net.seed == 0 && net.start_frame == -1);
-        /* and the refusal left the player's own progress alone */
+        /* the drop restored the player's own masks, leaving progress alone */
         assert(!s_unlock_saved && s_unlock_live == 0x0003000100000000ull);
-        printf("ok 11: RULES with a differing unlock state refused, own masks restored\n");
+        printf("ok 11: RULES with a differing unlock state dropped, own masks restored\n");
 
         /* the same set with the guest's own hash is accepted: it was the
          * unlock comparison that refused above, not anything else */
@@ -512,12 +558,94 @@ int main(void) {
         printf("ok 13: READY with a differing unlock state refused, restore undoes the force\n");
     }
 
+    /* ---- 14. a message the reliable lane refused never completes a
+     * handshake: the guest keeps the READY and the poll that puts it out is
+     * what finishes the exchange, and a RULES that never goes out times the
+     * host out rather than leaving it agreed with nobody ---------------- */
+    {
+        uint32_t seed_out = 0;
+        net.tick_frame = 300;
+        load_fresh(sess_a, 1);
+        s_send_full = true;
+        s_out_len = -1;
+        handshake_msg(REL_RULES, rules_a, (int)sizeof rules_a);
+        assert(net.hs != HS_DONE && s_out_len == -1);
+        assert(s_hs_tx.len == sizeof(Ready)); /* held for the retry */
+        assert(!pc_net_guest_wait_match(&seed_out, &sf) && net.hs == HS_PENDING);
+        s_send_full = false;
+        assert(pc_net_guest_wait_match(&seed_out, &sf));
+        assert(net.hs == HS_DONE && seed_out == 1234 && sf == 300 + HS_LEAD_FRAMES);
+        assert(s_out_type == REL_READY && s_out_len == (int)sizeof(Ready) && s_hs_tx.len == 0);
+        rules_restore();
+
+        net.tick_frame = 300;
+        load_fresh(sess_c, 0);
+        s_send_full = true;
+        s_out_len = -1;
+        assert(!pc_net_host_match(55, &sf) && net.hs == HS_PENDING);
+        assert(s_out_len == -1 && s_hs_tx.len == sizeof(Rules));
+        s_now += (uint64_t)HS_TIMEOUT_MS * 1000000ull + 1;
+        assert(!pc_net_host_match(55, &sf) && net.hs == HS_FAILED);
+        s_send_full = false;
+        rules_restore();
+        assert(s_hs_tx.len == 0);
+        printf("ok 14: a refused RULES/READY is retried, never a completed handshake\n");
+    }
+
+    /* ---- 15. a direct session agrees its own match: player 1 hosts, and
+     * neither side starts before the game has filled its own rules in --- */
+    {
+        const uint32_t sess_d = 0xd1123456;
+        GameRules game_was = s_game;
+        struct GamePrefs prefs_was = s_prefs;
+        net.tick_frame = 300;
+        net.direct = true;
+        /* Boot: pc_net_init() connects before gmMainLib installs its
+         * defaults, so the card data is still zeroed and there is nothing
+         * worth agreeing yet. */
+        memset(&s_game, 0, sizeof s_game);
+        memset(&s_prefs, 0, sizeof s_prefs);
+        load_fresh(sess_d, 0);
+        s_out_len = -1;
+        handshake_direct();
+        assert(net.hs == HS_IDLE && s_out_len == -1 && !s_unlock_saved);
+        load_fresh(sess_d, 1);
+        handshake_direct();
+        assert(net.hs == HS_IDLE && s_out_len == -1);
+        /* The game has filled them in. The guest still sends no RULES: it is
+         * not the host, and nothing had to be exchanged to decide that. */
+        s_game = game_was;
+        s_prefs = prefs_was;
+        handshake_direct();
+        assert(net.hs == HS_PENDING && !net.hs_host && s_out_len == -1);
+        /* The host does, carrying the seed the session was connected with --
+         * and without touching the RNG, which both peers only do entering
+         * start_frame (net.c) because they have simulated the same boot
+         * since frame 0. */
+        load_fresh(sess_d, 0);
+        net.seed = 4321;
+        s_seed_store = 99;
+        handshake_direct();
+        assert(net.hs == HS_PENDING && net.hs_host);
+        assert(s_out_type == REL_RULES && s_out_len == (int)sizeof(Rules));
+        assert(s_seed_store == 99);
+        {
+            Rules ru;
+            memcpy(&ru, s_out, sizeof ru);
+            wire_rules(&ru);
+            assert(ru.seed == 4321 && ru.start_frame == 300 + HS_LEAD_FRAMES);
+        }
+        rules_restore();
+        net.direct = false;
+        printf("ok 15: a direct session hosts on player 1 and waits for the game's own rules\n");
+    }
+
     net.tick_frame = 300;
     load_fresh(sess_a, 1);
     net.tick_frame = 300 + HS_LEAD_FRAMES;
     s_out_len = -1;
     handshake_msg(REL_RULES, rules_a, sizeof rules_a);
-    assert(net.hs == HS_FAILED);
+    assert(net.hs == HS_IDLE);
     assert(s_out_len == -1);
     assert(!s_unlock_saved);
 

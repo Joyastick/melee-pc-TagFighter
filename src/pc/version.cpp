@@ -14,7 +14,7 @@
 
 // Version of the upstream 999sian/melee-pc port this fork last merged from.
 #ifndef MELEE_UPSTREAM_PC_VERSION
-#define MELEE_UPSTREAM_PC_VERSION "v0.1.10.1-beta"
+#define MELEE_UPSTREAM_PC_VERSION "v0.2-beta"
 #endif
 
 namespace pc {

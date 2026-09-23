@@ -204,9 +204,10 @@ void rel_reset(void) {}
 
 /* net_handshake.c / net_sync.c */
 void rules_restore(void) {}
-void handshake_test(void) {}
-void offset_note(int32_t off) {
-    (void)off;
+void handshake_direct(void) {}
+void adv_note(int remote_adv, int local_adv) {
+    (void)remote_adv;
+    (void)local_adv;
 }
 void jitter_note(uint32_t rtt) {
     (void)rtt;
@@ -301,17 +302,24 @@ bool record_active(void) {
 void replay_feed(PADStatus* head) {
     (void)head;
 }
-void record_frame(const PADStatus* head, uint32_t ck) {
+void record_frame(const PADStatus* head, uint32_t ck, int32_t f) {
     (void)head;
     (void)ck;
+    (void)f;
+}
+void record_confirm(int32_t upto) {
+    (void)upto;
+}
+bool record_replay_scene_hold(int32_t frame) {
+    (void)frame;
+    return false;
 }
 void synctest_before_tick(void) {}
 bool synctest_after_tick(void) {
     return false;
 }
-void resim_note(int ticks, bool split) {
+void resim_note(int ticks) {
     (void)ticks;
-    (void)split;
 }
 const char* snapshot_describe(const Snapshot* s, char* buf, size_t n) {
     (void)s;
@@ -321,6 +329,10 @@ const char* snapshot_describe(const Snapshot* s, char* buf, size_t n) {
 
 /* the game */
 struct GameSceneInfo* gm_804D6720;
+/* net.c reads rules.game_speed to decide whether rollback is sound; the
+ * harness never runs a match, so a default-constructed one at speed 1.0 is
+ * what the tests want. */
+StartMeleeData gmVsMelee_StartData = {.rules = {.game_speed = 1.0F}};
 PadLibData HSD_PadLibData;
 static u32 s_seed_val;
 u32* HSD_RandSeedPtr = &s_seed_val;
@@ -366,6 +378,11 @@ static void setup(void) {
     net.remote = 1;
     net.session = SESSION;
     net.seed = SEED;
+    /* Mid-match means the match was agreed: session_established() is the
+     * handshake state alone now, for a direct session as much as a lobby
+     * one, and the resume phase only opens for an established session. */
+    net.hs = HS_DONE;
+    net.start_frame = 120;
     net.delay = net.delay_next = 2;
     net.frame = FRAME;
     net.tick_frame = FRAME - 1;
@@ -685,18 +702,19 @@ static void case_handshake_pending_fails_fast(void) {
     assert(!logged("reconnecting"));
 }
 
-/* The same for the host_dies shape itself: a lobby guest a few frames old,
- * which has adopted the host's session id but not yet been claimed by
- * pc_lan_poll(), so the handshake still reads HS_IDLE. */
+/* The same for the host_dies shape itself: a session a few frames old that
+ * has adopted the host's session id but agreed nothing yet -- a lobby guest
+ * before pc_lan_poll() claims the handshake, or a direct session still
+ * waiting for the game to fill its rules in. Both read HS_IDLE. */
 static void case_young_session_fails_fast(void) {
     printf("case: a session a few frames old fails fast\n");
     setup();
+    net.hs = HS_IDLE;
     net.frame = 3; /* the frame host_dies interrupted at */
     net.tick_frame = 2;
     s_wrote = 4;
     s_remote_have = 0;
     s_last_acked = -1;
-    assert(net.hs == HS_IDLE);
     s_t0 = s_now;
     assert(!wait_remote(2));
     uint64_t waited = (s_now - s_t0) / 1000000ull;
@@ -798,68 +816,226 @@ static void case_knob_parse(void) {
     unsetenv("MELEE_NET_PORT");
 }
 
+/* One datagram out of the probe socket, tagged the way tx() tags ours
+ * (net_sim.c): the receiver measures the message as the datagram minus
+ * NET_MAC_LEN, so an untagged one is not even the right shape. */
+static void send_dg(sock_t s, const struct sockaddr_in* dst, const void* body, size_t len) {
+    uint8_t dg[sizeof(Rel) + NET_MAC_LEN];
+    memcpy(dg, body, len);
+    net_mac_stamp(dg, len);
+    assert(sendto(s, (const char*)dg, len + NET_MAC_LEN, 0, (const struct sockaddr*)dst,
+               sizeof *dst) == (int)(len + NET_MAC_LEN));
+}
+
+/* The probe socket: a second socket on loopback whose address the fixture
+ * can install as the peer's, so a test can put a real datagram through the
+ * real recvfrom path. */
+static sock_t probe_open(struct sockaddr_in* dst, struct sockaddr_in* src) {
+    socklen_t size = sizeof *dst;
+    assert(getsockname(net.sock, (struct sockaddr*)dst, &size) == 0);
+    sock_t sender = socket(AF_INET, SOCK_DGRAM, 0);
+    assert(sender != SOCK_INVALID);
+    memset(src, 0, sizeof *src);
+    src->sin_family = AF_INET;
+    src->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    assert(bind(sender, (struct sockaddr*)src, sizeof *src) == 0);
+    size = sizeof *src;
+    assert(getsockname(sender, (struct sockaddr*)src, &size) == 0);
+    return sender;
+}
+
 static void case_receive_identity(void) {
     printf("case: only the selected peer can fail compatibility\n");
     setup();
     struct sockaddr_in dst, src;
-    socklen_t size = sizeof dst;
-    assert(getsockname(net.sock, (struct sockaddr*)&dst, &size) == 0);
-    sock_t sender = socket(AF_INET, SOCK_DGRAM, 0);
-    assert(sender != SOCK_INVALID);
-    memset(&src, 0, sizeof src);
-    src.sin_family = AF_INET;
-    src.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    assert(bind(sender, (struct sockaddr*)&src, sizeof src) == 0);
-    size = sizeof src;
-    assert(getsockname(sender, (struct sockaddr*)&src, &size) == 0);
+    sock_t sender = probe_open(&dst, &src);
     Ack a = {{'A', 255, SESSION, 1}, 0, -1};
     wire_hdr(&a.h);
     wire_ack(&a);
-    assert(sendto(sender, &a, sizeof a, 0, (struct sockaddr*)&dst, sizeof dst) == sizeof a);
+    send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
     assert(!s_peer_left && net.session == SESSION);
 
     memcpy(&net.peer, &src, sizeof src);
     a.h.magic = '?';
-    assert(sendto(sender, &a, sizeof a, 0, (struct sockaddr*)&dst, sizeof dst) == sizeof a);
+    send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
     assert(!s_peer_left);
     a.h.magic = 'A';
     a.h.session = htonl(SESSION + 1);
-    assert(sendto(sender, &a, sizeof a, 0, (struct sockaddr*)&dst, sizeof dst) == sizeof a);
+    send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
     assert(!s_peer_left);
     a.h.session = htonl(SESSION);
-    assert(sendto(sender, &a, sizeof a, 0, (struct sockaddr*)&dst, sizeof dst) == sizeof a);
+    send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
     assert(s_peer_left && s_status == PC_NET_PEER_INCOMPATIBLE);
     sock_close(sender);
     pc_net_disconnect();
 }
 
+/* The session id is the guest's one piece of identity it cannot be told in
+ * advance, and it used to be learned from the first well-shaped datagram of
+ * ANY type. The MAC gate above is a grace window while no key exists (the
+ * default), so one forged 16-byte RelAck from anywhere won the race:
+ * net.session became the attacker's, every genuine host datagram then failed
+ * the session check for the rest of the session (learn_session requires
+ * net.session == 0, so there was no second chance), and the match died on the
+ * handshake timeout. Only the message that carries the session in the first
+ * place -- a RULES -- may establish it. */
+static void case_session_learned_only_from_rules(void) {
+    printf("case: only a RULES teaches the guest its session id\n");
+    setup();
+    net.local = 1; /* the guest */
+    net.remote = 0;
+    net.session = 0; /* not told one yet: this is the learning window */
+    net.hs = HS_PENDING;
+    struct sockaddr_in dst, src;
+    sock_t sender = probe_open(&dst, &src);
+    memcpy(&net.peer, &src, sizeof src);
+
+    Ack a = {{'A', WIRE_VERSION, SESSION, 0}, 0, -1};
+    wire_hdr(&a.h);
+    wire_ack(&a);
+    send_dg(sender, &dst, &a, sizeof a);
+    recv_inputs();
+    assert(net.session == 0);
+
+    Rel r = {{'R', WIRE_VERSION, SESSION, 0}, 0, REL_RULES, 0, {0}};
+    r.len = (uint16_t)sizeof(Rules); /* learning requires a full RULES shape */
+    wire_hdr(&r.h);
+    wire_rel(&r);
+    send_dg(sender, &dst, &r, offsetof(Rel, payload) + sizeof(Rules));
+    recv_inputs();
+    assert(net.session == SESSION);
+    sock_close(sender);
+    pc_net_disconnect();
+}
+
+/* The destination guard for issue #87: a pairing dialled a /8 network base
+ * -- the peer's first octet with the rest zeroed -- instead of the address
+ * its datagrams had arrived from. The session then parked the render thread
+ * for the whole connect wait, which the reporter saw as a crash. Addresses
+ * here are RFC 5737 documentation range, same shape. */
+static void case_connect_destination(void) {
+    printf("case: only a unicast host address may be dialled\n");
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons(16122);
+    a.sin_addr.s_addr = htonl(0xC0000205u); /* 192.0.2.5: a real host */
+    assert(addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xC0A80105u); /* 192.168.1.5: a LAN peer is fine */
+    assert(addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xC0000000u); /* 192.0.0.0: the /8 base shape */
+    assert(!addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    assert(!addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xFFFFFFFFu); /* broadcast */
+    assert(!addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xE0000001u); /* 224.0.0.1 multicast */
+    assert(!addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xF0000001u); /* 240.0.0.1 reserved */
+    assert(!addr_is_host((struct sockaddr*)&a));
+    a.sin_addr.s_addr = htonl(0xC0000205u);
+    a.sin_port = 0;
+    assert(!addr_is_host((struct sockaddr*)&a));
+}
+
 static void case_old_protocol(void) {
     printf("case: protocol 5 scene peers are incompatible\n");
     setup();
     struct sockaddr_in dst, src;
-    socklen_t size = sizeof dst;
-    assert(getsockname(net.sock, (struct sockaddr*)&dst, &size) == 0);
-    sock_t sender = socket(AF_INET, SOCK_DGRAM, 0);
-    assert(sender != SOCK_INVALID);
-    memset(&src, 0, sizeof src);
-    src.sin_family = AF_INET;
-    src.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    assert(bind(sender, (struct sockaddr*)&src, sizeof src) == 0);
-    size = sizeof src;
-    assert(getsockname(sender, (struct sockaddr*)&src, &size) == 0);
+    sock_t sender = probe_open(&dst, &src);
     memcpy(&net.peer, &src, sizeof src);
     Ack a = {{'A', 5, SESSION, 1}, 0, -1};
     wire_hdr(&a.h);
     wire_ack(&a);
-    assert(sendto(sender, &a, sizeof a, 0, (struct sockaddr*)&dst, sizeof dst) == sizeof a);
+    send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
     assert(s_peer_left && s_status == PC_NET_PEER_INCOMPATIBLE);
     sock_close(sender);
     pc_net_disconnect();
+}
+
+/* The authentication gate, through the real socket: a datagram whose tag is
+ * wrong, or which carries none at all, must be counted and dropped before
+ * anything downstream of it moves. Only the ack path is used, because its
+ * effect on session state (s_last_acked) is one number to read back. */
+static void case_bad_mac_rejected(void) {
+    printf("case: a datagram with a wrong or absent MAC is refused and counted\n");
+    setup();
+    struct sockaddr_in dst, src;
+    sock_t sender = probe_open(&dst, &src);
+    memcpy(&net.peer, &src, sizeof src);
+    net_key_direct("shared secret");
+    assert(net_key_ready() && !s_mac_seen);
+    /* A pinned key refuses from the very first datagram: it is not waiting
+     * for a handshake leg, so nothing is owed the benefit of the doubt.
+     * Without that, an attacker who never sends a valid tag would hold the
+     * bootstrap grace open for the whole session. */
+    Ack forged = {{'A', WIRE_VERSION, SESSION, 1}, 0, ACKED + 2};
+    wire_hdr(&forged.h);
+    wire_ack(&forged);
+    uint8_t first[sizeof(Ack) + NET_MAC_LEN];
+    memcpy(first, &forged, sizeof forged);
+    memset(first + sizeof forged, 0, NET_MAC_LEN);
+    assert(sendto(sender, (const char*)first, sizeof first, 0, (struct sockaddr*)&dst,
+               sizeof dst) == (int)sizeof first);
+    recv_inputs();
+    assert(s_rx_bad_mac == 1 && !s_mac_seen && s_last_acked == ACKED);
+    Ack a = {{'A', WIRE_VERSION, SESSION, 1}, 0, ACKED + 4};
+    wire_hdr(&a.h);
+    wire_ack(&a);
+    send_dg(sender, &dst, &a, sizeof a);
+    recv_inputs();
+    /* Authenticated: accepted, and the session will not take an unsigned
+     * datagram again. */
+    assert(s_mac_seen && s_rx_bad_mac == 1 && s_last_acked == ACKED + 4);
+
+    uint8_t dg[sizeof(Ack) + NET_MAC_LEN];
+    Ack b = {{'A', WIRE_VERSION, SESSION, 1}, 0, ACKED + 9};
+    wire_hdr(&b.h);
+    wire_ack(&b);
+    memcpy(dg, &b, sizeof b);
+    net_mac_stamp(dg, sizeof b);
+    dg[sizeof b] ^= 0x40; /* one bit of the tag */
+    assert(sendto(sender, (const char*)dg, sizeof dg, 0, (struct sockaddr*)&dst, sizeof dst) ==
+           (int)sizeof dg);
+    recv_inputs();
+    assert(s_rx_bad_mac == 2 && s_last_acked == ACKED + 4);
+
+    /* No tag at all: the wrong shape for its magic, so it dies one check
+     * earlier, but it must still never be taken. */
+    assert(sendto(sender, (const char*)&b, sizeof b, 0, (struct sockaddr*)&dst, sizeof dst) ==
+           (int)sizeof b);
+    recv_inputs();
+    assert(s_rx_bad_mac == 2 && s_rx_malformed == 1 && s_last_acked == ACKED + 4);
+
+    /* Known-positive: the same ack with the tag left alone lands, so the two
+     * rejections above are the tag and nothing else about the datagram. */
+    send_dg(sender, &dst, &b, sizeof b);
+    recv_inputs();
+    assert(s_last_acked == ACKED + 9 && s_rx_bad_mac == 2);
+
+    /* A tag from another session's key is a forgery like any other. */
+    net_key_clear();
+    net_key_direct("another secret");
+    Ack c = {{'A', WIRE_VERSION, SESSION, 1}, 0, ACKED + 14};
+    wire_hdr(&c.h);
+    wire_ack(&c);
+    memcpy(dg, &c, sizeof c);
+    net_mac_stamp(dg, sizeof c);
+    net_key_clear();
+    net_key_direct("shared secret");
+    assert(sendto(sender, (const char*)dg, sizeof dg, 0, (struct sockaddr*)&dst, sizeof dst) ==
+           (int)sizeof dg);
+    recv_inputs();
+    assert(s_rx_bad_mac == 3 && s_last_acked == ACKED + 9);
+    assert(logged_count("bad MAC") == 1); /* one line per session, not one per datagram */
+    sock_close(sender);
+    pc_net_disconnect();
+    assert(!net_key_ready()); /* the key does not outlive the session */
 }
 
 static HSD_PadData s_test_queue[8];
@@ -1012,6 +1188,12 @@ int main(int argc, char** argv) {
             case_rollback_rumble_ownership();
         else if (strcmp(argv[1], "seed") == 0)
             case_seed_reset();
+        else if (strcmp(argv[1], "mac") == 0)
+            case_bad_mac_rejected();
+        else if (strcmp(argv[1], "learn") == 0)
+            case_session_learned_only_from_rules();
+        else if (strcmp(argv[1], "dest") == 0)
+            case_connect_destination();
         else
             return 2;
         return 0;
@@ -1019,6 +1201,7 @@ int main(int argc, char** argv) {
     case_resume_inside_ring();
     case_one_way_while_running();
     case_gap_past_ring();
+    case_bad_mac_rejected();
     case_seed_mismatch();
     case_session_mismatch();
     case_window_expires();
@@ -1034,6 +1217,8 @@ int main(int argc, char** argv) {
     case_tick_resume_refused_disconnects();
     case_knob_parse();
     case_receive_identity();
+    case_session_learned_only_from_rules();
+    case_connect_destination();
     case_old_protocol();
     case_snapshot_failure();
     case_snapshot_missing();

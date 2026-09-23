@@ -19,9 +19,15 @@ extern "C" {
  * report PEER_INCOMPATIBLE). Bump on any change to the packet layouts,
  * Rules or the handshake. */
 /* Version 6 requires sequenced scene exits and acknowledged LAN election.
- * Version 7 adds Rules.game_mode (Tag Battle vs plain VS). Version 8 adds
+ * Version 7 adds the sender's frame advantage to every input packet; the
+ * phase controller acts on the difference of the two, so a peer that does
+ * not send one cannot be synchronised against.
+ * Version 8 appends a truncated keyed-BLAKE2b tag to every datagram, so a
+ * peer that does not authenticate what it sends cannot be talked to at all
+ * once the session key exists (src/pc/net_wire.c).
+ * Version 9 adds Rules.game_mode (Tag Battle vs plain VS) and
  * Rules.tag_bind / Ready.tag_bind (each peer's own MeleeVS: Tag Bind). */
-#define PC_NET_PROTO_VERSION 8
+#define PC_NET_PROTO_VERSION 9
 void pc_net_init(void);
 void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
@@ -87,8 +93,9 @@ void pc_net_sync(void);
 bool pc_net_after_tick(bool scene_ending);
 
 /* Called by the frame boundary (src/pc/vi.c) after the pad alarm ran; the
- * returned ns are added to the next pacing wait. Time-sync skips are paid
- * here rather than by sleeping inside a tick. */
+ * returned ns are added to the next pacing wait. Time-sync corrections are
+ * paid here rather than by sleeping inside a tick, and only ever lengthen a
+ * frame: the peer that is behind is caught by the one ahead slowing down. */
 uint64_t pc_net_pace_adjust_ns(void);
 
 /* True while re-simulating: sound/music/rumble starts must be suppressed. */
@@ -144,6 +151,13 @@ bool pc_net_stats(int* ping_ms, int* delay_frames, unsigned* rollbacks);
  * resumed, net.c's MELEE_NET_RECONNECT_MS). A reader that only knows 0-2
  * must treat anything above 2 as at least as bad as 2. */
 int pc_net_quality(void);
+
+/* True once this session's checksums have disagreed with the peer's. The
+ * simulations have parted and no rollback will bring them back; the match is
+ * no longer a match. Reported so the player can see it -- it used to be a
+ * log line and nothing else, which left two players finishing a game that
+ * only one of them was playing. */
+bool pc_net_desync(void);
 
 /* Why the last session ended (kept until the next connect): 0 still up /
  * never broke, 1 the peer left (BYE), 2 timeout, 3 desync, 4 incompatible

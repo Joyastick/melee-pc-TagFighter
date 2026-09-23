@@ -247,7 +247,7 @@ offset sample per received packet = `sendTime − myLastSendTime + 16683·(myFra
 > 10 ms → stall ≤ 5 frames; behind > 26.7 ms → advance (2 ticks in one
 present) ≤ 3 frames, 1 per 5 frames. Continuous nudging: ±0.5–1 % on the
 `SDL_DelayPrecise` target in `vi.c:171-175` instead of emu speed. Hard stall
-when remote lags > 7 frames; disconnect after 7 s stalled.
+when remote lags > 7 frames; disconnect after 3 s stalled.
 
 **Desync detection.** Each input packet carries `(ck_frame, ck)` of the newest
 finalised frame (`confirmed_frame`, `src/pc/net.c:185-193`), compared in
@@ -678,23 +678,33 @@ The table below is the target protocol for M4+. What is on the wire today
 
 Every multi-byte field is big-endian on the wire (`be16/be32/be64`,
 `net_wire.c:46-132`); the packed structs are the exact wire image. Sizes are
-pinned by `_Static_assert` (`net_internal.h:211-219`).
+pinned by `_Static_assert` (`net_internal.h:211-219`). The sizes below are the
+*message*; from v8 every datagram is that message followed by an 8-byte
+authentication tag (`NET_MAC_LEN`, §6.4a), so a `Bye` is 8 bytes of message in
+a 16-byte datagram. `recv_inputs` checks the tag, then hands `n -
+NET_MAC_LEN` to everything below it, which is why no length in this table
+moved.
 
 | Struct | Magic | Layout (bytes) | Size | Notes |
 |---|---|---|---|---|
-| `Hdr` | — | `u8 magic, u8 version, u32 session, u8 player` | 7 | prefixes every datagram (`net_internal.h:121-126`). `version` = `PC_NET_PROTO_VERSION` (`net.h:20`, currently **6**). `session` is picked by the host at connect (`net.c:1121`), 0 on the guest until the host's first packet (`net.c:603`). `player` is the sender's port (0/1) |
+| `Hdr` | — | `u8 magic, u8 version, u32 session, u8 player` | 7 | prefixes every datagram (`net_internal.h:121-126`). `version` = `PC_NET_PROTO_VERSION` (`net.h:20`, currently **8**). `session` is picked by the host at connect (`net.c:1121`), 0 on the guest until the host's first packet (`net.c:603`). `player` is the sender's port (0/1) |
 | `WirePad` | — | `u16 button, s8 stickX, stickY, substickX, substickY, u8 triggerLeft, triggerRight` | 8 | Slippi's fields; sticks clamped to 0 within ±2 before sending (`at_rest`, `net_wire.c:10-24`) |
 | `Packet` | `'M'` | `Hdr, u16 seq, s32 newest, s32 first, s32 ck_frame, u32 ck, u8 count, WirePad pads[count]` | 26 + 8·count, count ≤ 16 (`REDUNDANCY`) | `pads[i]` is frame `first+i`; everything since the last ack is repeated, the repeat width scaled by measured loss and rollback depth, with a floor that the resume phase raises (`net_internal.h:128-138`, `send_inputs` `net.c:295-318`). `seq` is the per-session send counter: an exact duplicate is dropped and an out-of-order one still processed (`seq_check`, `net.c:373`), and the ack echoing it is the RTT sample. Sent every tick and again from the 4 ms timer; an empty one every 500 ms is the keepalive while the game thread is loading |
 | `Ack` | `'A'` | `Hdr, u16 seq, s32 frame` | 13 | `frame` = newest contiguous remote frame the sender holds, ignored unless `≤ s_wrote` (a frame we actually sent: a higher one would leave `send_inputs` shipping nothing at all, `on_ack` `net.c:454-460`); `seq` echoes the acked packet, consumed once from a 64-slot ring so a late duplicate cannot skew the RTT (`net.c:462-474`) |
-| `Rel` | `'R'` | `Hdr, u8 seq, u8 type, u16 len, u8 payload[len]` | 11 + len, len ≤ 256 | reliable channel, two stop-and-wait lanes (`net_reliable.c:1-16`). `seq` bit 7 is the lane, bits 0-6 the lane's sequence. Lane 0 = `type < 0x10`, the handshake (`0x01 RULES`, `0x02 READY`, `net_handshake.c:98-99`), consumed inline. Lane 1 = everything else: `0x10` is `MELEE_NET_HANDSHAKE_TEST` (`net_handshake.c:421`), `0x11` the LAN lobby's READY_BARRIER (empty payload, `net_lan.c:87`, `:955`), `0x12` `REL_RESUME` (§6.5 — consumed inside `net.c`, never queued for the caller, `net_reliable.c:134-135`), `0x13+` reach `pc_net_recv_reliable` |
+| `Rel` | `'R'` | `Hdr, u8 seq, u8 type, u16 len, u8 payload[len]` | 11 + len, len ≤ 256 | reliable channel, two stop-and-wait lanes (`net_reliable.c:1-16`). `seq` bit 7 is the lane, bits 0-6 the lane's sequence. Lane 0 = `type < 0x10`, the handshake (`0x01 RULES`, `0x02 READY`, `net_handshake.c:98-99`), consumed inline. Lane 1 = everything else: `0x10` is unused (it was the `MELEE_NET_HANDSHAKE_TEST` ping, removed with that hook), `0x11` the LAN lobby's READY_BARRIER (empty payload, `net_lan.c:87`, `:955`), `0x12` `REL_RESUME` (§6.5 — consumed inside `net.c`, never queued for the caller, `net_reliable.c:134-135`), `0x13+` reach `pc_net_recv_reliable` |
 | `RelAck` | `'K'` | `Hdr, u8 seq` | 8 | acks `seq` including its lane bit; the next expected seq is accepted and acked, one of the 8 before it is re-acked (its ack was lost), anything else is dropped with one log line (`on_rel`, `net_reliable.c:125-157`) |
 | `Bye` | `'B'` | `Hdr, u8 reason` | 8 | `reason` is a `PC_NET_PEER_*` value, now including `PC_NET_PEER_RESUME` (`net.c:546`); sent twice, unacked, from `pc_net_disconnect` |
 | `Rules` | payload of `Rel` type `0x01` (`net_internal.h:168-180`) | `u32 seed` @0, `s32 start_frame` @4, `u64 nonce` @8, `GameRules game` @16 (24 B), `u8 item_freq` @40, `u64 item_mask` @41, `u32 stage_mask` @49, `u8 frozen_stadium` @53, `u32 unlock_hash` @54, `u32 hash` @58 | 62 (`16 + sizeof(GameRules) + 22`, `net_internal.h:217`), datagram 73 | `nonce` is the host's per-session nonce; `unlock_hash` is new in v5 (below); `hash` is FNV-1a over everything before it **with the session id folded in** (§6.4). The guest rejects a set whose hash, nonce, unlock state, `start_frame` (in `[0, now + 256]`) or values (`mode ≤ 3`, `time ≤ 99`, `stocks ≤ 99`, `damage_ratio 5..20`, `item_freq ≤ 5`, `stage_mask ≠ 0`) are off (`rules_invalid`, `net_handshake.c`) |
 | `Ready` | payload of `Rel` type `0x02` (`net_internal.h:185-190`) | `u64 nonce` @0 (the guest's), `u64 echo` @8 (`Rules.nonce` as received), `u32 unlock_hash` @16, `u32 hash` @20 | 24 (`net_internal.h:218`), datagram 35 | READY was a zero-length payload before v4 and gained `unlock_hash` in v5, so the host refuses a guest whose forced unlock state differs instead of desyncing on it later. A READY whose hash or echo is wrong is dropped, not failed (§6.4) |
 | `Resume` | payload of `Rel` type `0x12` (`net_internal.h:193-199`) | `u32 session` @0, `u32 seed` @4, `s32 newest` @8, `s32 have` @12, `s32 frame` @16 | 20 (`net_internal.h:219`), datagram 31 | new in v4. All five fields are 32-bit, so `net.c` byte-swaps the image as one array (`wire_resume`, `net.c:677`) instead of field by field. §6.5 |
+| `MAC` | — | `u8 tag[8]` | 8 | suffixes every datagram from v8; keyed BLAKE2b over the whole message in front of it, header included (`net_mac_stamp`/`net_mac_ok`, `net_wire.c`). Zero-filled while no session key exists. §6.4a |
 
-Receive-side validation, in order (`recv_inputs`, `net.c:559-626`): source
-address must be the peer's (`:589`); `version` must match, else
+Receive-side validation, in order (`recv_inputs`, `net.c`): the datagram must
+be at least `sizeof(Hdr) + NET_MAC_LEN` and the right shape for its magic;
+then, from v8, its tag must verify under the session key, before anything
+else is read (§6.4a) — nothing below this line can be reached by a datagram
+that is not the peer's. Then source address must be the peer's (`:589`);
+`version` must match, else
 `PEER_INCOMPATIBLE` and the peer is treated as gone (`:594-601`); `session`
 must match, the guest adopting the first non-zero one (`:603-610`); `player`
 must be the remote's. Each reject logs once per session (`net: dropped …`).
@@ -717,6 +727,9 @@ type `≥ 0x13` the other side ignores does not need a bump. Bump the version,
 not the magic letters. This batch bumped it twice: v4 added the `Rules` nonce,
 the `Ready` payload and the session fold into both handshake hashes; **v5**
 added `unlock_hash` to both.
+**v8** appends the per-datagram tag (§6.4a). It is a layout change on every
+message at once, so a v7 peer and a v8 peer refuse each other at the first
+packet, which is the intended outcome: v7 cannot authenticate anything.
 
 **Unlock state is session state now (v5).** §5.1's class — a save-data
 predicate gating an RNG draw — is closed on the wire rather than left to two
@@ -756,12 +769,19 @@ the first packet.
 
 ### 6.2 Timeout policy
 
+> **Corrected 2026-09-22.** `faf888914` deliberately shortened the stall
+> and reconnect windows from 7 s/15 s to 3 s/3 s ("with watchdog heartbeats"),
+> which puts the whole outage tolerance at ~6 s rather than the ~22 s the
+> narratives below were written against. The table above and the defaults in
+> `net.c` are corrected here; the measured runs quoted further down are left
+> as they were measured, at the values that were in force when they ran.
+
 | State | Limit | Where | On expiry |
 |---|---|---|---|
-| Connected, no packet from the peer yet | 60 s (`CONNECT_TIMEOUT_MS`) | `net_internal.h:101`, `wait_remote` `net.c:863` | `PEER_TIMEOUT`, `net: peer silent for 60000 ms`, disconnect. Never resumed: there is nothing to resume to |
-| Stall on an established session (remote more than the window behind, or lockstep waiting) | 7 s (`STALL_TIMEOUT_MS`) **of silence, counted from the last datagram** (`s_last_rx_ns`, stamped in `rx_dispatch`) | `net_internal.h:100`, `wait_remote` | opens the reconnect phase (§6.5); if that is disabled or the session is not established, `PEER_TIMEOUT` and `net: peer silent for 7000 ms at frame N, leaving netplay` |
-| Peer that keeps sending but never advances (it is loading) | 120 s (`NO_PROGRESS_TIMEOUT_MS`) | `wait_remote` | `PEER_TIMEOUT` and `net: peer still sending but stuck at frame N for 120000 ms, leaving netplay`. No reconnect phase: nothing was ever interrupted |
-| Reconnect phase | 15 s (`RECONNECT_MS`, `MELEE_NET_RECONNECT_MS`) | `net.c:80`, `resume_poll` | `net: resume window of 15000 ms expired at frame N`, then the unchanged silence lines and `PEER_TIMEOUT` |
+| Connected, no packet from the peer yet | 60 s (`CONNECT_TIMEOUT_MS`), or 10 s (`MATCH_CONNECT_TIMEOUT_MS`) when matchmaking handed the session over (`net.connect_timeout_ms`) | `net_internal.h:115`/`:118`, `wait_remote` | `PEER_TIMEOUT`, `net: peer silent for 60000 ms`, disconnect. Never resumed: there is nothing to resume to |
+| Stall on an established session (remote more than the window behind, or lockstep waiting) | 3 s (`STALL_TIMEOUT_MS`) **of silence, counted from the last datagram** (`s_last_rx_ns`, stamped in `rx_dispatch`) | `net_internal.h:114`, `wait_remote` | opens the reconnect phase (§6.5); if that is disabled or the session is not established, `PEER_TIMEOUT` and `net: peer silent for 3000 ms at frame N, leaving netplay` |
+| Peer that keeps sending but never advances (it is loading) | 120 s (`NO_PROGRESS_TIMEOUT_MS`), measured from the last forward progress, not from the start of a wait (`s_progress_ns`) | `wait_remote` | `PEER_TIMEOUT` and `net: peer still sending but stuck at frame N for 120000 ms, leaving netplay`. No reconnect phase: nothing was ever interrupted |
+| Reconnect phase | 3 s (`RECONNECT_MS`, `MELEE_NET_RECONNECT_MS`) | `net.c:97`, `resume_poll` | `net: resume window of 3000 ms expired at frame N`, then the unchanged silence lines and `PEER_TIMEOUT` |
 | While stalled: resend our inputs | every 16 ms | `net.c:869-872` | — |
 | Stall longer than 500 ms | marks `s_stall_frame` | `net.c:882-884` | `pc_net_quality()` reports 2 for the next 120 frames (`net.c:1016`) |
 | Liveness while the game thread is not ticking (a load) | the newest input packet again every 7 ms | `tx_timer`, `net.c:286-293` | keeps the peer's silence clock and the NAT mapping fresh, which is what makes a load distinguishable from a lost peer. (A separate 500 ms empty-packet keepalive used to sit here; the 7 ms resend refreshes the same timestamp, so it could never fire and is gone) |
@@ -853,6 +873,28 @@ a property of stop-and-wait, not of this change. Refusals log once per class
 per session (`hs_drop`, `net_handshake.c:219-224`), cleared in
 `rules_restore` (`:175-180`), which `pc_net_disconnect` calls.
 
+**Who runs it.** Every session, not only a lobby one. `MELEE_NET=host:port`
+used to run no handshake at all unless `MELEE_NET_HANDSHAKE_TEST=1` was set,
+which meant two peers could start a direct session with different rules,
+different unlock progress, a different `MELEE_SEED` and different builds, and
+the transport would exchange inputs between two simulations that were never
+going to agree. `handshake_direct()` (`net_handshake.c`) now drives the same
+exchange from the frame loop for any session `pc_net_init()` opened, so the
+same validation refuses the same disagreements and the seed is the host's
+rather than each side's own. Who hosts costs no round trip:
+`MELEE_NET_PLAYER` already names the sides and player 1 (`net.local` 0) is
+the host everywhere else in the netcode — it names the session id, a lobby
+connects its host as player 0, and it announces the auto delay. It fires when
+the game has filled its own `GameRules`/`GamePrefs` in rather than at
+connect, because `pc_net_init()` runs before
+`gmMainLib_DefaultGameRules` is installed (`gmmain.c:194`) and the zeroed
+struct fails `rules_invalid`'s own value ranges; the peers boot in lockstep,
+so they cross that point within the input delay of each other. A failure ends
+the session (`PC_NET_PEER_INCOMPATIBLE`, `net: refusing this session …`)
+because there is no lobby to report it to. Direct sessions therefore also
+derive a §6.4a session key from the two nonces, instead of depending on
+`MELEE_NET_KEY`.
+
 **Randomness.** `csprng` (`net_handshake.c:42-96`): `BCryptGenRandom` with
 `BCRYPT_USE_SYSTEM_PREFERRED_RNG` under `MELEE_USE_BCRYPT` (`CMakeLists.txt:81-84`),
 otherwise `getrandom(2)` with a `/dev/urandom` fallback for a pre-3.17 kernel
@@ -864,15 +906,18 @@ before the lobby calls `pc_net_guest_wait_match` and because keying on the
 session id means a second session can never inherit the first one's nonce.
 0 doubles as "not drawn yet"; a genuine all-zero draw (2⁻⁶⁴) is drawn again.
 
-**What this is not.** Freshness, not authentication. The nonces travel in the
-clear, so an on-path attacker who can read the traffic can still forge either
-side; and the session id is a `SDL_GetPerformanceCounter() ^ pid` mix, not a
-secret, so the off-path bar rises only to "must guess 64 bits of nonce".
-What it closes: replay of a captured RULES/READY into any later session, a
-stale process at the peer's address driving the handshake with an old payload,
-and a late or conflicting RULES/READY overwriting rules already in force. Real
-peer identity is the M5 ed25519 work in §9 — signed RULES/READY under a
-long-term key; Monocypher is not vendored and none of that exists yet.
+**What this is, and what it became.** On its own this is freshness, not
+authentication: the nonces travel in the clear, so an on-path attacker who
+can read the traffic can still forge either side, and the session id is a
+`SDL_GetPerformanceCounter() ^ pid` mix, not a secret, so the off-path bar
+rises only to "must guess 64 bits of nonce". What it closes by itself:
+replay of a captured RULES/READY into any later session, a stale process at
+the peer's address driving the handshake with an old payload, and a late or
+conflicting RULES/READY overwriting rules already in force. What it turned
+out to be good for is the rest of the transport: two 64-bit CSPRNG draws
+that an off-path attacker never sees are exactly a session key, and §6.4a
+derives one from them. Real peer *identity* is still the M5 ed25519 work in
+§9 — signed RULES/READY under a long-term key — and that does not exist yet.
 
 *Verified:* `tools/test_net_handshake.c` plays both ends in one process
 (including the real `net_wire.c`) over ten cases — a correct exchange, a
@@ -888,6 +933,92 @@ second-RULES check. *Not verified:* the Windows `BCryptGenRandom` branch is
 unexercised — this is a Linux machine — and nothing here was run against two
 live instances; the end-to-end path is covered only by the acceptance runs,
 whose assertions key on the unchanged `net: handshake done …` line.
+
+### 6.4a Per-datagram authentication (v8, `src/pc/net_wire.c`)
+
+Before v8 nothing on the wire was authenticated. The session id is guessable
+(`SDL_GetPerformanceCounter() ^ pid << 20`), so anyone who could send to the
+peer's ip:port could inject an input packet, an ack, a reliable control
+message — a delay change or a scene exit, neither of which had any integrity
+of its own, so even a bit flip could become one — or a `BYE` that ends the
+session. v8 appends `NET_MAC_LEN` = 8 bytes of keyed BLAKE2b to every
+datagram, over the header and the body together.
+
+**The key.** `net_key_session()` is `crypto_blake2b` (Monocypher, already
+vendored for §9's identities) over the label `melee-pc netplay session key
+v1`, the 4-byte session id, the host's nonce and the guest's, in that order
+on both sides — host first whichever side is deriving, since local/remote is
+the one ordering the two peers disagree about. Both peers hold all three
+values at the end of §6.4's exchange, so the key costs no extra message. The
+tag is `crypto_blake2b_keyed` truncated to 8 bytes, compared without an early
+exit so a resend cannot be timed into a byte-at-a-time search. 8 bytes is the
+tradeoff: a blind forgery is 2⁻⁶⁴ per try against a receiver that answers
+nothing it rejects, and a wider tag would cost another 8 bytes on each of the
+~120 datagrams a second a session sends. The key is `crypto_wipe`d in
+`pc_net_disconnect` and at every `session_reset`.
+
+**Replay, including across a restart.** The seq window (`seq_check`) still
+drops an exact duplicate inside 64 packets. A datagram captured from an
+*earlier* session cannot verify at all: both nonces are redrawn per session,
+so the key differs even in the 2⁻³² case where the host picks the same
+session id again. What the tag does not do is make a replay of *this*
+session's own traffic distinguishable beyond the seq window — a packet older
+than 64 seqs is processed as a reorder, exactly as before, and the frame
+range checks in `on_inputs` are what bound it.
+
+**The bootstrap window, stated honestly.** The key does not exist until the
+handshake, and the two peers get it one leg apart: the guest when it accepts
+RULES, the host when it accepts the READY that answers it. So a datagram that
+does not verify is treated as a peer that has not keyed yet *until the first
+one that does verify*, and from that moment nothing unauthenticated is
+accepted again for the rest of the session (`s_mac_seen`, `recv_inputs`).
+The upgrade is one round trip wide and is never given back. Before it, the
+lobby traffic is unauthenticated: input packets, and the lane-1 reliable
+messages (chat, matcher, `REL_RESUME`) are forgeable by anyone who guesses
+the session id, as they were in v7. A forged `BYE` is not — it is refused
+until the peer has been heard from and pinned (`rx_dispatch`) — and RULES and
+READY are refused by §6.4's own nonce and hash checks. Shrinking the window
+further needs a nonce exchange at connect rather than at match start, which
+is a new handshake message and was out of scope here; the DHT rendezvous
+nonces (§9) are no help, because they are stored in public DHT items.
+
+**Direct sessions.** `MELEE_NET=host:port` runs the handshake too now (§6.4),
+so it derives the same key from the same two nonces — but only when that
+handshake completes, which is a few hundred frames into boot rather than one
+round trip after connect, so its bootstrap window is the wider one. It says
+so, once, at connect: `this MELEE_NET session is UNAUTHENTICATED until its
+handshake completes`. `MELEE_NET_KEY=<secret>`, the same string on both
+peers, closes that window from the first packet (`net_key_direct`) and pins
+the key for the whole session — a pinned key is never replaced by a
+handshake-derived one, because two peers cannot rekey on the same frame and
+every datagram that straddled the change would be dropped.
+`tools/net_test.py` sets one for every direct fixture, so the acceptance
+matrix runs authenticated from frame 0; `tools/net_fuzz.py` derives the same
+key and tags its garbage with it, which is the only way its datagrams still
+reach the body validators below the gate.
+
+A session that holds a key and sees `MAC_QUIET_MAX` (120) datagrams without
+one of them verifying logs one line saying it is running unauthenticated.
+That is the two-different-keys case (a stale `MELEE_NET_KEY` on one side is
+how), and the alternative is a session that looks protected in the log and is
+not.
+
+*Cost, measured:* stamping and verifying a 155-byte input packet (16 pads)
+cost 584 ns and 576 ns on this machine (i7-155H, `gcc -O2 -DNDEBUG`, best of
+seven runs of 400 000); a 13-byte ack costs ~405 ns each way, because keyed
+BLAKE2b always compresses the 128-byte key block first. Two sends and two
+receives a frame is ~2.3 µs of a 16.67 ms budget. It runs inside `tx()` and
+at the top of `recv_inputs`, neither of which takes a lock for it.
+
+*Verified:* `tools/test_net_resume.c` case `mac` drives the real socket —
+an authenticated ack lands, one with a flipped tag bit is counted in
+`bad_mac` and changes nothing, an untagged one is refused as the wrong shape,
+the same ack with its tag intact lands (the positive control), and a tag made
+with another key is refused; injection-validated by forcing the gate open,
+which fails exactly that case. `tools/test_net_handshake.c` check 1 asserts
+both sides derive the identical 32-byte key, that a tag verifies, and that
+flipping a tag bit, a body bit, or the session id in the derivation all fail
+it.
 
 ### 6.5 Resume after an interruption (`MELEE_NET_RECONNECT_MS`)
 
@@ -935,11 +1066,12 @@ runs on the very thread parked inside `wait_remote()`, so holding a phase open
 through a handshake that will never finish turns a 7 s "connect failed" into a
 22 s hang — exactly the `host_dies` regression `tools/net_lan_test.py` caught.
 The condition is on the handshake state, not the session id: `HS_DONE` is
-established (`hs_done` has pinned seed, start frame and `ck_from`),
-`HS_PENDING`/`HS_FAILED` are not, and `HS_IDLE` counts only after
-`RESUME_LOBBY_GRACE` (8) frames, because the `MELEE_NET` path never runs a
-handshake and stays idle for the whole session while a lobby session claims
-the handshake on its first poll.
+established (`hs_done` has pinned seed, start frame and `ck_from`) and
+`HS_PENDING`/`HS_FAILED`/`HS_IDLE` are not. It used to need a
+`RESUME_LOBBY_GRACE` (8) frame allowance for `HS_IDLE`, because the
+`MELEE_NET` path ran no handshake and stayed idle for the whole session;
+`handshake_direct` (§6.4) gave direct sessions the same handshake, so idle
+means "nothing agreed yet" for every session and the allowance is gone.
 
 While `RSM_ACTIVE` the socket stays open, `net.active` stays true so the 4 ms
 timer keeps resending, and `wait_remote()`'s own 16 ms `send_inputs()` keeps
@@ -1584,7 +1716,7 @@ retracted here or labelled with what it actually measured.
   snapshot ring of 8 taken before every predicted tick, restore + re-tick
   via `pc_net_after_tick()` when the real input differs, window 7 then a
   hard stall, which now opens the reconnect phase of §6.5 instead of ending
-  the session (`MELEE_NET_RECONNECT_MS`, default 15 s, `0` = the old hard
+  the session (`MELEE_NET_RECONNECT_MS`, default 3 s, `0` = the old hard
   drop). Inputs sent every tick and again 8 ms
   later from a 4 ms SDL timer, everything since the last ack (cap 16); the
   ack echoes the packet's sequence number, which is the ping sample. Time sync is
@@ -1633,9 +1765,8 @@ VS → results → lobby) reached from the VS submenu's new ONLINE entry (SIS te
 over the 6th slot; texture is the follow-up). Verified: two instances navigate
 the real menus into the lobby, see "1 players found", Start on one → both
 enter Link vs Mario on the same frame, 7200 frames, 0 desync, ping 13 ms —
-pre-gate, see §12.1. Test aids: `MELEE_LAN_TEST=1|host`,
-`MELEE_NET_HANDSHAKE_TEST=1`, `MELEE_KEY_FIFO=<fifo>` (focus-free key
-injection: `echo "Return 150" > fifo`).
+pre-gate, see §12.1. Test aids: `MELEE_LAN_TEST=1|host`, `MELEE_KEY_FIFO=<fifo>`
+(focus-free key injection: `echo "Return 150" > fifo`).
 
 ### 12.2 Harnesses
 
@@ -1645,11 +1776,11 @@ injection: `echo "Return 150" > fifo`).
 | `tools/net_acceptance.py` | the same over the link matrix (loss 0/1/5/20 %, one-way 50/100/200 ms, burst, reorder, jitter, dup, asymmetric rx) plus the flow, OOM, disconnect, resume and soak rows; `--only "name,name"`, `--table` to print without running, per-row persistence in `<work>/rows.json`, and every row stamped with the binary's md5 | rows inherit the match precondition; the full matrix and the 60-minute soak were still running when this was written |
 | `tools/net_lan_test.py` | lobby paths a match run never reaches, on the menu-less fixtures: simultaneous Start (exactly one host), direct connect with no discovery, a peer SIGKILLed mid-lobby (`lan: lost` inside the 5 s TTL), the elected host SIGKILLed while the guest connects (`lan: failed:` in ~7 s, which is the `session_established()` gate of §6.5) | all four pass |
 | `tools/net_determinism.py` | M0: one canonical recording replayed per platform, plus a `linux-record` row so a recording defect cannot pass as a platform divergence; two independent verdicts per row, a mandatory byte-flip sensitivity check, and `--state-log` for field-level localisation (§5.1) | linux-record and linux identical, linux-flip caught at exactly the injected frame, **windows diverges at frame 479**, Android/macOS SKIPPED |
-| `tools/net_fuzz.py` | malformed game datagrams at every edge of §6.1, plus the deterministic `--attack ack-overshoot` starvation probe (§6.6) | passed against the pre-rebuild `build/melee` (proto 3); not re-run since |
+| `tools/net_fuzz.py` | malformed game datagrams at every edge of §6.1, each carrying the v8 tag so it reaches the body validators (§6.4a), plus the deterministic `--attack ack-overshoot` starvation probe (§6.6) | passed against the pre-rebuild `build/melee` (proto 3); not re-run since the v8 tag was added |
 | `tools/net_lan_fuzz.py` | crafted mDNS/DNS-SD frames at the discovery socket, 24 cases + mutations, contained with `IP_MULTICAST_TTL 0` (§6.6) | passed against the pre-rebuild `build/melee`; not re-run since |
 | `tools/net_lan_txt_test.py`, `tools/test_net_lan_txt.c` | the TXT parser and peer table, offline against the real `on_record()` and live against a running instance (§8) | C harness passes all 17 rejection classes; the live half's `disc` cases are still SKIP because it has not been re-run since the rebuild |
-| `tools/test_net_handshake.c` | both ends of the v4 handshake in one process, ten cases (§6.4) | passes, three injections |
-| `tools/test_net_resume.c` | both ends of the resume phase on a virtual clock, fifteen cases (§6.5) | passes, fifteen injections |
+| `tools/test_net_handshake.c` | both ends of the v4 handshake in one process, ten cases plus the session-key derivation (§6.4, §6.4a) | passes, three injections |
+| `tools/test_net_resume.c` | both ends of the resume phase on a virtual clock, fifteen cases (§6.5) plus the datagram authentication gate through a real socket (§6.4a) | passes, sixteen injections |
 | `tools/test_net_reliable.c` | both lanes of the reliable channel in one process, including `REL_RESUME` | passes |
 
 **The match precondition**, which every row now inherits, is the load-bearing
@@ -1772,7 +1903,7 @@ under this Xwayland session returned the opening movie and a bare CSS
 starfield while the logs showed a live session on the CSS.
 
 **Rows beyond the flow.** `disconnect` SIGKILLs B mid-match with no BYE and
-requires A to report `peer silent for 7000 ms … leaving netplay`, then
+requires A to report `peer silent for 3000 ms … leaving netplay`, then
 `disconnected … (status 2)`, then to keep its frame loop running for another
 10 s with no DESYNC and no `peer left`. `resume 11 s` and `resume expiry 30 s`
 are §6.5 from the outside: an interruption inside the window must log
@@ -2090,11 +2221,14 @@ rollback or forked peer history. New unreleased record/history format 2 uses a
 BEP44 immutable target padded to 32 bytes as its chain locator; incompatible
 older files are rejected rather than silently migrated or reset.
 
-Automatic delay remains the conservative jitter-aware 1–4-frame policy;
-manual 0–4 is available. Optional `MELEE_NET_JIT=1` uses presentation period and
-CPU-frame estimates with a 1 ms margin; it is not enabled by default without
-physical latency evidence. `MELEE_NET_DEBUG=1` reports XFB wait time rather than
-bypassing the queue. Native text supplies menu labels and chat instructions.
+Automatic delay is sized per scene, 1–4 frames, with manual 0–4 available: a
+lockstep menu gets `ceil((rtt/2 + jitter) / frame)`, which is what it needs to
+run at 60 Hz, and a fight gets two frames less, because the rollback window
+pays that part of the trip instead of the player's hands. The change is
+announced by one side on the reliable lane and applied by frame number, so
+both peers switch on the same frame. `MELEE_NET_DEBUG=1` reports XFB wait time
+rather than bypassing the queue. Native text supplies menu labels and chat
+instructions.
 
 
 ## 16. All-platform rollback follow-up, 2026-09-20
