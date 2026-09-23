@@ -292,10 +292,30 @@ static void fail(const char* why) {
 
 static void pairing_topic(enum PcNetMatchMode m, const char* direct, uint8_t out[20]) {
     char text[64];
+    /* Direct already refuses a Tag Battle/plain-VS mismatch via digest()'s
+     * compatibility hash (fail("Peer is on a different build, disc or game
+     * mode")) - a manually-exchanged code is already scoped to one peer, so
+     * there is nothing to separate here. Ranked has no Tag Battle entry
+     * point (SEL_TAG_UNRANKED is the only online row this mod's menu adds
+     * past Direct/LAN) and stays untouched. Unranked pairs with whoever else
+     * is searching the same pool, so a Tag Battle searcher's own topic hash
+     * needs to differ from a plain-VS one - otherwise receive()'s
+     * memcmp(h->topic, topic, 20) at line 361 would pass for a plain-VS
+     * candidate, waste a MatchHello/MatchOffer round trip, and only then
+     * fail on the mode check the offer/ack path already carries (the same
+     * outcome, just later and noisier) instead of never matching at all.
+     * ponytail: pc_dht_start's own DHT announce bucket (net_dht.c's
+     * PC_DHT_UNRANKED, still time-bucketed only) is not split the same way,
+     * so a Tag Battle and a plain-VS searcher still discover each other as
+     * DHT candidates before this topic check drops the mismatch - wasted
+     * round trips, not a correctness issue. Split pc_dht_topic() too if
+     * unranked search ever gets crowded enough for that to matter. */
     int n = m == PC_MATCH_DIRECT ?
                 snprintf(text, sizeof text, "meleepc/match/v1/direct/%s", direct) :
                 snprintf(text, sizeof text,
-                    m == PC_MATCH_RANKED ? "meleepc/match/v1/ranked" : "meleepc/match/v1/unranked");
+                    m == PC_MATCH_RANKED    ? "meleepc/match/v1/ranked" :
+                    TagAssist_IsTagBattleOn() ? "meleepc/match/v1/unranked/tag" :
+                                                 "meleepc/match/v1/unranked");
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
 }
 
