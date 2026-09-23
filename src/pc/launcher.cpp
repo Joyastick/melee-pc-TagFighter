@@ -8,6 +8,7 @@
 #include "updater.hpp"
 #include "net_match.h"
 #include "net.h"
+#include "pc.h"
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <aurora/dvd.h>
 #include <aurora/event.h>
@@ -172,14 +173,15 @@ void dialog_done(void* userdata, const char* const* files, int) {
     (*owner)->ready = true;
 }
 
-/* Aurora compiles the seeded pipeline cache -- about twelve thousand configs --
- * on worker threads from startup. Until a config is compiled, every draw that
- * needs it is skipped (issue #46), so the drain finishing before a match is the
- * difference between a match that pops and one that does not. The launcher is
- * the one screen where the player is already waiting; spend it there. */
+/* Aurora compiles the known pipeline configs ahead of use -- the ~12k-config
+ * seed on desktop, on Android the ones this device has built before -- on
+ * worker threads from startup, or, without workers (Adreno), in this loop's
+ * idle time. Until a config is compiled, every draw that needs it is skipped
+ * (issue #46), so the drain finishing before a match is the difference between
+ * a match that pops and one that does not. The launcher is the one screen
+ * where the player is already waiting; spend it there. */
 static uint32_t pending_pipelines() {
-    const auto* stats = aurora_get_stats();
-    return stats != nullptr ? stats->queuedPipelines : 0;
+    return aurora_wait_pipelines(0);
 }
 
 class Launcher final : public Rml::EventListener {
@@ -252,10 +254,10 @@ class Launcher final : public Rml::EventListener {
         switch (tab) {
         case 0:
             return {"display", "sync", "resolution", "aspect", "hud-mode", "aa", "filter",
-                "filter-mode", "custom-textures", "backend"};
+                "filter-mode", "custom-textures", "backend", "performance"};
         case 1:
-            return {"volume", "music-volume", "sfx-volume", "mute", "fps", "scale", "check-updates",
-                "check-now", "settings-discord"};
+            return {"volume", "music-volume", "sfx-volume", "mute", "reverb", "fps", "scale",
+                "check-updates", "check-now", "settings-discord"};
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-bind"};
         case 4:
@@ -376,6 +378,7 @@ class Launcher final : public Rml::EventListener {
         slider("sfx-volume", prefs.sfx_volume * 100.0f);
         text("sfx-volume-val", std::to_string(int(prefs.sfx_volume * 100 + 0.5f)) + "%");
         text("mute", prefs.mute ? "On" : "Off");
+        text("reverb", prefs.reverb ? "On" : "Off");
         text("fps", prefs.fps ? "On" : "Off");
         slider("scale", prefs.scale * 100.0f);
         text("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
@@ -510,11 +513,13 @@ class Launcher final : public Rml::EventListener {
             /* The pipeline queue may still be draining. Take the wait here,
              * where the player is already looking at a screen, rather than
              * during the first match; pressing Play again skips it. */
-            if (!shaders_waited && pending_pipelines() > 0) {
+            if (const uint32_t pending = pending_pipelines(); !shaders_waited && pending > 0) {
+                SDL_Log("Launcher: Play waits for %u pipelines", pending);
                 shaders_waited = true;
                 last_pending = 0;
                 return;
             }
+            SDL_Log("Launcher: starting the game");
             begin_game();
         } else if (id == "verify" && supported) {
             cancel = false;
@@ -647,6 +652,23 @@ class Launcher final : public Rml::EventListener {
             save();
             refresh_settings();
             element("mute")->Focus();
+        } else if (id == "reverb") {
+            prefs.reverb = !prefs.reverb;
+            save();
+            refresh_settings();
+            element("reverb")->Focus();
+        } else if (id == "performance") {
+            // The cheapest settings for a slow GPU or CPU, in one press.
+            prefs.render_scale = 1;
+            prefs.msaa = 1;
+            prefs.anisotropy = 1;
+            prefs.reverb = false;
+            save();
+            refresh_settings();
+            text("settings-status",
+                "Performance preset: internal resolution 1x, anti-aliasing off, filtering 1x "
+                "and reverb off. Anti-aliasing and filtering apply after a restart.");
+            element("performance")->Focus();
         } else if (id == "fps") {
             prefs.fps = !prefs.fps;
             save();
@@ -799,6 +821,11 @@ public:
         if (!initial_error.empty())
             status(initial_error, true);
         while (result == -2) {
+            if (pc_exit_requested) { /* SIGINT/SIGTERM, src/pc/main.c */
+                result = 0;
+                cancel = true;
+                break;
+            }
             auto* events = aurora_update();
             for (auto* e = events; e && e->type != AURORA_NONE; ++e) {
                 if (e->type == AURORA_EXIT) {
@@ -1000,6 +1027,7 @@ public:
             if (shaders_waited && result == -2) {
                 const uint32_t pending = pending_pipelines();
                 if (pending == 0) {
+                    SDL_Log("Launcher: pipelines built, starting the game");
                     shaders_waited = false;
                     begin_game(); /* reports its own failure in the status line */
                 } else if (pending != last_pending) {
@@ -1012,7 +1040,15 @@ public:
                 break;
             if (aurora_begin_frame())
                 aurora_end_frame();
-            SDL_Delay(8);
+            /* Spend the idle time until the next frame on the pipeline queue:
+             * with worker threads this only waits, as a plain delay did;
+             * without them (Adreno) it builds queued pipelines here, the only
+             * place they are built before a match. */
+            const uint64_t idle_start = SDL_GetTicks();
+            aurora_wait_pipelines(8);
+            const uint64_t idle = SDL_GetTicks() - idle_start;
+            if (idle < 8)
+                SDL_Delay(uint32_t(8 - idle));
         }
         return result;
     }
@@ -1171,6 +1207,7 @@ extern "C" int pc_launcher_run(const char* command_line_disc, SDL_Window* window
 extern "C" void pc_audio_set_volume(float volume);
 extern "C" void pc_audio_set_music_volume(float volume);
 extern "C" void pc_audio_set_sfx_volume(float volume);
+extern "C" void pc_audio_set_reverb(bool on);
 // Melee's own menu bank: 0 is back/cancel, 1 confirm, 2 the cursor tick.
 extern "C" void lbAudioAx_80024030(int);
 enum { SFX_BACK = 0, SFX_CONFIRM = 1, SFX_MOVE = 2 };
@@ -1222,7 +1259,7 @@ public:
             return {"display", "sync", "resolution", "aspect", "hud-mode", "aa", "filter",
                 "filter-mode", "custom-textures", "backend"};
         case 1:
-            return {"volume", "music-volume", "sfx-volume", "mute", "fps", "scale",
+            return {"volume", "music-volume", "sfx-volume", "mute", "reverb", "fps", "scale",
                 "port-check-update"};
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
@@ -1346,6 +1383,7 @@ public:
         slider("sfx-volume", prefs.sfx_volume * 100.0f);
         label("sfx-volume-val", std::to_string(int(prefs.sfx_volume * 100 + 0.5f)) + "%");
         label("mute", prefs.mute ? "On" : "Off");
+        label("reverb", prefs.reverb ? "On" : "Off");
         label("fps", prefs.fps ? "On" : "Off");
         slider("scale", prefs.scale * 100.0f);
         label("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
@@ -1557,6 +1595,8 @@ public:
             prefs.sfx_volume = (step >= 10 ? 0 : step + 1) / 10.0f;
         } else if (id == "mute")
             prefs.mute = !prefs.mute;
+        else if (id == "reverb")
+            prefs.reverb = !prefs.reverb;
         else if (id == "fps")
             prefs.fps = !prefs.fps;
         else if (id == "scale") {
@@ -1573,6 +1613,7 @@ public:
         pc_audio_set_volume(prefs.mute ? 0 : prefs.volume);
         pc_audio_set_music_volume(prefs.music_volume);
         pc_audio_set_sfx_volume(prefs.sfx_volume);
+        pc_audio_set_reverb(prefs.reverb);
         lbAudioAx_80024030(SFX_CONFIRM);
         saved();
     }
@@ -1763,6 +1804,7 @@ extern "C" void pc_menu_init(SDL_Window* window) {
     pc_audio_set_volume(prefs.mute ? 0 : prefs.volume);
     pc_audio_set_music_volume(prefs.music_volume);
     pc_audio_set_sfx_volume(prefs.sfx_volume);
+    pc_audio_set_reverb(prefs.reverb);
     auto* context = aurora::rmlui::get_context();
     if (!context) {
         SDL_Log("F1 menu: RmlUi context unavailable");

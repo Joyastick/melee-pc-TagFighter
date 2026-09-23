@@ -216,6 +216,25 @@ first if a mapping below goes stale.
 | Young Link | Side Special (Boomerang) | Same as grounded |
 | Ness | Side Special (PK Fire) | Same as grounded |
 
+On Windows that means any Intel Gen8 (Broadwell, 2014) or newer, AMD GCN or
+newer, NVIDIA Fermi or newer runs on Direct3D 12. Direct3D 11 is a
+compatibility path, not a performance one (FXC shaders, no DXC). OpenGL is
+never picked automatically: `MELEE_BACKEND=opengl` exists, but Dawn needs
+desktop GL 4.4 for it, it draws with wrong (washed-out) colours on X11 and
+cannot create a surface on Wayland. The log records every backend that was
+skipped and why, then one summary line with the adapter and driver.
+
+The CPU side is light: any x86-64 (SSE2) or arm64 CPU. A VS match holds a
+steady 60 fps with the whole game pinned to two 2.5 GHz Meteor Lake
+low-power E-cores, using about a third of one core in total.
+
+- Keep `resources/` (and on Windows the DLLs: `webgpu_dawn.dll`,
+  `dxcompiler.dll`, `dxil.dll`, `SDL3.dll`, the VC++ runtime) beside the
+  executable. `dxcompiler.dll` and `dxil.dll` are the D3D12 shader compiler;
+  D3D11 needs no extra DLL, since `d3d11.dll`, `dxgi.dll` and the FXC
+  compiler are Windows components.
+- Settings, memory cards, `music/` and `textures/` live in the `melee-pc`
+  preference directory above.
 
 ## Controls
 
@@ -332,7 +351,7 @@ lockstep-only platform build.
 | `MELEE_NET=<host:port>` | Connect to that peer at boot, no lobby (`MELEE_NET_PLAYER` on both sides). The session runs the same RULES/READY handshake a lobby one does, hosted by `MELEE_NET_PLAYER=0`, so the seed, rules and unlock state are agreed rather than assumed and a disagreement refuses the session instead of desyncing later. `MELEE_SEED` is optional, and only the host's is used. |
 | `MELEE_NET_PORT=<n>` | Local UDP game port (default 41000). Two copies on one machine need different ports. |
 | `MELEE_NET_PLAYER=0\|1` | Controller port the local player drives with `MELEE_NET`: 0 = P1/host, 1 = P2. |
-| `MELEE_NET_DELAY=<n>\|auto` | Input delay in frames (default `auto`: 1–4 from ping and jitter, re-evaluated every 600 frames, changed only between matches). |
+| `MELEE_NET_DELAY=<n>\|auto` | Input delay in frames (default `auto`: 1–4 from ping and jitter, at least 2 in a fight, re-evaluated every 600 frames, changed only between matches). |
 | `MELEE_NET_RECONNECT_MS=<ms>` | How long a broken link may take to resume (default 15000). `0` disables the reconnect phase: the session drops 7 s after the peer goes quiet, as it used to. Anything negative or unparseable falls back to the default. |
 | `MELEE_LAN_TEST=1\|host` | LAN lobby without the menu; `host` presses Start once the title is up. Both set to `host` exercises a simultaneous Start. |
 | `MELEE_LAN_DIRECT=<ip:port>` | Direct connect without the menu, at frame 300; set on both sides with the other's address. The lower `ip:port` hosts. |

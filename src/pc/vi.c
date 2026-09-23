@@ -136,12 +136,14 @@ void pc_frame_boundary(void) {
         }
         frame_prev_ns = now_ns;
         if (now - fps_t0 >= 1000) {
-            fprintf(stderr,
+            /* Through pc_log_line, not stderr: on Android stderr goes
+             * nowhere, so MELEE_FPS printed nothing there. pc_log_line also
+             * reaches logcat and MELEE_LOG_FILE. */
+            pc_log_line(
                 "fps %.1f worst %.1fms late>20ms %u late>33ms %u "
-                "sleep_overshoot %.1fms\n",
+                "sleep_overshoot %.1fms",
                 fps_n * 1000.0 / (double)(now - fps_t0), frame_worst_ns / 1e6, frame_late_20,
                 frame_late_33, sleep_worst_over_ns / 1e6);
-            fflush(stderr);
             fps_t0 = now;
             fps_n = 0;
             frame_worst_ns = 0;
@@ -199,8 +201,15 @@ void pc_frame_boundary(void) {
     static u64 next_sim_ns;
     const u64 sim_period = pc_sim_period_ns();
     u64 now = SDL_GetTicksNS();
-    if (next_sim_ns == 0 || now > next_sim_ns + sim_period * 2) {
-        next_sim_ns = now; /* first frame, or large hitch: resync */
+    /* How far behind its schedule this boundary is, and how much of that to
+     * run off by skipping the sleep below. Offline a large hitch is dropped:
+     * there is nothing to stay in step with. In netplay dropping it left the
+     * peer that froze behind the other one by the whole freeze, which time
+     * sync then took seconds to close (pc_net_catch_up_ns). */
+    u64 late = next_sim_ns != 0 && now > next_sim_ns ? now - next_sim_ns : 0;
+    late = pc_net_active() ? pc_net_catch_up_ns(late) : late > sim_period * 2 ? 0 : late;
+    if (next_sim_ns == 0 || now > next_sim_ns) {
+        next_sim_ns = now - late;
     } else if (now < next_sim_ns) {
         const u64 want = next_sim_ns - now;
         /* On standard 60 Hz VSync, aurora_begin_frame already waited for VBlank. On high-refresh

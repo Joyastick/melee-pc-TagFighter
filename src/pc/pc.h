@@ -21,6 +21,10 @@ void pc_platform_init(void);
 void pc_frame_boundary(void);
 /* Simulation frame period the boundary paces to (60.000 Hz), src/pc/vi.c. */
 uint64_t pc_sim_period_ns(void);
+/* Sleep (at most 1 ms) toward the next due OSAlarm instead of spinning for it,
+ * and a 0.1 ms sleep for the game's disc wait loops, src/pc/os.c. */
+void pc_os_wait_alarm(void);
+void pc_os_yield(void);
 
 /* Append a line to the diagnostic log (src/pc/main.c), so frame stalls
  * interleave with aurora's own records and can be attributed to whatever
@@ -116,6 +120,9 @@ void pc_audio_set_music_volume(float volume);
 void pc_audio_set_sfx_volume(float volume);
 float pc_audio_get_music_volume(void);
 float pc_audio_get_sfx_volume(void);
+/* false bypasses the aux effects (stage reverb and echo); the dry mix is
+ * unchanged. On by default. */
+void pc_audio_set_reverb(bool on);
 
 /* Texture replacements (src/pc/textures.cpp) */
 void pc_textures_init(void);
