@@ -24,15 +24,7 @@ __pycache__/
 # Internal working notes stay local; only the screenshots are published.
 docs/*
 !docs/screenshots/
-!docs/CODING_STYLE.md
 !docs/tag_assist_roster.csv
-!docs/netcode-plan.md
-!docs/architecture.md
-!docs/building.md
-!docs/debugging.md
-!docs/porting-notes.md
-!docs/testing.md
-!docs/site/
 
 # Claude working notes stay local -- never commit these.
 CLAUDE.md
