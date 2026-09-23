@@ -2634,6 +2634,8 @@ void mn_8022D594(HSD_GObj* gp)
 #ifdef TARGET_PC
         case SEL_VS_ONLINE:
             sfxForward();
+            TagAssist_LeaveTagBattle();
+            mnOnline_SetEnteredFromTagBattle(false);
             mn_80229894(MENU_KIND_ONLINE, SEL_ONLINE_LAN, 1);
             break;
 #endif
@@ -2665,11 +2667,13 @@ void mn_8022D594(HSD_GObj* gp)
             break;
 #ifdef TARGET_PC
         case SEL_VS_TAG_BATTLE:
+            /* Opens its own submenu (Local / Direct / Unranked) inside
+             * MENU_KIND_ONLINE - see mnOnline_SetEnteredFromTagBattle.
+             * SEL_TAG_LOCAL there is exactly this row's old direct-to-GM_VS
+             * body. */
             sfxForward();
-            TagAssist_EnterForcedOn();
-            data = gm_GetCurrentSceneExitData();
-            data->pending_mode = GM_VS;
-            gm_801A4B60();
+            mnOnline_SetEnteredFromTagBattle(true);
+            mn_80229894(MENU_KIND_ONLINE, SEL_TAG_LOCAL, 1);
             break;
 #endif
         }

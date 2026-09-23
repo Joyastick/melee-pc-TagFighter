@@ -191,6 +191,36 @@ void onEnterDebugVs(GameModeState* state)
     if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "cpu") == 0) {
         start->players[1].slot_type = Gm_PKind_Cpu;
     }
+    // MELEE_DEBUG_VS=tag: same Link vs Mario shortcut, but with Tag Battle
+    // forced on and Link given a CPU assist partner (port 2) so a single
+    // keyboard can drive point/assist tag-swapping - lets synctest/
+    // determinism drives exercise tag/call input resimulation without
+    // walking the real CSS, same reasoning as the "cpu" variant above.
+    // TagAssist_CssSyncPortTeam mirrors what the last CSS frame would have
+    // left (its own doc comment: "the mirrored values stay put once CSS's
+    // own per-frame updates stop"), needed here since this path never runs
+    // CSS at all, so TagAssist's own sPortTeamColor defaults (all zero)
+    // would otherwise group all three live ports into one team.
+    if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "tag") == 0) {
+        start->players[2].ckind = CKind_Fox;
+        start->players[2].slot_type = Gm_PKind_Cpu;
+        start->players[2].cpu_kind = 4;
+        // Every debug-VS variant zeroes stocks above (fine for the plain/cpu
+        // shortcuts, which run MatchKind_Time and never check stocks) - but
+        // TagAssist_CheckPointElimination reads stocks unconditionally, so
+        // 0 reads as "already out of lives" and promotes the assist to solo
+        // point within the first couple of frames, before any real
+        // gameplay. Give the three live players real stocks so the team
+        // actually stays a team.
+        start->players[0].stocks = 4;
+        start->players[1].stocks = 4;
+        start->players[2].stocks = 4;
+        start->rules.is_teams = 1; // same forcing mncharsel.c does entering from the main menu
+        TagAssist_EnterForcedOn();
+        TagAssist_CssSyncPortTeam(0, 0);
+        TagAssist_CssSyncPortTeam(2, 0);
+        TagAssist_CssSyncPortTeam(1, 1);
+    }
 #endif
 
     start->players[0].rumble_enabled = false;

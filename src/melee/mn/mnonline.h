@@ -19,4 +19,12 @@ const char* mnOnline_Description(MenuKind, int selection);
 /* One-shot description override set by the think proc (A on a stub). */
 const char* mnOnline_TakeNotice(void);
 
+/* MELEE VS's own submenu reuses MENU_KIND_ONLINE's rendering wholesale
+ * (same banner, same preview animations) with a different row set (Local /
+ * Direct / Unranked instead of LAN / Direct / Ranked / Unranked / Profile).
+ * true selects the Tag Battle row set and Back target; mn_8022D594 sets it
+ * before entering MENU_KIND_ONLINE from either VS row, so it never carries
+ * over from an earlier visit through the other row. */
+void mnOnline_SetEnteredFromTagBattle(bool value);
+
 #endif

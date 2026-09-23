@@ -61,6 +61,7 @@
 
 #include <SDL3/SDL_mutex.h>
 #include <SDL3/SDL_timer.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -704,11 +705,45 @@ static int on_record(int sock, const struct sockaddr* from, size_t addrlen, mdns
 
 /* ---- interface selection ---------------------------------------------- */
 
+/* Case-insensitive prefix compare: Windows adapter friendly names are
+ * capitalized ("Tailscale", "Ethernet", "VirtualBox Host-Only Network"),
+ * while every prefix below follows the lowercase Unix interface-naming
+ * convention (tun0, wg0, docker0, ...) - a case-sensitive strncmp would
+ * never match any of them on Windows, silently disabling this whole
+ * container/VPN deprioritization on that platform. */
+static bool prefix_ci(const char* name, const char* prefix) {
+    size_t n = strlen(prefix);
+    for (size_t i = 0; i < n; i++) {
+        if (!name[i] || tolower((unsigned char)name[i]) != tolower((unsigned char)prefix[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool iface_skipped(const char* name) {
-    static const char* const virt[] = {
-        "docker", "veth", "br-", "virbr", "tun", "tap", "wg", "utun", "zt"};
+    static const char* const virt[] = {"docker", "veth", "br-", "virbr", "tun", "tap", "wg",
+        "utun", "zt", "tailscale", "radmin"};
     for (size_t i = 0; i < sizeof virt / sizeof virt[0]; i++) {
-        if (strncmp(name, virt[i], strlen(virt[i])) == 0) {
+        if (prefix_ci(name, virt[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Case-insensitive substring search: MELEE_LAN_IFACE's own matcher. This
+ * list above is a losing whack-a-mole against every VPN vendor's adapter
+ * name (Tailscale and Radmin VPN both had to be added here after actually
+ * shadowing a real LAN interface on a real machine) - MELEE_LAN_IFACE is
+ * the escape hatch for whichever one isn't on the list yet, no rebuild
+ * needed. */
+static bool contains_ci(const char* haystack, const char* needle) {
+    if (needle[0] == '\0') {
+        return false;
+    }
+    for (size_t i = 0; haystack[i] != '\0'; i++) {
+        if (prefix_ci(haystack + i, needle)) {
             return true;
         }
     }
@@ -857,12 +892,41 @@ static void pick_iface(void) {
             on_route = n++;
         }
     }
-    int pick = -1, best = -1;
+    /* Every candidate this decision saw, with the score each would have
+     * gotten - the one piece of information missing every time this
+     * picked the wrong interface on a real machine (Tailscale, then
+     * Radmin VPN) and the only log line was the winner. */
     for (int i = 0; i < n; i++) {
         int score = !iface_skipped(v[i].name) * 4 + (i == on_route) * 2 + (v[i].a.s_addr != 0);
-        if (score > best) {
-            best = score;
-            pick = i;
+        char a[16] = "-";
+        if (v[i].a.s_addr != 0) {
+            inet_ntop(AF_INET, &v[i].a, a, sizeof a);
+        }
+        pc_log_line("lan: candidate %s addr=%s score=%d%s%s", v[i].name, a, score,
+            iface_skipped(v[i].name) ? " skipped" : "", i == on_route ? " on_route" : "");
+    }
+    int pick = -1, best = -1;
+    const char* want = getenv("MELEE_LAN_IFACE");
+    if (want != NULL && want[0] != '\0') {
+        pc_log_line("lan: MELEE_LAN_IFACE=%s set, overriding the score below", want);
+        for (int i = 0; i < n && pick < 0; i++) {
+            if (contains_ci(v[i].name, want)) {
+                pick = i;
+            }
+        }
+        if (pick < 0) {
+            pc_log_line("lan: MELEE_LAN_IFACE=%s matched no interface, falling back", want);
+        } else {
+            pc_log_line("lan: MELEE_LAN_IFACE=%s matched %s", want, v[pick].name);
+        }
+    }
+    if (pick < 0) { /* MELEE_LAN_IFACE didn't already decide it above */
+        for (int i = 0; i < n; i++) {
+            int score = !iface_skipped(v[i].name) * 4 + (i == on_route) * 2 + (v[i].a.s_addr != 0);
+            if (score > best) {
+                best = score;
+                pick = i;
+            }
         }
     }
     memset(&s_self4, 0, sizeof s_self4);

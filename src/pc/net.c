@@ -784,6 +784,7 @@ static void check_desync(void) {
     uint32_t mine = s_ck_ring[s_remote_ck_frame & (RING - 1)];
     if (mine != s_remote_ck) {
         net.desync_reported = true;
+        s_status = PC_NET_PEER_DESYNC;
         pc_log_line("net: DESYNC at frame %d (local %08x remote %08x)", s_remote_ck_frame, mine,
             s_remote_ck);
         dump_rings_around(s_remote_ck_frame);

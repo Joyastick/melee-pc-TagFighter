@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "compat.h" /* force-includes the DISC_STRUCT macro melee/mod/tag_assist.h needs below */
 #include "net_match.h"
 #include "net_dht.h"
 #include "net_dht_item.h"
@@ -6,6 +7,7 @@
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "pc.h"
+#include <melee/mod/tag_assist.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_timer.h>
 #include <stddef.h>
@@ -234,7 +236,11 @@ static bool load_identity(void) {
 
 static void digest(void) {
     char text[256];
-    int n = snprintf(text, sizeof text, "%s\n%s", pc_app_rev(), pc_lan_disc_id());
+    /* Folding the Tag Battle flag in here means a Tag Battle peer and a
+     * plain-VS peer hash differently and never complete a handshake, same
+     * as a build mismatch - see receive()'s compatibility check below. */
+    int n = snprintf(text, sizeof text, "%s\n%s\n%u", pc_app_rev(), pc_lan_disc_id(),
+        TagAssist_IsTagBattleOn() ? 1u : 0u);
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, compatibility);
 }
 static bool send_packet(const void* p, size_t n, const struct pc_dht_endpoint* ep) {
@@ -338,11 +344,20 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         const char* terminator = memchr(h->code, '\0', sizeof h->code);
         if (ntohl(h->magic) != MATCH_MAGIC || h->version != MATCH_VERSION || h->type != 'H' ||
             h->mode != (uint8_t)mode || h->nonce == local_nonce ||
-            memcmp(h->compatibility, compatibility, 20) || memcmp(h->topic, topic, 20) ||
-            !terminator || !key_code_matches(h->public_key, h->code) ||
+            memcmp(h->topic, topic, 20) || !terminator ||
+            !key_code_matches(h->public_key, h->code) ||
             (mode == PC_MATCH_DIRECT && target[0] && strcmp(h->code, target)) ||
             !signed_ok(h->public_key, h->signature, h, sizeof *h))
             return;
+        /* A genuine, authenticated Hello for our search that only disagrees
+         * on compatibility (build/disc/Tag-Battle-vs-VS) gets a real reason
+         * instead of silently timing out - everything else above stays a
+         * bare drop, since those are the anti-forgery/anti-spoof checks. */
+        if (memcmp(h->compatibility, compatibility, 20)) {
+            if (!failure)
+                fail("Peer is on a different build, disc or game mode");
+            return;
+        }
         bool fresh = !have_peer;
         if (have_peer && (h->nonce != peer_nonce || memcmp(h->public_key, peer_key, 32) ||
                              ep->address != peer.address || ep->port != peer.port))

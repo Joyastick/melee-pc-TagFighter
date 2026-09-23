@@ -41,6 +41,7 @@
 #pragma GCC diagnostic ignored "-Wscalar-storage-order" /* disc-struct unions in lb/types.h */
 #include <melee/gm/gmmain_lib.h>
 #pragma GCC diagnostic pop
+#include <melee/mod/tag_assist.h>
 #include <sysdolphin/baselib/random.h>
 
 #include <SDL3/SDL_timer.h>
@@ -125,6 +126,7 @@ static Rules s_rules_orig;
 static uint64_t s_nonce_local;   /* ours this session; 0: not drawn yet */
 static uint32_t s_nonce_session; /* net.session s_nonce_local was drawn for */
 static uint64_t s_nonce_peer;    /* theirs, from RULES (guest) or READY (host) */
+static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_net_remote_tag_bind */
 static bool s_unlock_saved;      /* s_unlock_orig holds what the player had */
 static uint64_t s_unlock_orig;
 /* One log line per refusal class per session (the log-line rule): a peer, or
@@ -168,6 +170,11 @@ static void rules_capture(Rules* ru) {
     ru->item_mask = p->item_mask;
     ru->stage_mask = p->stage_mask;
     ru->frozen_stadium = pc_is_frozen_stadium_enabled();
+    ru->game_mode = TagAssist_IsTagBattleOn() ? GAME_MODE_TAG_BATTLE : GAME_MODE_VS;
+    /* Port 0 always: capture_local_sample (net.c) always reads the local
+     * human's real controller from physical port 0, whichever net-session
+     * port (0 or 1) matchmaking assigns this peer. */
+    ru->tag_bind = (uint8_t) pc_get_tag_bind(0);
 }
 
 static void rules_apply(const Rules* ru, bool from_peer) {
@@ -182,12 +189,26 @@ static void rules_apply(const Rules* ru, bool from_peer) {
     p->stage_mask = ru->stage_mask;
     s_rules_frozen = ru->frozen_stadium != 0;
     s_rules_on = true;
+    /* The host's game_mode is authoritative for both peers, same as every
+     * other field here - a guest whose local menu choice somehow drifted
+     * (stale state from a prior session, a race with the compatibility
+     * check) ends up exactly matching the host rather than desyncing CSS. */
+    if (ru->game_mode == GAME_MODE_TAG_BATTLE) {
+        TagAssist_EnterForcedOn();
+    } else {
+        TagAssist_LeaveTagBattle();
+    }
+    if (from_peer) {
+        /* The guest learning the host's own tag_bind; the host learns the
+         * guest's symmetric way, from Ready.tag_bind in on_ready below. */
+        s_remote_tag_bind = ru->tag_bind;
+    }
     pc_log_line("net: RULES %s mode=%u time=%u stock=%u handicap=%u dmg=%u stage_sel=%u ff=%u "
-                "pause=%u sd=%u items=%u/%016llx stages=%08x frozen=%u unlock_all=1",
+                "pause=%u sd=%u items=%u/%016llx stages=%08x frozen=%u unlock_all=1 game_mode=%u",
         from_peer ? "applied" : "in force", ru->game.mode, ru->game.time_limit,
         ru->game.stock_count, ru->game.handicap, ru->game.damage_ratio, ru->game.stage_sel,
         ru->game.friendly_fire, ru->game.pause, ru->game.unk_xc, ru->item_freq,
-        (unsigned long long)ru->item_mask, ru->stage_mask, ru->frozen_stadium);
+        (unsigned long long)ru->item_mask, ru->stage_mask, ru->frozen_stadium, ru->game_mode);
 }
 
 /* ---- unlock state -----------------------------------------------------
@@ -260,6 +281,7 @@ void rules_restore(void) {
     /* The session is over; its nonces must never be reused, and the next
      * one gets a fresh log budget for each refusal class. */
     s_nonce_local = s_nonce_peer = 0;
+    s_remote_tag_bind = 0;
     s_hs_logged = 0;
 }
 
@@ -270,6 +292,10 @@ bool pc_net_rules(bool* unlock_all, bool* frozen_stadium) {
     *unlock_all = true;
     *frozen_stadium = s_rules_frozen;
     return true;
+}
+
+int pc_net_remote_tag_bind(void) {
+    return s_rules_on ? s_remote_tag_bind : 0;
 }
 
 /* What a RULES set must look like before it is applied, NULL when fine. The
@@ -288,7 +314,8 @@ static const char* rules_invalid(const Rules* ru) {
     }
     if (ru->game.mode > 3 || ru->game.time_limit > 99 || ru->game.stock_count > 99 ||
         ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 || ru->item_freq > 5 ||
-        ru->stage_mask == 0)
+        ru->stage_mask == 0 || ru->game_mode > GAME_MODE_TAG_BATTLE ||
+        ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
     {
         return "value out of range";
     }
@@ -372,7 +399,7 @@ static void on_rules(const uint8_t* payload, int len) {
         net.hs = HS_FAILED;
         return;
     }
-    Ready rd = {nonce_local(), ru.nonce, unlock_mine, 0};
+    Ready rd = {nonce_local(), ru.nonce, unlock_mine, (uint8_t) pc_get_tag_bind(0), 0};
     if (rd.nonce == 0) {
         pc_log_line("net: RULES rejected: no random source");
         unlock_restore();
@@ -435,6 +462,7 @@ static void on_ready(const uint8_t* payload, int len) {
         return;
     }
     s_nonce_peer = rd.nonce;
+    s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
     hs_done();
 }
 

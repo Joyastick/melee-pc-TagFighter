@@ -18,8 +18,10 @@ extern "C" {
 /* Wire protocol version; a peer with another one is refused (both sides
  * report PEER_INCOMPATIBLE). Bump on any change to the packet layouts,
  * Rules or the handshake. */
-/* Version 6 requires sequenced scene exits and acknowledged LAN election. */
-#define PC_NET_PROTO_VERSION 6
+/* Version 6 requires sequenced scene exits and acknowledged LAN election.
+ * Version 7 adds Rules.game_mode (Tag Battle vs plain VS). Version 8 adds
+ * Rules.tag_bind / Ready.tag_bind (each peer's own MeleeVS: Tag Bind). */
+#define PC_NET_PROTO_VERSION 8
 void pc_net_init(void);
 void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
@@ -65,6 +67,13 @@ int pc_net_handshake_state(void);
  * written all-unlocked (net_handshake.c), so this flag now agrees with them
  * instead of overriding them; the direct mask readers agree too. */
 bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
+
+/* The remote peer's own MeleeVS: Tag Bind index (their pc_get_tag_bind(0)),
+ * exchanged once at handshake time (Rules.tag_bind if they're the host,
+ * Ready.tag_bind if they're the guest) - not agreed to a shared value like
+ * pc_net_rules's fields, each peer keeps their own. 0 (Off) before the
+ * handshake completes or when netplay is inactive. */
+int pc_net_remote_tag_bind(void);
 
 /* Called once per simulation tick before the pad queue head is consumed.
  * Replaces the head sample's four ports with the synced inputs for this

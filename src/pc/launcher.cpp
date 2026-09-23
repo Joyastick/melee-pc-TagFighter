@@ -351,7 +351,7 @@ class Launcher final : public Rml::EventListener {
         text("frozen-stadium", prefs.frozen_stadium ? "Hazardless" : "Normal");
         text("free-camera", prefs.free_camera ? "Free" : "Normal");
         text("ucf", std::getenv("MELEE_UCF") ? "Environment override" : prefs.ucf ? "On" : "Off");
-        text("tag-bind", kTagBindNames[prefs.tag_bind]);
+        text("tag-bind", kTagBindNames[prefs.tag_bind[0]]);
         text("unlock-all", prefs.unlock_all ? "Unlocked" : "Normal");
         text("backend", backend_name(prefs.backend));
         slider("volume", prefs.volume * 100.0f);
@@ -584,7 +584,9 @@ class Launcher final : public Rml::EventListener {
             refresh_settings();
             element("ucf")->Focus();
         } else if (id == "tag-bind") {
-            prefs.tag_bind = (prefs.tag_bind + 1) % kTagBindCount;
+            // This window has no port selector; edits port 0's bind. Other
+            // local players use the F1 PortMenu overlay for their own port.
+            prefs.tag_bind[0] = (prefs.tag_bind[0] + 1) % kTagBindCount;
             save();
             refresh_settings();
             element("tag-bind")->Focus();
@@ -1183,11 +1185,11 @@ public:
             return {"volume", "music-volume", "sfx-volume", "mute", "fps", "scale",
                 "port-check-update"};
         case 2:
-            return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-bind"};
+            return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
         case 4:
             return {"net-name", "net-target", "net-delay"};
         default: {
-            std::vector<std::string> ids{"pad-port"};
+            std::vector<std::string> ids{"pad-port", "tag-bind"};
             for (int i = 0; i < PAD_BUTTON_COUNT; ++i)
                 ids.push_back("bind-" + std::to_string(i));
             for (int i = 0; i < PAD_AXIS_COUNT; ++i)
@@ -1238,6 +1240,7 @@ public:
         label("pad-port", "Port " + std::to_string(pad_port + 1));
         const char* name = PADGetName(pad_port);
         label("pad-name", name && *name ? name : "No controller in this port.");
+        label("tag-bind", kTagBindNames[prefs.tag_bind[pad_port]]);
         u32 count = 0;
         const PADButtonMapping* map = PADGetButtonMappings(pad_port, &count);
         for (int i = 0; i < PAD_BUTTON_COUNT; ++i) {
@@ -1294,7 +1297,6 @@ public:
         label("frozen-stadium", prefs.frozen_stadium ? "Hazardless" : "Normal");
         label("free-camera", prefs.free_camera ? "Free" : "Normal");
         label("ucf", std::getenv("MELEE_UCF") ? "Environment override" : prefs.ucf ? "On" : "Off");
-        label("tag-bind", kTagBindNames[prefs.tag_bind]);
         label("unlock-all", prefs.unlock_all ? "Unlocked" : "Normal");
         label("backend", backend_name(prefs.backend));
         slider("volume", prefs.volume * 100.0f);
@@ -1486,7 +1488,10 @@ public:
         } else if (id == "ucf") {
             prefs.ucf = !prefs.ucf;
         } else if (id == "tag-bind") {
-            prefs.tag_bind = (prefs.tag_bind + (reverse ? -1 : 1) + kTagBindCount) % kTagBindCount;
+            // This port only -- refresh_bindings() shows/edits whichever
+            // port pad-port is currently cycled to.
+            prefs.tag_bind[pad_port] =
+                (prefs.tag_bind[pad_port] + (reverse ? -1 : 1) + kTagBindCount) % kTagBindCount;
         } else if (id == "unlock-all") {
             prefs.unlock_all = !prefs.unlock_all;
         } else if (id == "backend") {
@@ -1786,8 +1791,12 @@ extern "C" bool pc_is_ucf_enabled(void) {
     static const char* env = std::getenv("MELEE_UCF");
     return env ? env[0] != '0' : prefs.ucf;
 }
-extern "C" int pc_get_tag_bind(void) {
-    return prefs.tag_bind;
+extern "C" int pc_get_tag_bind(int port) {
+    if (port < 0)
+        port = 0;
+    if (port > 3)
+        port = 3;
+    return prefs.tag_bind[port];
 }
 extern "C" int pc_get_hud_mode(void) {
     return prefs.hud_mode;

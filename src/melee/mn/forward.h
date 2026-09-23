@@ -185,6 +185,16 @@ typedef enum OnlineMenuSelection {
     SEL_ONLINE_UNRANKED = 3,
     SEL_ONLINE_PROFILE = 4,
 } OnlineMenuSelection;
+
+/// MELEE VS's own submenu (still MENU_KIND_ONLINE - see
+/// mnOnline_SetEnteredFromTagBattle - reusing its rendering/table entry
+/// rather than adding a whole new MenuKind's worth of per-kind tables).
+typedef enum TagBattleMenuSelection {
+    SEL_TAG_LOCAL = 0,
+    SEL_TAG_LAN = 1,
+    SEL_TAG_DIRECT = 2,
+    SEL_TAG_UNRANKED = 3,
+} TagBattleMenuSelection;
 #endif
 
 typedef enum SpecialVsMenuSelection {

@@ -13,6 +13,7 @@
 #pragma GCC diagnostic ignored "-Wscalar-storage-order" /* disc-struct unions in lb/types.h */
 #include <melee/ft/fighter.h>
 #include <melee/ft/inlines.h>
+#include <melee/mod/tag_assist.h>
 #include <melee/pl/player.h>
 #pragma GCC diagnostic pop
 #include <xxhash.h>
@@ -165,6 +166,17 @@ uint32_t frame_checksum(const PADStatus* head) {
         ck = fnv1a(ck, &fp->dmg.x1830_percent, sizeof fp->dmg.x1830_percent);
         ck = fnv1a(ck, &fp->motion_id, sizeof fp->motion_id);
         ck = fnv1a(ck, &stocks, sizeof stocks);
+        /* Tag Battle: who's currently point and how many tags are left this
+         * call, so a pure tag-role desync (point/assist disagreeing between
+         * peers with no fighter-state difference yet) is caught on the
+         * frame it happens rather than only once it visibly moves a
+         * fighter several frames later. Each accessor already returns a
+         * fixed false/0 with Tag Battle off or this port not on a Red/Blue
+         * team, so no extra gating is needed here. */
+        u8 tagRole = TagAssist_IsPortCurrentlyPoint(slot) ? 1 : 0;
+        u8 tagsLeft = TagAssist_GetTagsRemaining(slot);
+        ck = fnv1a(ck, &tagRole, sizeof tagRole);
+        ck = fnv1a(ck, &tagsLeft, sizeof tagsLeft);
     }
     return ck;
 }
@@ -196,9 +208,11 @@ static void log_state_bits(int32_t frame) {
         }
         const Fighter* fp = GET_FIGHTER(gobj);
         n += snprintf(buf + n, sizeof buf - (size_t)n,
-            " p%d pos=%08x/%08x/%08x dir=%08x pct=%08x mid=%d st=%d", slot, f32bits(fp->cur_pos.x),
-            f32bits(fp->cur_pos.y), f32bits(fp->cur_pos.z), f32bits(fp->facing_dir),
-            f32bits(fp->dmg.x1830_percent), fp->motion_id, Player_GetStocks(slot));
+            " p%d pos=%08x/%08x/%08x dir=%08x pct=%08x mid=%d st=%d tag=%d/%d", slot,
+            f32bits(fp->cur_pos.x), f32bits(fp->cur_pos.y), f32bits(fp->cur_pos.z),
+            f32bits(fp->facing_dir), f32bits(fp->dmg.x1830_percent), fp->motion_id,
+            Player_GetStocks(slot), TagAssist_IsPortCurrentlyPoint(slot) ? 1 : 0,
+            TagAssist_GetTagsRemaining(slot));
     }
     fprintf(s_state_log, "net: bits %s\n", buf);
 }

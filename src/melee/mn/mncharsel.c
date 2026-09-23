@@ -42,6 +42,9 @@
 #include <sysdolphin/baselib/mobj.h>
 #include <sysdolphin/baselib/random.h>
 #include <sysdolphin/baselib/sislib.h>
+#ifdef TARGET_PC
+#include <pc/net.h>
+#endif
 
 static u8 mnCharSel_804D50C8[4] = { 1, 2, 4, 8 };
 static u8 mnCharSel_804D50CC[4] = { 1, 0, 0, 2 };
@@ -5603,9 +5606,26 @@ s32 mnCharSel_802640A0(void)
              * on Blue, Human if that port's controller is plugged in, CPU
              * otherwise. */
             if (sTagAutoPopulate) {
-                mnCharSel_803F0DFC.doors[i].p_kind =
-                    HSD_PadMasterStatus[i].err == 0 ? Gm_PKind_Human
-                                                     : Gm_PKind_Cpu;
+                if (pc_net_active()) {
+                    /* Online: net.c only ever drives ports 0/1 (the two
+                     * real network players); ports 2/3 have no real player
+                     * online, ever. Never read this machine's own local
+                     * HSD_PadMasterStatus for that decision here -- it is
+                     * per-machine hardware state that the two peers are not
+                     * guaranteed to agree on, which would leak host-local
+                     * state into the deterministic sim the same way the
+                     * unlock_all preference bug did (docs/netcode-plan.md
+                     * 5.1). pc_net_active() itself is safe to read here:
+                     * it is "is a net session active", identical context on
+                     * both peers by construction once connected, not
+                     * per-machine hardware state. */
+                    mnCharSel_803F0DFC.doors[i].p_kind =
+                        i < 2 ? Gm_PKind_Human : Gm_PKind_Cpu;
+                } else {
+                    mnCharSel_803F0DFC.doors[i].p_kind =
+                        HSD_PadMasterStatus[i].err == 0 ? Gm_PKind_Human
+                                                         : Gm_PKind_Cpu;
+                }
                 mnCharSel_803F0DFC.doors[i].team = (u8) (i & 1);
                 TagAssist_CssSyncPortTeam(i, mnCharSel_803F0DFC.doors[i].team);
                 // The line above only sets the CSS's own UI-side door state.

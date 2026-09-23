@@ -1862,9 +1862,9 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                 // also engage shield -- this is the one place L and R's
                 // analog values are still distinguishable before they're
                 // merged into a single triggers[0] just below.
-                if (TagAssist_ExtraBindMask() & HSD_PAD_L) {
+                if (TagAssist_ExtraBindMask(fp->x618_player_id) & HSD_PAD_L) {
                     tempf0 = 0.0f;
-                } else if (TagAssist_ExtraBindMask() & HSD_PAD_R) {
+                } else if (TagAssist_ExtraBindMask(fp->x618_player_id) & HSD_PAD_R) {
                     tempf1 = 0.0f;
                 }
 
@@ -1921,7 +1921,8 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                 // Start/D-Pad binds are deliberately left alone -- only
                 // X/Y (jump) and L/R (shield, handled above via the
                 // analog value) had a genuine double-booking to fix.
-                fp->input.held_buttons[0] &= ~(TagAssist_ExtraBindMask() & (HSD_PAD_XY | HSD_PAD_L | HSD_PAD_R));
+                fp->input.held_buttons[0] &=
+                    ~(TagAssist_ExtraBindMask(fp->x618_player_id) & (HSD_PAD_XY | HSD_PAD_L | HSD_PAD_R));
             }
 
             if (gm_8016B0FC()) {

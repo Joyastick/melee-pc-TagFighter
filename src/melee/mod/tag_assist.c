@@ -22,6 +22,7 @@
 #include <melee/mp/mpcoll.h>
 #include <melee/mp/mplib.h>
 #include <melee/pl/player.h>
+#include <pc/net.h>
 #include <pc/pc.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/jobj.h>
@@ -182,7 +183,7 @@ enum {
 /// TagAssist_TagInputPressed's once-per-frame snapshot.
 static u32 sFrameCounter;
 
-u32 TagAssist_ExtraBindMask(void)
+u32 TagAssist_ExtraBindMask(u8 controller_slot)
 {
     static const HSD_Pad kBindMasks[] = {
         [kTagBindOff] = 0,
@@ -199,14 +200,30 @@ u32 TagAssist_ExtraBindMask(void)
         [kTagBindDpadRight] = HSD_PAD_DPADRIGHT,
     };
     int bind;
-    if (!TagAssist_IsTagBattleOn()) {
+    if (!TagAssist_IsTagBattleOn() || controller_slot >= 4) {
         // Tag Battle off: the F1 menu's tag-bind setting is a pure Tag
         // Battle feature and shouldn't touch an ordinary VS Mode match --
         // without this, picking X/Y/L/R here would silently break
         // jump/shield in every other mode too.
         return 0;
     }
-    bind = pc_get_tag_bind();
+    // Per-port setting: each local player picks their own bind, read for
+    // whichever port is actually asking (see TagAssist_TagInputPressed and
+    // this function's own callers in fighter.c). Offline, controller_slot
+    // IS the physical port, so pc_get_tag_bind(controller_slot) is exactly
+    // right. Online, capture_local_sample() (net.c) always reads the local
+    // human's real controller from physical port 0 regardless of which
+    // net-session port (0 or 1) matchmaking assigned this peer -- so the
+    // LOCAL net port's bind is always this machine's own pc_get_tag_bind(0),
+    // never pc_get_tag_bind(controller_slot) when controller_slot happens to
+    // be 1. The REMOTE net port's bind is that peer's own physical-port-0
+    // choice, exchanged over the wire (RULES/READY) -- never a local read.
+    if (pc_net_active() && controller_slot < 2) {
+        bind = (controller_slot == (u8) pc_net_local_player()) ? pc_get_tag_bind(0) :
+                                                                   pc_net_remote_tag_bind();
+    } else {
+        bind = pc_get_tag_bind(controller_slot);
+    }
     if (bind < 0 || (unsigned)bind >= sizeof(kBindMasks) / sizeof(kBindMasks[0])) {
         return 0;
     }
@@ -247,7 +264,8 @@ static bool TagAssist_TagInputPressed(u8 controller_slot)
             sPrevMask[i] = mask;
         }
     }
-    return (sEdgeMask[controller_slot] & (HSD_PAD_DPADDOWN | TagAssist_ExtraBindMask())) != 0;
+    return (sEdgeMask[controller_slot] &
+               (HSD_PAD_DPADDOWN | TagAssist_ExtraBindMask(controller_slot))) != 0;
 }
 
 /// How long a called assist stays out before auto-benching.

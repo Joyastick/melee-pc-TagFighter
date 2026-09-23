@@ -42,9 +42,13 @@ struct Preferences {
     bool frozen_stadium = false;
     bool free_camera = false;
     bool ucf = false;
-    // Index into the F1 menu's "MeleeVS: Tag Bind" cycle (0 = Off, D-Pad
-    // Down only); see kTagBindNames in launcher.cpp for the ordered list.
-    int tag_bind = 0;
+    // Per-controller-port index into the F1 menu's "MeleeVS: Tag Bind"
+    // cycle (0 = Off, D-Pad Down only), one per physical GameCube port
+    // 0-3; see kTagBindNames in launcher.cpp for the ordered list. The
+    // pre-game launcher window (which has no port selector) edits port 0
+    // only; the F1 PortMenu overlay edits whichever port it's currently
+    // showing.
+    int tag_bind[4] = {0, 0, 0, 0};
     float music_volume = 1.0f;
     float sfx_volume = 1.0f;
     uint64_t install_id = 0;  // random once per install (LAN host election); 0 = not yet

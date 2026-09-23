@@ -86,8 +86,9 @@ bool pc_is_ucf_enabled(void);
 /// Index into the F1 menu's "MeleeVS: Tag Bind" option list (0 = Off,
 /// meaning D-Pad Down only; see the kBindMasks table next to
 /// TagAssist_ExtraBindMask, tag_assist.c, and kTagBindNames, launcher.cpp,
-/// which must stay in the same order).
-int pc_get_tag_bind(void);
+/// which must stay in the same order). Per physical GameCube port 0-3 --
+/// each local player picks their own. `port` is clamped to [0,3].
+int pc_get_tag_bind(int port);
 int pc_get_hud_mode(void);
 float pc_get_music_volume(void);
 float pc_get_sfx_volume(void);

@@ -42,13 +42,15 @@
 bool TagAssist_IsTagBattleOn(void);
 
 /// Bitmask (HSD_PAD_* from sysdolphin/baselib/controller.h) of whichever
-/// single extra GCC button the F1 menu's "MeleeVS: Tag Bind" setting
-/// currently maps alongside D-Pad Down for calling/tagging, or 0 if that
-/// setting is "Off" (D-Pad Down only). Fighter_Spaghetti_8006AD10
+/// single extra GCC button `controller_slot`'s own "MeleeVS: Tag Bind"
+/// setting currently maps alongside D-Pad Down for calling/tagging, or 0 if
+/// that setting is "Off" (D-Pad Down only). Per-port -- and, online, the
+/// remote port's own choice, not this machine's local setting for that
+/// port number (see this function's own body). Fighter_Spaghetti_8006AD10
 /// (fighter.c) reads this to strip a tag-bound X/Y/L/R out of that
 /// fighter's own input each frame, so it stops also working as jump/shield
 /// -- see that call site's own comment.
-u32 TagAssist_ExtraBindMask(void);
+u32 TagAssist_ExtraBindMask(u8 controller_slot);
 
 /// Turns Tag Battle on and arms TagAssist_ConsumeAutoPopulate for the CSS
 /// setup that follows. Call from the main menu's "TAG BATTLE" entry, before

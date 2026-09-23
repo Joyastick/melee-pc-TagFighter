@@ -22,7 +22,6 @@
 <div class="setting"><div class="description"><h3>Hazardless stages</h3><p>Lock Pokémon Stadium in neutral mode without transformations.</p></div><button id="frozen-stadium">Off</button></div>
 <div class="setting"><div class="description"><h3>Free camera</h3><p>Unlock 360° orbital rotation and zoom distance in pause mode.</p></div><button id="free-camera">Normal</button></div>
 <div class="setting"><div class="description"><h3>Universal Controller Fix</h3><p>UCF 0.8x dashback and shield-drop consistency on any controller.</p></div><button id="ucf">Off</button></div>
-<div class="setting"><div class="description"><h3>MeleeVS: Tag Bind</h3><p>Also call in/tag your partner with this button, alongside D-Pad Down. If it's X or Y, that button stops jumping. Right-click to cycle backward.</p></div><button id="tag-bind">Off</button></div>
 </div>
 <div id="page-audio" class="page">
 <div class="setting"><div class="description"><h3>Master volume</h3><p>Left/right or drag to adjust.</p></div><div class="slider-control"><input type="range" id="volume" min="0" max="100" step="5" value="100" /><span id="volume-val" class="slider-value">100%</span></div></div>
@@ -42,6 +41,7 @@
 </div>
 <div id="page-controls" class="page">
 <div class="setting"><div class="description"><h3>Controller</h3><p id="pad-name">No controller connected.</p></div><button id="pad-port">Port 1</button></div>
+<div class="setting"><div class="description"><h3>MeleeVS: Tag Bind</h3><p>Also call in/tag your partner with this button, alongside D-Pad Down, for this port only. If it's X or Y, that button stops jumping. Right-click to cycle backward.</p></div><button id="tag-bind">Off</button></div>
 <div class="setting"><div class="description"><h3 id="bind-name-0">-</h3></div><button id="bind-0">-</button></div>
 <div class="setting"><div class="description"><h3 id="bind-name-1">-</h3></div><button id="bind-1">-</button></div>
 <div class="setting"><div class="description"><h3 id="bind-name-2">-</h3></div><button id="bind-2">-</button></div>

@@ -8,6 +8,7 @@
 #include <melee/gm/gmscene.h>
 #include <melee/gm/types.h>
 #include <melee/lb/lbaudio_ax.h>
+#include <melee/mod/tag_assist.h>
 #include <sysdolphin/baselib/gobj.h>
 
 /* VS Mode > Online. Each entry selects its GM_ONLINE lobby mode. */
@@ -25,6 +26,21 @@ static const char* const online_descriptions[] = {
     "View your player identity and connect code.",
 };
 
+/* MELEE VS's own submenu, see mnOnline_SetEnteredFromTagBattle. No Ranked
+ * or Profile row: Tag Battle online is scoped to LAN + Direct + Unranked. */
+static const char* const tag_battle_labels[] = {
+    "LOCAL", "LAN PLAY", "DIRECT CONNECT", "UNRANKED",
+};
+
+static const char* const tag_battle_descriptions[] = {
+    "Play locally, same as MELEE VS today.",
+    "Play another player on your local network.",
+    "Connect to a friend using a connect code.",
+    "Find an opponent online for a Tag Battle.",
+};
+
+static bool sViaTagBattle;
+
 static const char* notice;
 
 const char* mnOnline_Label(MenuKind kind, int selection)
@@ -35,7 +51,12 @@ const char* mnOnline_Label(MenuKind kind, int selection)
     if (kind == MENU_KIND_VS && selection == SEL_VS_TAG_BATTLE) {
         return "MELEE VS";
     }
-    if (kind == MENU_KIND_ONLINE && selection >= 0 &&
+    if (kind == MENU_KIND_ONLINE && sViaTagBattle && selection >= 0 &&
+        selection < (int) ARRAY_SIZE(tag_battle_labels))
+    {
+        return tag_battle_labels[selection];
+    }
+    if (kind == MENU_KIND_ONLINE && !sViaTagBattle && selection >= 0 &&
         selection < (int) ARRAY_SIZE(online_labels))
     {
         return online_labels[selection];
@@ -51,7 +72,12 @@ const char* mnOnline_Description(MenuKind kind, int selection)
     if (kind == MENU_KIND_VS && selection == SEL_VS_TAG_BATTLE) {
         return "MeleeVS - 2v2 Tag Fighter Mode";
     }
-    if (kind == MENU_KIND_ONLINE && selection >= 0 &&
+    if (kind == MENU_KIND_ONLINE && sViaTagBattle && selection >= 0 &&
+        selection < (int) ARRAY_SIZE(tag_battle_descriptions))
+    {
+        return tag_battle_descriptions[selection];
+    }
+    if (kind == MENU_KIND_ONLINE && !sViaTagBattle && selection >= 0 &&
         selection < (int) ARRAY_SIZE(online_descriptions))
     {
         return online_descriptions[selection];
@@ -64,6 +90,11 @@ const char* mnOnline_TakeNotice(void)
     const char* s = notice;
     notice = NULL;
     return s;
+}
+
+void mnOnline_SetEnteredFromTagBattle(bool value)
+{
+    sViaTagBattle = value;
 }
 
 static void enterOnline(OnlineKind kind)
@@ -79,33 +110,66 @@ static void enterOnline(OnlineKind kind)
 void mnOnline_Think(HSD_GObj* gp)
 {
     u32 buttons = mn_80229624(4);
-    int count = ARRAY_SIZE(online_labels);
+    int count = sViaTagBattle ? (int) ARRAY_SIZE(tag_battle_labels) : (int) ARRAY_SIZE(online_labels);
 
     mn_804A04F0.buttons = buttons;
     if (buttons & MenuInput_Confirm) {
-        switch (mn_804A04F0.hovered_selection) {
-        case SEL_ONLINE_LAN:
-            enterOnline(ONLINE_KIND_LAN);
-            break;
-        case SEL_ONLINE_DIRECT:
-            enterOnline(ONLINE_KIND_DIRECT);
-            break;
-        case SEL_ONLINE_UNRANKED:
-            enterOnline(ONLINE_KIND_UNRANKED);
-            break;
-        case SEL_ONLINE_RANKED:
-            enterOnline(ONLINE_KIND_RANKED);
-            break;
-        case SEL_ONLINE_PROFILE:
-            enterOnline(ONLINE_KIND_PROFILE);
-            break;
-        default:
-            break;
+        if (sViaTagBattle) {
+            switch (mn_804A04F0.hovered_selection) {
+            case SEL_TAG_LOCAL: {
+                MenuExitData* data;
+                sfxForward();
+                TagAssist_EnterForcedOn();
+                data = gm_GetCurrentSceneExitData();
+                data->pending_mode = GM_VS;
+                gm_801A4B60();
+                break;
+            }
+            case SEL_TAG_LAN:
+                TagAssist_EnterForcedOn();
+                enterOnline(ONLINE_KIND_LAN);
+                break;
+            case SEL_TAG_DIRECT:
+                TagAssist_EnterForcedOn();
+                enterOnline(ONLINE_KIND_DIRECT);
+                break;
+            case SEL_TAG_UNRANKED:
+                TagAssist_EnterForcedOn();
+                enterOnline(ONLINE_KIND_UNRANKED);
+                break;
+            default:
+                break;
+            }
+        } else {
+            switch (mn_804A04F0.hovered_selection) {
+            case SEL_ONLINE_LAN:
+                enterOnline(ONLINE_KIND_LAN);
+                break;
+            case SEL_ONLINE_DIRECT:
+                enterOnline(ONLINE_KIND_DIRECT);
+                break;
+            case SEL_ONLINE_UNRANKED:
+                enterOnline(ONLINE_KIND_UNRANKED);
+                break;
+            case SEL_ONLINE_RANKED:
+                enterOnline(ONLINE_KIND_RANKED);
+                break;
+            case SEL_ONLINE_PROFILE:
+                enterOnline(ONLINE_KIND_PROFILE);
+                break;
+            default:
+                break;
+            }
         }
     } else if (buttons & MenuInput_Back) {
         sfxBack();
         mn_804A04F0.entering_menu = 0;
-        mn_80229894(MENU_KIND_VS, SEL_VS_ONLINE, 3);
+        if (sViaTagBattle) {
+            sViaTagBattle = false;
+            mn_80229894(MENU_KIND_VS, SEL_VS_TAG_BATTLE, 3);
+        } else {
+            mn_80229894(MENU_KIND_VS, SEL_VS_ONLINE, 3);
+        }
     } else if (buttons & MenuInput_Up) {
         sfxMove();
         mn_804A04F0.hovered_selection =
