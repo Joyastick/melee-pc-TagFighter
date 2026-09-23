@@ -214,12 +214,16 @@ u32 TagAssist_ExtraBindMask(u8 controller_slot)
     // right. Online, capture_local_sample() (net.c) always reads the local
     // human's real controller from physical port 0 regardless of which
     // net-session port (0 or 1) matchmaking assigned this peer -- so the
-    // LOCAL net port's bind is always this machine's own pc_get_tag_bind(0),
-    // never pc_get_tag_bind(controller_slot) when controller_slot happens to
-    // be 1. The REMOTE net port's bind is that peer's own physical-port-0
-    // choice, exchanged over the wire (RULES/READY) -- never a local read.
+    // LOCAL net port's bind is always this machine's own
+    // pc_net_local_tag_bind() (pinned at handshake time, NOT a live
+    // pc_get_tag_bind(0) read -- changing the F1 menu setting mid-session
+    // used to take effect on this machine at once while the peer kept using
+    // whatever it cached for this port at handshake time, a real desync the
+    // instant a button satisfied one mask but not the other). The REMOTE net
+    // port's bind is that peer's own pinned choice, exchanged over the wire
+    // (RULES/READY).
     if (pc_net_active() && controller_slot < 2) {
-        bind = (controller_slot == (u8) pc_net_local_player()) ? pc_get_tag_bind(0) :
+        bind = (controller_slot == (u8) pc_net_local_player()) ? pc_net_local_tag_bind() :
                                                                    pc_net_remote_tag_bind();
     } else {
         bind = pc_get_tag_bind(controller_slot);

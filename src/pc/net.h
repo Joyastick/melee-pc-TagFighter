@@ -81,6 +81,16 @@ bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
  * handshake completes or when netplay is inactive. */
 int pc_net_remote_tag_bind(void);
 
+/* This machine's own MeleeVS: Tag Bind index, pinned at the moment it went
+ * on the wire (Rules.tag_bind if we're the host, Ready.tag_bind if we're
+ * the guest) rather than read live - see TagAssist_ExtraBindMask's caller
+ * in tag_assist.c for why a live pc_get_tag_bind(0) read during an active
+ * session is a desync risk (changing it mid-session takes effect on this
+ * machine at once, while the peer keeps simulating this port with whatever
+ * it cached at handshake time). Falls back to a live read before a session
+ * exists. */
+int pc_net_local_tag_bind(void);
+
 /* Called once per simulation tick before the pad queue head is consumed.
  * Replaces the head sample's four ports with the synced inputs for this
  * frame, predicting the remote one when it has not arrived (stalling only

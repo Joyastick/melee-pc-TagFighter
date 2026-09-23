@@ -19,6 +19,7 @@
 #include <melee/lb/types.h>
 #include <melee/mn/inlines.h>
 #include <melee/mn/types.h>
+#include <melee/mod/tag_assist.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/random.h>
 #ifdef TARGET_PC
@@ -290,6 +291,14 @@ void onExitVs(GameModeState* state)
 {
 #ifdef TARGET_PC
     if (pc_net_peer_status() != PC_NET_PEER_OK) {
+        // Tag Fighter: same cleanup as the normal-end path below, needed
+        // here too -- a mid-match disconnect skips straight to state_lobby
+        // and never reaches it otherwise, leaving a human+CPU control-role
+        // swap and stale point/assist GObj pointers in place exactly like
+        // gmvsmode.c's onExitVs already guards against for the offline/
+        // LAN-clean-end paths (see its own comments for both hazards).
+        TagAssist_RevertControlRolesForMatchEnd();
+        TagAssist_OnReset();
         if (rankedMode()) {
             pc_rank_session_abort("peer disconnected");
         }
@@ -299,6 +308,18 @@ void onExitVs(GameModeState* state)
 #endif
     MatchExitInfo* mei;
     ssize_t i;
+
+    // Tag Fighter: this GM_ONLINE state table has its own onExitVs, separate
+    // from gmvsmode.c's -- online Tag Battle matches never went through that
+    // one, so they never got this cleanup, and TagAssist_Tick's unconditional
+    // per-frame TagAssist_CheckPointElimination call (docs comment on
+    // TagAssist_Tick) then dereferenced a stale/NULL team->point on the very
+    // next tick after the RESULTS scene entered. Confirmed root cause of a
+    // 100%-reproducible crash right after a real online Tag Battle match
+    // ended naturally (crash log: fault in TagAssist_Tick, called from the
+    // ordinary per-frame loop, one tick after "scene 2 -> 5"; rollbacks 0
+    // the whole match ruled out a rollback-resimulation cause).
+    TagAssist_RevertControlRolesForMatchEnd();
 
     gmVsMelee_ExitVs(state, state_results, state_sudden_death);
     mei = gm_GetGameModeStateExitData(state);
@@ -322,6 +343,14 @@ void onExitVs(GameModeState* state)
     }
 #endif
     for (i = 0; i < GM_MAX_PLAYERS; i++) {
+        // Tag Fighter: same patch gmvsmode.c's onExitVs applies -- a tag
+        // mid-match leaves this snapshot pointing at whichever port ended up
+        // playing point, not the port CSS originally assigned, so stats
+        // below would attribute to the wrong slot without this.
+        Gm_PKind original_pkind = TagAssist_GetOriginalPkindForMatchEnd((int) i);
+        if (original_pkind != Gm_PKind_NA) {
+            mei->match_end.player_standings[i].pkind = original_pkind;
+        }
         if (mei->match_end.player_standings[i].pkind != Gm_PKind_NA) {
             gm_80162A98(mei->match_end.player_standings[i].x20);
             gm_RecordSelfDestructs(
@@ -329,6 +358,7 @@ void onExitVs(GameModeState* state)
             gm_80162A4C(mei->match_end.player_standings[i].x44);
         }
     }
+    TagAssist_OnReset();
 }
 
 void onEnterSuddenDeath(GameModeState* state)

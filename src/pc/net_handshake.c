@@ -129,6 +129,18 @@ static uint64_t s_nonce_local;   /* ours this session; 0: not drawn yet */
 static uint32_t s_nonce_session; /* net.session s_nonce_local was drawn for */
 static uint64_t s_nonce_peer;    /* theirs, from RULES (guest) or READY (host) */
 static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_net_remote_tag_bind */
+/* This machine's own MeleeVS: Tag Bind, pinned at the moment it went on the
+ * wire (RULES.tag_bind for the host, Ready.tag_bind for the guest) - see
+ * pc_net_local_tag_bind. Without this, TagAssist_ExtraBindMask's local
+ * branch read pc_get_tag_bind(0) live: changing the F1 menu's Tag Bind
+ * setting mid-session took effect on THIS machine immediately, while the
+ * peer kept simulating this same port with whatever s_remote_tag_bind it
+ * cached at handshake time - the instant the two masks disagreed on the
+ * next button press, TagAssist_TryTag/TryCallAssist fired on only one side.
+ * Confirmed root cause of a real mid-session DESYNC (two machines' state
+ * logs showed different fighters transitioning to different action states
+ * on the exact same synced frame, right after a live Tag Bind change). */
+static uint8_t s_local_tag_bind;
 static bool s_unlock_saved;      /* s_unlock_orig holds what the player had */
 static uint64_t s_unlock_orig;
 /* One log line per refusal class per session (the log-line rule): a peer, or
@@ -342,6 +354,7 @@ void rules_restore(void) {
      * budget for each refusal class. */
     s_nonce_local = s_nonce_peer = 0;
     s_remote_tag_bind = 0;
+    s_local_tag_bind = 0;
     s_hs_tx.len = 0;
     s_hs_logged = 0;
     s_direct_idle_ns = 0;
@@ -360,13 +373,28 @@ int pc_net_remote_tag_bind(void) {
     return s_rules_on ? s_remote_tag_bind : 0;
 }
 
+/* This machine's own MeleeVS: Tag Bind, pinned for the session - see
+ * s_local_tag_bind's own comment for why a live pc_get_tag_bind(0) read is
+ * not safe to use in its place while a session is active. Falls back to a
+ * live read before a session exists (s_local_tag_bind is only ever pinned
+ * once RULES/READY actually go on the wire), matching what a live read
+ * would have returned anyway with nothing to disagree with yet. */
+int pc_net_local_tag_bind(void) {
+    return s_rules_on ? s_local_tag_bind : pc_get_tag_bind(0);
+}
+
 /* The value ranges a RULES set has to be inside. Split out because
  * rules_ready() below asks the same question about our own copies: the game
  * zeroes them at boot and fills them in during it, and a zeroed set fails
  * these exactly as a corrupt one does. */
 static const char* rules_values_invalid(const Rules* ru) {
+    /* item_freq is u8 "x21 - 1" (mnItemSw_CommitItems, mnitemsw.c): the UI's
+     * first entry (x21 == 0, "Off") underflows to 0xFF, not 0 - a completely
+     * ordinary Items: Off rules choice, not a corrupt or forged field. 0-4
+     * cover Very Low..Very High. */
     if (ru->game.mode > 3 || ru->game.time_limit > 99 || ru->game.stock_count > 99 ||
-        ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 || ru->item_freq > 5 ||
+        ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 ||
+        (ru->item_freq > 4 && ru->item_freq != 0xFF) ||
         ru->stage_mask == 0 || ru->game_mode > GAME_MODE_TAG_BATTLE ||
         ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
     {
@@ -488,7 +516,8 @@ static void on_rules(const uint8_t* payload, int len) {
         unlock_restore();
         return;
     }
-    Ready rd = {nonce_local(), ru.nonce, unlock_mine, (uint8_t) pc_get_tag_bind(0), 0};
+    s_local_tag_bind = (uint8_t) pc_get_tag_bind(0);
+    Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, 0};
     if (rd.nonce == 0) {
         hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
         unlock_restore();
@@ -621,6 +650,7 @@ bool pc_net_host_match(uint32_t seed, int32_t* start_frame) {
         ru.start_frame = net.start_frame;
         ru.nonce = s_nonce_local;
         rules_capture(&ru);
+        s_local_tag_bind = ru.tag_bind;
         unlock_force();
         ru.unlock_hash = unlock_hash_now();
         ru.hash = rules_hash(ru, net.session);
