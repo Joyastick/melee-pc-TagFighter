@@ -9,7 +9,9 @@
 #include <melee/ef/eflib.h>
 #include <melee/ef/types.h>
 #include <melee/gm/gm_1601.h>
+#include <melee/gm/gmmain_lib.h>
 #include <melee/gm/gmvs.h>
+#include <melee/mn/forward.h>
 #include <melee/lb/lbaudio_ax.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftanim.h>
@@ -2211,6 +2213,32 @@ void TagAssist_EnterForcedOn(void)
 {
     sTagBattleOn = true;
     sAutoPopulatePending = true;
+}
+
+/// MeleeVS's own baseline ruleset (Stock, 3 lives, Items off, 8-minute
+/// stock timer), applied fresh every time a player actually chooses to
+/// enter MeleeVS from its menu (mnonline.c's SEL_TAG_LOCAL/LAN/DIRECT/
+/// UNRANKED, right alongside TagAssist_EnterForcedOn) rather than
+/// whatever GameRules/GamePrefs happened to be left over from a prior
+/// plain VS session. Deliberately NOT folded into TagAssist_EnterForcedOn
+/// itself: that function also runs from net_handshake.c's rules_apply
+/// (the guest adopting the host's game_mode) and gmvsmode.c's
+/// MELEE_DEBUG_VS=tag shortcut, neither of which wants a fresh reset --
+/// the guest is about to have the host's actual rules written over these
+/// anyway, and the debug shortcut sets its own rules explicitly.
+/// Online, only the host's side of this matters for what a match actually
+/// runs with: whichever peer wins the LAN host election (or is Direct/
+/// Unranked's host) had already applied this locally before the election
+/// happened (every one of mnonline.c's online cases runs it), so RULES
+/// captures it and the guest adopts it via rules_apply regardless of
+/// what the guest's own local copy said.
+void TagAssist_ApplyDefaultRules(void)
+{
+    GameRules* rules = gmMainLib_GetGameRules();
+    rules->mode = Mode_Stock;
+    rules->stock_count = 3;
+    rules->stock_time_limit = 8; /* minutes; gm_1601.c/gmtoulib.c *60 for the real timer */
+    gmMainLib_GetGamePrefs()->item_freq = 0xFF; /* Off - see mnItemSw_CommitItems's x21-1 */
 }
 
 void TagAssist_LeaveTagBattle(void)

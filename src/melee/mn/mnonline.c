@@ -120,6 +120,7 @@ void mnOnline_Think(HSD_GObj* gp)
                 MenuExitData* data;
                 sfxForward();
                 TagAssist_EnterForcedOn();
+                TagAssist_ApplyDefaultRules();
                 data = gm_GetCurrentSceneExitData();
                 data->pending_mode = GM_VS;
                 gm_801A4B60();
@@ -127,14 +128,17 @@ void mnOnline_Think(HSD_GObj* gp)
             }
             case SEL_TAG_LAN:
                 TagAssist_EnterForcedOn();
+                TagAssist_ApplyDefaultRules();
                 enterOnline(ONLINE_KIND_LAN);
                 break;
             case SEL_TAG_DIRECT:
                 TagAssist_EnterForcedOn();
+                TagAssist_ApplyDefaultRules();
                 enterOnline(ONLINE_KIND_DIRECT);
                 break;
             case SEL_TAG_UNRANKED:
                 TagAssist_EnterForcedOn();
+                TagAssist_ApplyDefaultRules();
                 enterOnline(ONLINE_KIND_UNRANKED);
                 break;
             default:

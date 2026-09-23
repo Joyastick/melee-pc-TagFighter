@@ -58,6 +58,13 @@ u32 TagAssist_ExtraBindMask(u8 controller_slot);
 /// usual press-Start-per-door setup.
 void TagAssist_EnterForcedOn(void);
 
+/// MeleeVS's baseline ruleset (Stock, 3 lives, Items off, 8-minute stock
+/// timer) - call alongside TagAssist_EnterForcedOn from an actual menu
+/// entry point (not from rules_apply's peer-adopting-host-rules call, and
+/// not from a debug shortcut that sets its own rules), see its own
+/// comment for why.
+void TagAssist_ApplyDefaultRules(void);
+
 /// Turns Tag Battle back off. Call once at CSS entry for every path that
 /// ISN'T the main menu's "TAG BATTLE" entry, so a stale on-flag from an
 /// earlier match doesn't leak into a plain VS Mode CSS visit -- CSS itself
