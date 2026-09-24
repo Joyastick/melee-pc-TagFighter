@@ -37,6 +37,8 @@ int main(void) {
         "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
     topic(PC_DHT_DIRECT, "FOX#ABCD", 0, 42, "meleepc/v1/direct/FOX#ABCD");
     topic(PC_DHT_UNRANKED, NULL, 0, 123456, "meleepc/v1/unranked/123456");
+    topic(PC_DHT_UNRANKED, "", 0, 123456, "meleepc/v1/unranked/123456");
+    topic(PC_DHT_UNRANKED, "tag", 0, 123456, "meleepc/v1/unranked/tag/123456");
     topic(PC_DHT_RANKED, NULL, 10, 123456, "meleepc/v1/ranked/10/123456");
     unsigned char out[20];
     assert(!pc_dht_topic(PC_DHT_DIRECT, NULL, 0, 0, out));
@@ -63,8 +65,17 @@ int main(void) {
     pc_dht_stop();
     assert(fcntl(owned, F_GETFD) >= 0);
     close(owned);
-    assert(pc_dht_start(PC_DHT_UNRANKED, NULL, 0, 0));
+    /* A warm node is reused by start and survives idle; only stop closes it. */
+    assert(pc_dht_warm(0));
     owned = pc_dht_socket();
+    uint16_t warm_port = pc_dht_port();
+    assert(owned >= 0 && warm_port);
+    assert(pc_dht_start(PC_DHT_UNRANKED, "tag", 0, 0));
+    assert(pc_dht_socket() == owned && pc_dht_port() == warm_port);
+    pc_dht_idle();
+    assert(pc_dht_socket() == owned);
+    assert(pc_dht_start(PC_DHT_DIRECT, "FOX#ABCD", 0, warm_port));
+    assert(pc_dht_socket() == owned);
     pc_dht_stop();
     assert(fcntl(owned, F_GETFD) == -1);
 #endif
