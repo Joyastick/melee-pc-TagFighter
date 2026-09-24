@@ -126,6 +126,13 @@ bool pc_dht_warm(uint16_t p) {
     (void)p;
     return dht_fd >= 0;
 }
+bool pc_dht_is_own_port(uint16_t p) {
+    (void)p;
+    return false;
+}
+void pc_dht_keep_item_on_start(bool keep) {
+    (void)keep;
+}
 void pc_dht_idle(void) {
     pc_dht_item_cancel();
     dht_cb = NULL;

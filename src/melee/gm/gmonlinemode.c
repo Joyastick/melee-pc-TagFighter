@@ -638,8 +638,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             snprintf(view.message, sizeof view.message, "%s", profile_message);
         } else if (direct_editing) {
             u64 repeat = gm_801A36C0(PAD_MAX_CONTROLLERS);
-            /* Bootstrap while the code is being typed, not after START. */
-            pc_net_match_warm();
+            /* Bootstrap while the code is being typed, not after START, and
+             * start publishing our direct record. */
+            pc_net_match_prepublish();
             bool edited = false;
             if (repeat & PAD_ANY_LEFT) {
                 direct_cursor = (direct_cursor + DIRECT_CODE_SLOTS - 1) % DIRECT_CODE_SLOTS;
