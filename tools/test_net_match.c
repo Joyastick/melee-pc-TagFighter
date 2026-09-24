@@ -405,6 +405,19 @@ int main(int argc, char** argv) {
     assert(key_code_matches(h.public_key, h.code));
     assert(signed_ok(h.public_key, h.signature, &h, sizeof h));
 
+    /* Relay defence: the Hello only counts from an address its sender signed. */
+    h.from_public = htonl(0x0A0B0C0Du);
+    h.from_lan = htonl(0xC0A80105u);
+    assert(hello_source_ok(&h, htonl(0x0A0B0C0Du)));  /* its public IP */
+    assert(hello_source_ok(&h, htonl(0xC0A80105u)));  /* its LAN IP */
+    assert(!hello_source_ok(&h, htonl(0x1FD9B0CBu))); /* a relay */
+    h.from_public = 0;
+    assert(hello_source_ok(&h, htonl(0x7F000001u)));  /* unknown yet: loopback ok */
+    assert(!hello_source_ok(&h, htonl(0x1FD9B0CBu))); /* unknown yet: internet not */
+    h.from_public = 0;
+    h.from_lan = 0;
+    sign_packet(&h, sizeof h);
+
     h.mode = PC_MATCH_DIRECT; /* mode is inside the authenticated transcript */
     assert(!signed_ok(h.public_key, h.signature, &h, sizeof h));
     h.mode = PC_MATCH_UNRANKED;

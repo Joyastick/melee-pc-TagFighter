@@ -38,7 +38,7 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #endif
 
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
-#define MATCH_VERSION 3         /* v3: hello.code grew 14 -> 18 (40-bit key suffix) */
+#define MATCH_VERSION 4         /* v4: hello signs its sender's own public and LAN address */
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
@@ -67,6 +67,10 @@ typedef struct MatchHello {
     uint64_t nonce;
     uint8_t public_key[32], compatibility[20], topic[20];
     char code[18];
+    /* Where this Hello may come from (network order, 0 = not known yet):
+     * the sender's NAT-observed public IP and its LAN IP. Signed, so a
+     * relay that forwards the Hello cannot swap in its own address. */
+    uint32_t from_public, from_lan;
     uint8_t signature[64];
 } MatchHello;
 typedef struct MatchOffer {
@@ -582,6 +586,36 @@ static bool after_handoff(const void* data, size_t n, uint32_t address, uint16_t
     }
     return false;
 }
+static bool private_ip(uint32_t address) {
+    uint32_t ip = ntohl(address);
+    return (ip >> 24) == 10 || (ip >> 24) == 127 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 ||
+           (ip >> 16) == 0xA9FE || (ip >> 22) == (0x64400000u >> 22);
+}
+/* Relay defence: a Hello is only good from an address its sender signed.
+ * IP only, not port: a NAT with per-destination port mapping shows each
+ * peer a different port than the one the DHT nodes saw. A sender that does
+ * not know its public IP yet is only believed from a private address (same
+ * LAN); its retries carry the IP once the DHT's NAT consensus has it. */
+static bool hello_source_ok(const MatchHello* h, uint32_t source) {
+    if (h->from_public && source == h->from_public)
+        return true;
+    if (h->from_lan && source == h->from_lan)
+        return true;
+    return !h->from_public && private_ip(source);
+}
+/* Fill in (and re-sign for) our own addresses once they are known. */
+static void hello_refresh_from(void) {
+    static uint32_t lan;
+    struct pc_dht_endpoint self;
+    uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : 0;
+    if (!lan)
+        lan = lan_address();
+    if (pub == hello.from_public && lan == hello.from_lan)
+        return;
+    hello.from_public = pub;
+    hello.from_lan = lan;
+    sign_packet(&hello, sizeof hello);
+}
 static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused) {
     (void)unused;
     if (n == sizeof(MatchHello)) {
@@ -600,6 +634,18 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         if (memcmp(h->compatibility, compatibility, 20)) {
             if (!failure)
                 fail("Peer is on a different build, disc or game mode");
+            return;
+        }
+        if (!hello_source_ok(h, ep->address)) {
+            static uint32_t logged;
+            if (logged != ep->address) {
+                uint32_t sip = ntohl(ep->address), cip = ntohl(h->from_public);
+                logged = ep->address;
+                pc_log_line("match: dropped %s's Hello relayed via %u.%u.%u.%u (it signed "
+                            "%u.%u.%u.%u)",
+                    h->code, sip >> 24, (sip >> 16) & 0xFF, (sip >> 8) & 0xFF, sip & 0xFF,
+                    cip >> 24, (cip >> 16) & 0xFF, (cip >> 8) & 0xFF, cip & 0xFF);
+            }
             return;
         }
         bool fresh = !have_peer;
@@ -776,6 +822,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     memcpy(hello.topic, topic, 20);
     memcpy(hello.code, identity.code, sizeof hello.code);
     sign_packet(&hello, sizeof hello);
+    hello_refresh_from();
     pc_dht_set_datagram_callback(receive, NULL);
     state = PC_MATCH_SEARCH;
     deadline = 0;
@@ -807,6 +854,7 @@ void pc_net_match_poll(void) {
             }
         }
         direct_poll(now);
+        hello_refresh_from();
         struct pc_dht_endpoint ep;
         while (pc_dht_next_candidate(&ep)) {
             /* Paired already: a Hello now would lock that player onto us while
