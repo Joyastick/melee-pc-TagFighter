@@ -312,6 +312,8 @@ static void sign_packet(void* p, size_t n) {
     pc_identity_sign(&identity, (uint8_t*)p + n - 64, p, n - 64);
 }
 static void fail(const char* why) {
+    pc_log_line("match: fail '%s' (state was %d, net active %d)", why ? why : "?", (int)state,
+        (int)pc_net_active());
     state = PC_MATCH_FAIL;
     failure = why;
     /* Keep the node warm for the retry; only the search stops. */
@@ -871,6 +873,7 @@ void pc_net_match_poll(void) {
             if (!pc_net_send_reliable(0x11, NULL, 0)) {
                 state = PC_MATCH_FAIL;
                 failure = "ready barrier not sent";
+                pc_log_line("match: ready barrier not sent");
             } else
                 barrier_sent = true;
         }
@@ -904,6 +907,8 @@ void pc_net_match_poll(void) {
             } else if (pc_net_frame() > start_frame) {
                 state = PC_MATCH_FAIL;
                 failure = "late ready barrier";
+                pc_log_line(
+                    "match: late ready barrier (frame %d > start %d)", pc_net_frame(), start_frame);
             } else {
                 state = PC_MATCH_READY;
                 pc_net_set_datagram_handler(NULL);
@@ -912,12 +917,16 @@ void pc_net_match_poll(void) {
         if (pc_net_handshake_state() == 3) {
             state = PC_MATCH_FAIL;
             failure = "match handshake failed";
+            pc_log_line("match: match handshake failed");
         }
     }
 }
 /* Warm DHT between searches: after a failure the node stays open (idle) so a
  * retry skips bootstrap; it still needs polling to keep its table fresh. */
 static void reset(bool keep_node) {
+    if (pc_net_active())
+        pc_log_line("match: reset (keep node %d) drops the active session, state was %d",
+            (int)keep_node, (int)state);
     if (keep_node)
         pc_dht_idle();
     else
