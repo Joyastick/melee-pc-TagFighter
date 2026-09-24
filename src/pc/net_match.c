@@ -710,7 +710,14 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
 
 static void reset(bool keep_node);
 bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
+    /* Hosting Direct: a publish begun on the code entry screen must survive
+     * this restart (reset() and pc_dht_start() would both cancel it). */
+    bool keep_publish = m == PC_MATCH_DIRECT && !(code && *code) && direct_put_inflight;
+    pc_dht_keep_item_on_start(keep_publish);
     reset(true);
+    pc_dht_keep_item_on_start(false);
+    if (keep_publish)
+        direct_pending = direct_put_inflight = true;
     failure = NULL;
     mode = m;
     start_frame = -1;
@@ -736,10 +743,6 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     digest();
     const char* direct = target[0] ? target : identity.code;
     pairing_topic(m, direct, topic);
-    /* Hosting Direct: a publish begun on the code entry screen keeps running. */
-    bool keep_publish = m == PC_MATCH_DIRECT && !target[0] && direct_put_inflight;
-    if (!keep_publish)
-        direct_pending = direct_put_inflight = false;
     direct_get_logged = false;
     direct_next = 0;
     hello_target_count = hello_target_cursor = 0;

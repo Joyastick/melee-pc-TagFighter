@@ -576,7 +576,8 @@ void pc_dht_idle(void) {
     queue_count = 0;
     datagram = NULL;
     datagram_context = NULL;
-    pc_dht_item_cancel();
+    if (!keep_item_on_start)
+        pc_dht_item_cancel();
 }
 bool pc_dht_ready(void) {
     int good = 0, dubious = 0;
