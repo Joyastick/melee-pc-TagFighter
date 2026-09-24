@@ -17,6 +17,7 @@
 #include <dolphin/pad.h>
 #include <melee/if/if_2FD9.h>
 #include <melee/lb/lbaudio_ax.h>
+#include <melee/lb/lbdvd.h>
 #include <melee/lb/types.h>
 #include <melee/mn/inlines.h>
 #include <melee/mn/types.h>
@@ -571,6 +572,22 @@ static void matchmadeBuild(void)
         lbAudioAx_80026F2C(24);
         lbAudioAx_8002702C(8, lbAudioAx_80026EBC(start->rules.stkind));
         lbAudioAx_80027168();
+    }
+    /* And the preload cache the CSS fills every frame (fighters, costumes)
+     * and the SSS commits on exit (stage). Without it the VS scene loads
+     * against the lobby's stale cache and dies before its first frame. */
+    {
+        PreloadedGameModeState* cache;
+        lbDvd_SetupVsPreloadCache();
+        cache = lbDvd_GetPreloadCacheScene();
+        for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+            const PlayerInitData* p = &start->players[i];
+            bool used = p->slot_type == Gm_PKind_Human || p->slot_type == Gm_PKind_Cpu;
+            cache->game_cache.entries[i].char_id = used ? p->ckind : ChKind_None;
+            cache->game_cache.entries[i].color = used ? p->color : 0;
+        }
+        cache->game_cache.stkind = start->rules.stkind;
+        lbDvd_80018254();
     }
     pc_log_line("online: matchmade match on stage %d: P1 %d/%d P2 %d/%d P3 %d/%d P4 %d/%d",
                 start->rules.stkind, start->players[0].ckind, start->players[0].color,
