@@ -413,7 +413,6 @@ enum {
     RJ_NAME,
     RJ_PORT,
     RJ_NO_OURS,
-    RJ_REV,
     RJ_DISC,
     RJ_STATE,
     RJ_GEN,
@@ -434,7 +433,6 @@ static const char* const k_rj[RJ_N] = {
     "over-long name",
     "bad game port",
     "no rev/disc/state/gen",
-    "over-long rev",
     "bad disc id",
     "unknown state",
     "bad gen",
@@ -588,9 +586,6 @@ static bool parse_txt(const mdns_record_txt_t* txt, size_t n, Txt* out) {
     const unsigned our_keys = KBIT(K_REV) | KBIT(K_DISC) | KBIT(K_STATE) | KBIT(K_GEN);
     if ((seen & our_keys) != our_keys) {
         return reject(RJ_NO_OURS);
-    }
-    if (strlen(val[K_REV]) >= sizeof out->rev) {
-        return reject(RJ_REV);
     }
     if (!hex_u64(val[K_DISC], &h) || strlen(val[K_DISC]) >= sizeof out->disc) {
         return reject(RJ_DISC);
@@ -798,8 +793,8 @@ static bool prefix_ci(const char* name, const char* prefix) {
 }
 
 static bool iface_skipped(const char* name) {
-    static const char* const virt[] = {"docker", "veth", "br-", "virbr", "tun", "tap", "wg",
-        "utun", "zt", "tailscale", "radmin"};
+    static const char* const virt[] = {"docker", "veth", "br-", "virbr", "tun", "tap", "wg", "utun",
+        "zt", "zerotier", "tailscale", "radmin"};
     for (size_t i = 0; i < sizeof virt / sizeof virt[0]; i++) {
         if (prefix_ci(name, virt[i])) {
             return true;
