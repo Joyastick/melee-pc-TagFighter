@@ -231,6 +231,19 @@ void onEnterDebugVs(GameModeState* state)
         TagAssist_CssSyncPortTeam(2, 0);
         TagAssist_CssSyncPortTeam(1, 1);
     }
+    /* MELEE_DEBUG_VS_STOCKS=<n>: a stock match instead of an untimed time
+     * one, so a run can end on GAME! with stocks the replay (src/pc/slp.c)
+     * must carry. */
+    if (getenv("MELEE_DEBUG_VS_STOCKS") != NULL) {
+        int stocks = atoi(getenv("MELEE_DEBUG_VS_STOCKS"));
+        if (stocks > 0 && stocks < 100) {
+            start->rules.match_kind = MatchKind_Stock;
+            start->rules.is_stock = true;
+            for (i = 0; i < Gm_Player_NumMax; i++) {
+                start->players[i].stocks = stocks;
+            }
+        }
+    }
 #endif
 
     start->players[0].rumble_enabled = false;
