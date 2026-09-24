@@ -148,10 +148,18 @@ uint32_t ready_hash(Ready rd, uint32_t session) {
  * the next session; the nonces are. The host draws a fresh one per session
  * and the guest answers with its own, so two runs between the same peers
  * derive unrelated keys even in the (2^-32) case where the session id
- * repeats, and a recording of one session verifies under no other key. */
+ * repeats, and a recording of one session verifies under no other key.
+ *
+ * The nonces travel in the clear, though, so anyone on the path can derive
+ * that key too. A matchmade session also mixes in the secret pairing agreed
+ * over X25519 (pc_net_set_session_secret, net_match.c), which never crosses
+ * the wire: then only the two peers can stamp or check a tag. */
 static const char KEY_LABEL[] = "melee-pc netplay session key v1";
+static const char KEY_LABEL_SECRET[] = "melee-pc netplay session key v2";
 static const char KEY_LABEL_DIRECT[] = "melee-pc netplay direct key v1";
 static uint8_t s_key[32];
+static uint8_t s_secret[32];
+static bool s_secret_on;  /* s_secret holds pairing's secret for this session */
 static bool s_key_on;     /* s_key holds a key for the session in progress */
 static bool s_key_pinned; /* from MELEE_NET_KEY: the handshake must not rekey */
 
@@ -175,13 +183,27 @@ void net_key_session(uint64_t host_nonce, uint64_t guest_nonce) {
      * must feed the same bytes in the same order, and local/remote is the
      * one ordering they disagree about. */
     uint8_t m[sizeof KEY_LABEL - 1 + 20], *p = m + sizeof KEY_LABEL - 1;
-    memcpy(m, KEY_LABEL, sizeof KEY_LABEL - 1);
+    memcpy(m, s_secret_on ? KEY_LABEL_SECRET : KEY_LABEL, sizeof KEY_LABEL - 1);
     put32(p, net.session);
     put64(p + 4, host_nonce);
     put64(p + 12, guest_nonce);
-    crypto_blake2b(s_key, sizeof s_key, m, sizeof m);
+    if (s_secret_on) {
+        crypto_blake2b_keyed(s_key, sizeof s_key, s_secret, sizeof s_secret, m, sizeof m);
+    } else {
+        crypto_blake2b(s_key, sizeof s_key, m, sizeof m);
+    }
     crypto_wipe(m, sizeof m);
     s_key_on = true;
+}
+
+void pc_net_set_session_secret(const uint8_t* secret) {
+    if (secret != NULL) {
+        memcpy(s_secret, secret, sizeof s_secret);
+        s_secret_on = true;
+    } else {
+        crypto_wipe(s_secret, sizeof s_secret);
+        s_secret_on = false;
+    }
 }
 
 void net_key_direct(const char* secret) {

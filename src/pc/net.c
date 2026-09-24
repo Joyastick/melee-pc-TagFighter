@@ -1803,8 +1803,10 @@ void pc_net_disconnect(void) {
     net.hs = HS_IDLE;
     /* After the BYE burst above, which still needed the key to be accepted:
      * the nonces it was derived from are dead with the session, so the key
-     * does not outlive it in this process's memory either. */
+     * does not outlive it in this process's memory either, nor does the
+     * pairing secret it was derived under. */
     net_key_clear();
+    pc_net_set_session_secret(NULL);
     s_mac_seen = false;
     rules_restore();
     HSD_PadLibData.qtype = 0;
@@ -2091,6 +2093,7 @@ static bool connect_impl(
 }
 
 bool pc_net_connect(const char* ip, uint16_t port, int player, uint32_t seed) {
+    pc_net_set_session_secret(NULL); /* only matchmaking agrees one */
     return connect_impl(SOCK_INVALID, ip, port, player, seed);
 }
 bool pc_net_connect_socket(

@@ -60,6 +60,10 @@ void pc_net_poll(void);
  * transfers on success only; no new NAT mapping is created. */
 bool pc_net_connect_socket(
     intptr_t socket, const char* ip, uint16_t port, int player, uint32_t seed);
+/* The 32-byte secret pairing agreed for the next session (NULL clears it).
+ * Set just before pc_net_connect_socket(); the handshake's datagram key is
+ * then derived under it, and it is wiped when that session ends. */
+void pc_net_set_session_secret(const uint8_t* secret);
 /* Offered every IPv4 datagram on the session socket before the session sees
  * it; true consumes it. Runs on net.c's receive thread, and
  * pc_net_set_datagram_handler() returns only once no call into the previous
