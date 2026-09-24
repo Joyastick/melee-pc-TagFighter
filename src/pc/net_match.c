@@ -124,6 +124,7 @@ static bool publication_record;
 static uint8_t publication_wire[PC_RANK_RECORD_BYTES];
 static PcNetIdentity direct_slot;
 static PcNetIdentity dial_slot;
+static bool rematch_hint;  /* next start: Hello the last peer's endpoint at once */
 static uint64_t dial_next; /* dialer: next dial-back publish; host: next lookup */
 static bool direct_pending;
 static bool direct_put_inflight; /* direct_pending is a publish, not a lookup */
@@ -894,6 +895,11 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     dial_next = m == PC_MATCH_DIRECT && target[0] ? UINT64_MAX : 0;
     hello_target_count = hello_target_cursor = 0;
     next_target_hello = 0;
+    /* A rematch reconnects to the peer we just played: its endpoint (stable
+     * DHT port, NAT mapping still fresh) is the fastest way back to it. */
+    if (rematch_hint && peer.address && peer.port)
+        add_hello_target(peer);
+    rematch_hint = false;
     if (m == PC_MATCH_DIRECT)
         direct_slot_for(direct);
     pc_dht_keep_item_on_start(keep_publish);
@@ -1095,6 +1101,9 @@ void pc_net_match_stop(void) {
 }
 void pc_net_match_idle(void) {
     reset(true);
+}
+void pc_net_match_rematch_hint(void) {
+    rematch_hint = true;
 }
 void pc_net_match_warm(void) {
     static uint64_t next_attempt;

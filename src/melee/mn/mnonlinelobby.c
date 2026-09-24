@@ -185,6 +185,16 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
 
     for (i = 0; i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
         Line* row = &lines[line_rows + i * 4];
+        if (view->menu_count > 0) {
+            bool on = i < view->menu_count;
+            bool cur = on && i == view->menu_cursor;
+            setLine(&row[0], ""); /* the font has no ">": colour marks it */
+            setLine(&row[1], on && view->menu[i] ? view->menu[i] : "");
+            setColor(&row[1], cur ? &col_you : &col_white);
+            setLine(&row[2], "");
+            setLine(&row[3], on && view->menu_tag[i] ? view->menu_tag[i] : "");
+            continue;
+        }
         if (i < view->player_count) {
             const OnlineLobbyPlayer* p = &view->players[i];
             setLine(&row[0], p->is_local ? "YOU" : "");
@@ -225,7 +235,10 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
         setColor(&lines[line_status], error ? &col_error : &col_white);
     }
 
-    if (view->phase == LOBBY_PHASE_FOUND) {
+    if (view->hint != NULL) {
+        setLine(&lines[line_hint], view->hint);
+        setColor(&lines[line_hint], &col_dim);
+    } else if (view->phase == LOBBY_PHASE_FOUND) {
         setLine(&lines[line_hint], "START: begin    B: back");
         /* Subtle blink on the START hint while it is actionable. */
         setColor(&lines[line_hint],
