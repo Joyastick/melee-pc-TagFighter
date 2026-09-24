@@ -26,7 +26,6 @@
 #include <dolphin/os.h>
 
 #include <SDL3/SDL.h>
-
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -780,6 +779,23 @@ static void SDLCALL audio_pull(void* userdata, SDL_AudioStream* stream, int addi
     }
 }
 
+#ifdef __EMSCRIPTEN__
+void pc_audio_pump(void) {
+    static int pumping;
+    if (pumping || !s_stream)
+        return;
+    pumping = 1;
+    float frame[AX_FRAME * 2];
+    // Keep the browser consumer fed without re-entering game callbacks from JS.
+    while (SDL_GetAudioStreamQueued(s_stream) < AX_RATE * 2 * sizeof(float) / 20) {
+        render_frame(frame);
+        if (!SDL_PutAudioStreamData(s_stream, frame, sizeof(frame)))
+            break;
+    }
+    pumping = 0;
+}
+#endif
+
 /* ---- AX API ------------------------------------------------------------ */
 
 void AXInit(void) {
@@ -798,8 +814,12 @@ void AXInit(void) {
             fprintf(stderr, "audio: SDL_InitSubSystem failed: %s\n", SDL_GetError());
             return;
         }
+#ifdef __EMSCRIPTEN__
+        s_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+#else
         s_stream =
             SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_pull, NULL);
+#endif
         if (s_stream)
             SDL_SetAudioStreamGain(s_stream, s_master_volume);
         if (s_stream == NULL) {
@@ -1119,14 +1139,14 @@ void AXSetVoiceSrcRatio(AXVPB* p, float ratio) {
     audio_unlock();
 }
 
-static long axfx_longest_path(void (*cb)(void*, void*), void* ctx);
+static int32_t axfx_longest_path(void (*cb)(void*, void*), void* ctx);
 
 static void aux_register(AuxBus* bus, void (*cb)(void*, void*), void* ctx) {
     audio_lock();
     bus->cb = cb;
     bus->ctx = ctx;
     bus->quiet = 0;
-    bus->hold = cb != NULL ? (int)(axfx_longest_path(cb, ctx) / AX_FRAME) + 1 : 0;
+    bus->hold = cb != NULL ? axfx_longest_path(cb, ctx) / AX_FRAME + 1 : 0;
     audio_unlock();
 }
 
@@ -1285,7 +1305,7 @@ static void axfx_reverb_run(struct AXFX_REVHI_WORK* rv, struct AXFX_BUFFERUPDATE
     for (ch = 0; ch < AXFX_CHANNELS; ch++) {
         struct AXFX_REVHI_DELAYLINE* line[6];
         float* buf[6];
-        long pos[6], len[6];
+        int32_t pos[6], len[6];
         float lp = rv->lpLastout[ch];
 
         for (k = 0; k < 3; k++) {
@@ -1552,14 +1572,14 @@ void AXFXDelayCallback(struct AXFX_BUFFERUPDATE* b, struct AXFX_DELAY* d) {
  * long run_aux must see silence before it may conclude the effect is quiet.
  * Reverb: the longest comb, then the all-passes, which are plain delays when
  * coloration is 0. Chorus passes its input straight through. */
-static long axfx_longest_path(void (*cb)(void*, void*), void* ctx) {
-    long longest = 0;
+static int32_t axfx_longest_path(void (*cb)(void*, void*), void* ctx) {
+    int32_t longest = 0;
     int c, k;
 
     for (c = 0; c < AXFX_CHANNELS; c++) {
-        long n = kCombLen[c][2];
+        int32_t n = kCombLen[c][2];
         if ((void*)cb == (void*)AXFXDelayCallback) {
-            n = (long)((struct AXFX_DELAY*)ctx)->currentSize[c];
+            n = (int32_t)((struct AXFX_DELAY*)ctx)->currentSize[c];
         } else {
             for (k = 0; k < 3; k++) {
                 n += kAllPassLen[c][k];
