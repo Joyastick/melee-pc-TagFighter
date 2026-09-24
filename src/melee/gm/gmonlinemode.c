@@ -1292,6 +1292,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                          state == PC_MATCH_CONNECT ? LOBBY_PHASE_CONNECTING : LOBBY_PHASE_SEARCHING;
             if (reason != PC_NET_PEER_OK && reason < (int) ARRAY_SIZE(peer_word)) {
                 snprintf(view.message, sizeof view.message, "%s - START: search", peer_word[reason]);
+            } else if (rematch_direct && state == PC_MATCH_SEARCH) {
+                /* The same opponent is coming back, perhaps via TEAM SELECT. */
+                snprintf(view.message, sizeof view.message, "Waiting for opponent...");
             } else {
                 snprintf(view.message, sizeof view.message, "%s", why ? why : "Searching for an opponent...");
             }
