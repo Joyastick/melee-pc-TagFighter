@@ -16,6 +16,7 @@
 #include "types.h"
 #include <dolphin/pad.h>
 #include <melee/if/if_2FD9.h>
+#include <melee/lb/lbaudio_ax.h>
 #include <melee/lb/types.h>
 #include <melee/mn/inlines.h>
 #include <melee/mn/types.h>
@@ -448,6 +449,132 @@ static bool internetLobby(void) {
            !(online_kind == ONLINE_KIND_DIRECT && getenv("MELEE_LAN_DIRECT"));
 }
 
+/* MeleeVS Matchmaking (online_kind UNRANKED with Tag Battle on) skips the
+ * online CSS and SSS: each machine brings a team fixed before searching,
+ * and the match starts straight from the two teams on a random legal stage.
+ * Direct Connect and LAN keep the regular MeleeVS CSS and stage select.
+ * ponytail: the team comes from the last offline MeleeVS CSS (the VS mode's
+ * saved picks: port 1 and its teammate) until the pre-queue team select
+ * screen exists; the handshake falls back to Fox/Falco for a missing pick. */
+static bool matchmadeMode(void)
+{
+    return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn();
+}
+
+static PcNetTeam matchmadeLocalTeam(void)
+{
+    const PlayerInitData* p = gmVsMelee_GetVsData()->start.players;
+    PcNetTeam team;
+    int mate = -1;
+    memset(&team, 0, sizeof team);
+    for (int i = 1; i < 4; i++) {
+        if (p[i].slot_type != Gm_PKind_NA && p[i].team == p[0].team) {
+            mate = i;
+            break;
+        }
+    }
+    team.fighter[0].ckind = p[0].ckind;
+    team.fighter[0].color = p[0].color;
+    team.fighter[1].ckind = mate >= 0 ? p[mate].ckind : -1;
+    team.fighter[1].color = mate >= 0 ? p[mate].color : 0;
+    team.fighter[1].cpu_level = mate >= 0 ? p[mate].cpu_level : 9;
+    team.point = mate >= 0 && TagAssist_IsPortPoint(mate) ? 1 : 0;
+    return team;
+}
+
+/* Every search starts here, so the netcode always knows whether this side
+ * is joining a Matchmaking game (and with which team) before it connects. */
+static void startMatch(enum PcNetMatchMode mode, const char* code)
+{
+    if (mode == PC_MATCH_UNRANKED && matchmadeMode()) {
+        PcNetTeam team = matchmadeLocalTeam();
+        pc_net_set_matchmade(true, &team);
+    } else {
+        pc_net_set_matchmade(false, NULL);
+    }
+    pc_net_match_start(mode, code);
+}
+
+/* Internal stage ids of the Melee competitive legal stages, the same list
+ * Ranked strikes from (net_rank_session.c): Fountain of Dreams, Pokemon
+ * Stadium, Yoshi's Story, Dream Land, Battlefield, Final Destination. */
+static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
+
+/* Exact same character and costume as an earlier port in `order`. */
+static bool matchmadeClash(const PlayerInitData* p, const int* order, int upto)
+{
+    for (int j = 0; j < upto; j++) {
+        const PlayerInitData* q = &p[order[j]];
+        if (q->ckind == p[order[upto]].ckind && q->color == p[order[upto]].color) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Build the whole match from the two handshake teams, identically on both
+ * machines: ports by pc_net_game_port (player 0, the host, on 1+2 in red;
+ * player 1 on 3+4 in blue), point from each team's choice, a costume clash
+ * resolved in the host's favor, and a stage picked from the shared seed. */
+static void matchmadeBuild(void)
+{
+    StartMeleeData* start = &online_vs.start;
+    int order[4];
+    int n = 0;
+    start->rules.is_teams = 1;
+    for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+        start->players[i].slot_type = Gm_PKind_NA;
+    }
+    for (int m = 0; m < 2; m++) {
+        const PcNetTeam* team = pc_net_team(m);
+        for (int slot = 0; slot < 2; slot++) {
+            const PcNetTeamFighter* f = &team->fighter[slot];
+            int port = pc_net_game_port(m, slot);
+            PlayerInitData* p = &start->players[port];
+            p->ckind = f->ckind;
+            p->color = f->color;
+            p->slot_type = f->human ? Gm_PKind_Human : Gm_PKind_Cpu;
+            if (!f->human) {
+                p->cpu_level = f->cpu_level;
+            }
+            p->team = (u8) m;
+            TagAssist_CssSyncPortTeam(port, (u8) m);
+            order[n++] = port;
+        }
+        TagAssist_SetExplicitPoint((u8) m, pc_net_game_port(m, team->point));
+    }
+    /* Host's fighters first, so only the guest's ever move. */
+    for (int k = 1; k < 4; k++) {
+        PlayerInitData* p = &start->players[order[k]];
+        int costumes = gm_GetNumCostumesForCKind((u8) p->ckind);
+        for (int tries = 0; tries < costumes && matchmadeClash(start->players, order, k); tries++) {
+            p->color = (u8) ((p->color + 1) % costumes);
+        }
+    }
+    {
+        u32 h = pc_net_match_seed() * 2654435761u;
+        start->rules.stkind = matchmade_stages[(h >> 16) % ARRAY_SIZE(matchmade_stages)];
+    }
+    /* What gmVsMelee_ExitCss / ExitSss would have queued: the fighters'
+     * and the stage's sound banks. */
+    {
+        u64 mask = 0;
+        for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+            mask |= lbAudioAx_80026E84(start->players[i].ckind);
+        }
+        lbAudioAx_80026F2C(20);
+        lbAudioAx_8002702C(4, mask);
+        lbAudioAx_80027168();
+        lbAudioAx_80026F2C(24);
+        lbAudioAx_8002702C(8, lbAudioAx_80026EBC(start->rules.stkind));
+        lbAudioAx_80027168();
+    }
+    pc_log_line("online: matchmade match on stage %d: P1 %d/%d P2 %d/%d P3 %d/%d P4 %d/%d",
+                start->rules.stkind, start->players[0].ckind, start->players[0].color,
+                start->players[1].ckind, start->players[1].color, start->players[2].ckind,
+                start->players[2].color, start->players[3].ckind, start->players[3].color);
+}
+
 /* Direct Connect code entry. The friend's code is the one piece of online
  * state the player has to type, and the F1 field is only editable before the
  * lobby consumes it, so the lobby edits it in place: stick or D-pad
@@ -517,11 +644,12 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
                (online_kind != ONLINE_KIND_RANKED ||
                                   pc_net_match_publication(NULL) == 0)) {
         if (pc_net_peer_status() == PC_NET_PEER_OK) {
-            pc_net_match_start(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
+            startMatch(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
                                PC_MATCH_RANKED, NULL);
         }
     } else if (!internetLobby()) {
         pc_net_match_stop(); /* free the port the online menu's DHT node holds */
+        pc_net_set_matchmade(false, NULL); /* LAN keeps the regular MeleeVS CSS */
         pc_lan_start();
     }
 #endif
@@ -716,7 +844,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     pc_log_line("lobby: direct connect %s '%s'",
                                 direct_entry[0] ? "dialing" : "hosting as",
                                 direct_entry[0] ? direct_entry : pc_net_match_local_code());
-                    pc_net_match_start(PC_MATCH_DIRECT,
+                    startMatch(PC_MATCH_DIRECT,
                                        direct_entry[0] ? direct_entry : NULL);
                 }
             }
@@ -735,7 +863,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                          why ? why : "Set could not be rated");
             if (result == PC_RANK_SESSION_FAILED && (input & HSD_PAD_START)) {
                 awaiting_rank_result = false;
-                pc_net_match_start(PC_MATCH_RANKED, NULL);
+                startMatch(PC_MATCH_RANKED, NULL);
             }
         } else if (online_kind == ONLINE_KIND_RANKED && pc_net_match_publication(NULL) != 0) {
             pc_net_match_poll_publication();
@@ -750,7 +878,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 if (publication < 0) pc_net_match_publish_rank();
                 else {
                     awaiting_rank_result = false;
-                    pc_net_match_start(PC_MATCH_RANKED, NULL);
+                    startMatch(PC_MATCH_RANKED, NULL);
                 }
             }
         } else {
@@ -773,7 +901,16 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
                 *HSD_RandSeedPtr = pc_net_match_seed();
-                pc_log_line("lobby: entering CSS at frame %d, seed %u", pc_net_frame(), pc_net_match_seed());
+                if (pc_net_matchmade()) {
+                    /* Matchmaking: no CSS/SSS, straight into the match. */
+                    matchmadeBuild();
+                    gm_SetNextGameModeStateId(state_vs);
+                    pc_log_line("lobby: entering matchmade VS at frame %d, seed %u", pc_net_frame(),
+                                pc_net_match_seed());
+                } else {
+                    pc_log_line("lobby: entering CSS at frame %d, seed %u", pc_net_frame(),
+                                pc_net_match_seed());
+                }
                 gm_801A4B60();
             }
             if ((input & HSD_PAD_START) && (state == PC_MATCH_FAIL || reason != PC_NET_PEER_OK)) {
@@ -783,7 +920,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 if (online_kind == ONLINE_KIND_DIRECT) {
                     directEntryBegin();
                 } else {
-                    pc_net_match_start(online_kind == ONLINE_KIND_RANKED ? PC_MATCH_RANKED :
+                    startMatch(online_kind == ONLINE_KIND_RANKED ? PC_MATCH_RANKED :
                                        PC_MATCH_UNRANKED, NULL);
                 }
             }

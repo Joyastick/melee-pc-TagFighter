@@ -250,12 +250,15 @@ typedef struct Rules {
      * player's own Tag Bind (pc_get_tag_bind(1), physical port 1). Only ever
      * set in a Tag Battle session. The guest's is Ready.partner_bind. */
     uint8_t partner_bind;
+    uint8_t layout;       /* NET_LAYOUT_*: the host's; Matchmaking only in Tag Battle */
+    PcNetTeam team;       /* the host's team (used when layout is matchmade) */
     uint32_t unlock_hash; /* unlock_hash_now() after the sender forced its masks */
     uint32_t hash;        /* rules_hash() of the wire image above; the guest recomputes it */
 } __attribute__((packed)) Rules;
 
 enum { GAME_MODE_VS, GAME_MODE_TAG_BATTLE };
 #define NET_NO_PARTNER 0xFF
+enum { NET_LAYOUT_DIRECT, NET_LAYOUT_MATCHMADE };
 
 /* Payload of the READY reply (net_handshake.c): the guest's own nonce and
  * the host's echoed back, so the host can tell its live peer from a replay
@@ -267,6 +270,7 @@ typedef struct Ready {
     uint32_t unlock_hash; /* the guest's forced unlock state */
     uint8_t tag_bind;     /* the guest's own MeleeVS: Tag Bind index, see Rules.tag_bind */
     uint8_t partner_bind; /* the guest machine's couch partner (port 4), see Rules */
+    PcNetTeam team;       /* the guest's team, see Rules.team */
     uint32_t hash;        /* ready_hash() of the wire image above */
 } __attribute__((packed)) Ready;
 
@@ -305,8 +309,9 @@ _Static_assert(sizeof(Packet) == 27 + REDUNDANCY * 16, "wire layout");
 _Static_assert(sizeof(Ack) == 13, "wire layout");
 _Static_assert(sizeof(Rel) == 11 + REL_MAX, "wire layout");
 _Static_assert(sizeof(RelAck) == 8 && sizeof(Bye) == 8, "wire layout");
-_Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 25, "wire layout");
-_Static_assert(sizeof(Ready) == 26, "wire layout");
+_Static_assert(sizeof(PcNetTeam) == 9, "wire layout");
+_Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 35, "wire layout");
+_Static_assert(sizeof(Ready) == 35, "wire layout");
 _Static_assert(sizeof(Resume) == 20 && sizeof(Resume) % 4 == 0, "wire layout");
 _Static_assert(sizeof(DelayMsg) == 8, "wire layout");
 _Static_assert(sizeof(SceneMsg) == 8, "wire layout");

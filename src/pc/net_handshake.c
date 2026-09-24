@@ -41,6 +41,7 @@
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wscalar-storage-order" /* disc-struct unions in lb/types.h */
+#include <melee/gm/gm_1601.h>
 #include <melee/gm/gmmain_lib.h>
 #pragma GCC diagnostic pop
 #include <melee/mod/tag_assist.h>
@@ -148,6 +149,15 @@ static uint8_t s_local_tag_bind;
  * so both peers must hold the same pair; the handshake is what makes it so. */
 static uint8_t s_local_partner_bind = NET_NO_PARTNER;
 static uint8_t s_remote_partner_bind = NET_NO_PARTNER;
+/* MeleeVS Matchmaking. The game sets s_want_* before connecting; the host's
+ * RULES decides the session's layout, and each machine's team (indexed by
+ * player number, net.local / net.remote) is pinned from RULES and READY.
+ * Matchmaking always hosts on player 0 (net_match.c), so player 0's team is
+ * the host's: red, ports 1-2. */
+static bool s_want_matchmade;
+static PcNetTeam s_want_team;
+static uint8_t s_layout = NET_LAYOUT_DIRECT;
+static PcNetTeam s_team[2];
 static bool s_unlock_saved; /* s_unlock_orig holds what the player had */
 static uint64_t s_unlock_orig;
 /* One log line per refusal class per session (the log-line rule): a peer, or
@@ -253,6 +263,62 @@ static uint8_t local_partner_now(void) {
     return (uint8_t)pc_get_tag_bind(1);
 }
 
+/* A team as it goes on the wire: fighter[0] is always the player, fighter[1]
+ * is human exactly when this machine announced a couch partner, and a
+ * human+CPU team starts with the human on point (the CSS's own rule, since
+ * TagAssist hands the one controller to whichever fighter is point). */
+static PcNetTeam team_for_wire(uint8_t partner_bind) {
+    static const int8_t fallback[2] = {CKind_Fox, CKind_Falco};
+    PcNetTeam t = s_want_team;
+    /* Always a valid team: our own RULES must pass rules_values_invalid
+     * too (rules_ready), so a stale or empty setup falls back rather than
+     * stalling the handshake. */
+    for (int i = 0; i < 2; i++) {
+        PcNetTeamFighter* f = &t.fighter[i];
+        if (f->ckind < 0 || f->ckind >= CKind_Playable_Count) {
+            f->ckind = fallback[i];
+            f->color = 0;
+        }
+        if (f->color >= gm_GetNumCostumesForCKind((u8)f->ckind)) {
+            f->color = 0;
+        }
+    }
+    t.fighter[0].human = 1;
+    t.fighter[1].human = partner_bind != NET_NO_PARTNER;
+    for (int i = 0; i < 2; i++) {
+        if (t.fighter[i].human) {
+            t.fighter[i].cpu_level = 0;
+        } else if (t.fighter[i].cpu_level < 1 || t.fighter[i].cpu_level > 9) {
+            t.fighter[i].cpu_level = 9;
+        }
+    }
+    if (!t.fighter[1].human) {
+        t.point = 0;
+    }
+    return t;
+}
+
+/* The peer's team, checked the same way: its shape follows from its own
+ * partner_bind, so a disagreement is a corrupt or forged team. */
+static bool team_invalid(const PcNetTeam* t, uint8_t partner_bind) {
+    if (t->point > 1 || t->fighter[0].human != 1 ||
+        t->fighter[1].human != (partner_bind != NET_NO_PARTNER) ||
+        (!t->fighter[1].human && t->point != 0))
+    {
+        return true;
+    }
+    for (int i = 0; i < 2; i++) {
+        const PcNetTeamFighter* f = &t->fighter[i];
+        if (f->ckind < 0 || f->ckind >= CKind_Playable_Count ||
+            f->color >= gm_GetNumCostumesForCKind((u8)f->ckind) ||
+            (f->human ? f->cpu_level != 0 : f->cpu_level < 1 || f->cpu_level > 9))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void rules_capture(Rules* ru) {
     const struct GamePrefs* p = gmMainLib_GetGamePrefs();
     ru->game = *gmMainLib_GetGameRules();
@@ -266,6 +332,9 @@ static void rules_capture(Rules* ru) {
      * port (0 or 1) matchmaking assigns this peer. */
     ru->tag_bind = (uint8_t)pc_get_tag_bind(0);
     ru->partner_bind = local_partner_now();
+    ru->layout =
+        s_want_matchmade && TagAssist_IsTagBattleOn() ? NET_LAYOUT_MATCHMADE : NET_LAYOUT_DIRECT;
+    ru->team = team_for_wire(ru->partner_bind);
 }
 
 static void rules_apply(const Rules* ru, bool from_peer) {
@@ -295,6 +364,9 @@ static void rules_apply(const Rules* ru, bool from_peer) {
         s_remote_tag_bind = ru->tag_bind;
         s_remote_partner_bind = ru->partner_bind;
     }
+    /* The host's layout and team, whichever side is applying them. */
+    s_layout = ru->layout;
+    s_team[net.hs_host ? net.local : net.remote] = ru->team;
     pc_log_line("net: RULES %s mode=%u time=%u stock=%u handicap=%u dmg=%u stage_sel=%u ff=%u "
                 "pause=%u sd=%u items=%u/%016llx stages=%08x frozen=%u unlock_all=1 game_mode=%u",
         from_peer ? "applied" : "in force", ru->game.mode, ru->game.time_limit,
@@ -378,6 +450,8 @@ void rules_restore(void) {
     s_local_tag_bind = 0;
     s_remote_partner_bind = NET_NO_PARTNER;
     s_local_partner_bind = NET_NO_PARTNER;
+    s_layout = NET_LAYOUT_DIRECT;
+    memset(s_team, 0, sizeof s_team);
     s_hs_tx.len = 0;
     s_hs_logged = 0;
     s_direct_idle_ns = 0;
@@ -414,15 +488,36 @@ int pc_net_remote_partner_bind(void) {
     return s_rules_on && s_remote_partner_bind != NET_NO_PARTNER ? s_remote_partner_bind : -1;
 }
 
+void pc_net_set_matchmade(bool matchmade, const PcNetTeam* team) {
+    s_want_matchmade = matchmade && team != NULL;
+    if (team != NULL) {
+        s_want_team = *team;
+    } else {
+        memset(&s_want_team, 0, sizeof s_want_team);
+    }
+}
+
+bool pc_net_matchmade(void) {
+    return s_rules_on && s_layout == NET_LAYOUT_MATCHMADE;
+}
+
+const PcNetTeam* pc_net_team(int machine) {
+    return pc_net_matchmade() && machine >= 0 && machine < 2 ? &s_team[machine] : NULL;
+}
+
+int pc_net_game_port(int machine, int slot) {
+    return pc_net_matchmade() ? machine * 2 + slot : machine + 2 * slot;
+}
+
 bool pc_net_port_human(int port) {
-    if (port == net.local || port == net.remote) {
-        return true;
-    }
-    if (port == net.local + 2) {
-        return pc_net_local_partner_bind() >= 0;
-    }
-    if (port == net.remote + 2) {
-        return pc_net_remote_partner_bind() >= 0;
+    for (int machine = 0; machine < 2; machine++) {
+        if (port == pc_net_game_port(machine, 0)) {
+            return true;
+        }
+        if (port == pc_net_game_port(machine, 1)) {
+            return (machine == net.local ? pc_net_local_partner_bind() :
+                                           pc_net_remote_partner_bind()) >= 0;
+        }
     }
     return false;
 }
@@ -442,7 +537,10 @@ static const char* rules_values_invalid(const Rules* ru) {
         ru->game_mode > GAME_MODE_TAG_BATTLE ||
         ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */ ||
         (ru->partner_bind > 11 && ru->partner_bind != NET_NO_PARTNER) ||
-        (ru->partner_bind != NET_NO_PARTNER && ru->game_mode != GAME_MODE_TAG_BATTLE))
+        (ru->partner_bind != NET_NO_PARTNER && ru->game_mode != GAME_MODE_TAG_BATTLE) ||
+        ru->layout > NET_LAYOUT_MATCHMADE ||
+        (ru->layout == NET_LAYOUT_MATCHMADE &&
+            (ru->game_mode != GAME_MODE_TAG_BATTLE || team_invalid(&ru->team, ru->partner_bind))))
     {
         return "value out of range";
     }
@@ -568,7 +666,9 @@ static void on_rules(const uint8_t* payload, int len) {
     s_local_partner_bind = ru.game_mode == GAME_MODE_TAG_BATTLE && net_local_partner_present() ?
                                (uint8_t)pc_get_tag_bind(1) :
                                NET_NO_PARTNER;
-    Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, s_local_partner_bind, 0};
+    Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, s_local_partner_bind,
+        team_for_wire(s_local_partner_bind), 0};
+    s_team[net.local] = rd.team;
     if (rd.nonce == 0) {
         hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
         unlock_restore();
@@ -647,8 +747,14 @@ static void on_ready(const uint8_t* payload, int len) {
         net.hs = HS_FAILED;
         return;
     }
+    if (s_layout == NET_LAYOUT_MATCHMADE && team_invalid(&rd.team, rd.partner_bind)) {
+        pc_log_line("net: READY rejected: team setup invalid");
+        net.hs = HS_FAILED;
+        return;
+    }
     s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
     s_remote_partner_bind = rd.partner_bind;
+    s_team[net.remote] = rd.team;
     /* This side's turn: the READY just authenticated is what carries the
      * guest's nonce, so from here both peers hold the same three values and
      * derive the same key without another message. Under tx_lock, like the

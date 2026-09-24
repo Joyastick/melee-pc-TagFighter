@@ -224,16 +224,19 @@ u32 TagAssist_ExtraBindMask(u8 controller_slot)
     // instant a button satisfied one mask but not the other). The REMOTE net
     // port's bind is that peer's own pinned choice, exchanged over the wire
     // (RULES/READY).
-    // Ports 2/3 online are each machine's couch partner (MeleeVS duo): its
-    // bind is pinned and exchanged the same way (partner_bind), and is -1
-    // (Off here) for a port with no partner, which is a CPU assist anyway.
+    // Each machine's second port (pc_net_game_port slot 1) is its couch
+    // partner (MeleeVS duo): its bind is pinned and exchanged the same way
+    // (partner_bind), and is -1 (Off here) for a port with no partner, which
+    // is a CPU assist anyway. The mapping covers both port layouts (Direct
+    // 1+3 / 2+4, Matchmaking 1+2 / 3+4).
     if (pc_net_active()) {
-        u8 local = (u8) pc_net_local_player();
-        if (controller_slot == local) {
+        int local = pc_net_local_player();
+        int remote = 1 - local;
+        if (controller_slot == pc_net_game_port(local, 0)) {
             bind = pc_net_local_tag_bind();
-        } else if (controller_slot == (u8) (local + 2)) {
+        } else if (controller_slot == pc_net_game_port(local, 1)) {
             bind = pc_net_local_partner_bind();
-        } else if (controller_slot < 2) {
+        } else if (controller_slot == pc_net_game_port(remote, 0)) {
             bind = pc_net_remote_tag_bind();
         } else {
             bind = pc_net_remote_partner_bind();
