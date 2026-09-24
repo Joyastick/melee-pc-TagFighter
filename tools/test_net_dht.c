@@ -78,6 +78,12 @@ int main(void) {
     assert(pc_dht_socket() == owned);
     pc_dht_stop();
     assert(fcntl(owned, F_GETFD) == -1);
+    /* A fresh node in random-port mode prefers the previous node's port, so a
+     * published direct record and the NAT mapping survive between matches. */
+    assert(pc_dht_is_own_port(warm_port));
+    assert(pc_dht_warm(0));
+    assert(pc_dht_port() == warm_port);
+    pc_dht_stop();
 #endif
     puts("DHT SHA1/topic and socket ownership tests passed");
     return 0;

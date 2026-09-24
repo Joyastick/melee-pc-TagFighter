@@ -451,6 +451,23 @@ static void values(void* ctx, int event, const unsigned char* hash, const void* 
         }
     }
 }
+/* Ports this process has bound its DHT node to recently. The DHT keeps
+ * announcements from our own earlier sessions for a while, so they come back
+ * as "candidates" pointing at ourselves; pairing skips those. */
+#define OWN_PORTS 16
+static uint16_t own_ports[OWN_PORTS];
+static unsigned own_port_cursor;
+static uint16_t last_bound_port;
+static bool keep_item_on_start;
+bool pc_dht_is_own_port(uint16_t port) {
+    for (unsigned i = 0; i < OWN_PORTS; i++)
+        if (own_ports[i] == port)
+            return true;
+    return false;
+}
+void pc_dht_keep_item_on_start(bool keep) {
+    keep_item_on_start = keep;
+}
 bool pc_dht_warm(uint16_t port) {
     unsigned char id[20];
     if (fd >= 0 && (!port || port == bound_port))
@@ -470,9 +487,17 @@ bool pc_dht_warm(uint16_t port) {
     }
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)))
-        goto fail;
+    /* Random-port mode: prefer the port of the previous node, so the NAT
+     * mapping and any direct record already published for it stay valid
+     * across matches. Falls back to a fresh random port if it is taken. */
+    addr.sin_port = htons(port ? port : last_bound_port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr))) {
+        if (port || !last_bound_port)
+            goto fail;
+        addr.sin_port = 0;
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)))
+            goto fail;
+    }
 #ifdef _WIN32
     u_long on = 1;
     if (ioctlsocket(fd, FIONBIO, &on))
@@ -486,6 +511,9 @@ bool pc_dht_warm(uint16_t port) {
     if (getsockname(fd, (struct sockaddr*)&addr, &size))
         goto fail;
     bound_port = ntohs(addr.sin_port);
+    last_bound_port = bound_port;
+    if (!pc_dht_is_own_port(bound_port))
+        own_ports[own_port_cursor++ % OWN_PORTS] = bound_port;
     if (dht_random_bytes(id, sizeof(id)) < 0 ||
         dht_init((int)fd, -1, id, (const unsigned char*)"MP01") < 0)
         goto fail;
@@ -531,7 +559,8 @@ bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port)
      * the search itself restarts. Its earlier topic's search is left to run
      * out in jech/dht (there is no cancel), which is harmless: peers found
      * through it are dropped by the pairing topic check. */
-    pc_dht_item_cancel();
+    if (!keep_item_on_start)
+        pc_dht_item_cancel();
     mode = m;
     rating_band = band;
     snprintf(direct_code, sizeof(direct_code), "%s", code ? code : "");
