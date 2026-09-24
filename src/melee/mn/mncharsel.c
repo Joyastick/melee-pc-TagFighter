@@ -4712,6 +4712,34 @@ s32 mnCharSel_802640A0(void)
     HSD_GObj_SetupProc(gobj, fn_80263354, 4);
     HSD_JObjReqAnimAll(jobj, 0.0f);
     HSD_JObjAnimAll(jobj);
+#ifdef TARGET_PC
+    /* TEAM SELECT sits between the MELEE VS menu and the Matchmaking lobby,
+     * so it wears their backdrop (the main menu's, as mnonlinelobby.c
+     * builds it) instead of the CSS's own. */
+    if (teamSelectOn()) {
+        void* dp_[4];
+        HSD_JObj* back;
+        HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
+        lbArchive_LoadSymbols("MnMaAll", &dp_[0], "MenMainBack_Top_joint", &dp_[1],
+                              "MenMainBack_Top_animjoint", &dp_[2],
+                              "MenMainBack_Top_matanim_joint", &dp_[3],
+                              "MenMainBack_Top_shapeanim_joint", 0);
+        DP_SET(MenMainBack_Top.joint, dp_[0]);
+        DP_SET(MenMainBack_Top.animjoint, dp_[1]);
+        DP_SET(MenMainBack_Top.matanim_joint, dp_[2]);
+        DP_SET(MenMainBack_Top.shapeanim_joint, dp_[3]);
+        gobj = GObj_Create(4, 5, 0x80);
+        back = HSD_JObjLoadJoint(DP(HSD_Joint, MenMainBack_Top.joint));
+        HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, back);
+        GObj_SetupGXLink(gobj, HSD_GObj_JObjCallback, 1, 0x80);
+        HSD_GObj_SetupProc(gobj, mn_8022EAE0, 0);
+        HSD_JObjAddAnimAll(back, DP(HSD_AnimJoint, MenMainBack_Top.animjoint),
+                           DP(HSD_MatAnimJoint, MenMainBack_Top.matanim_joint),
+                           DP(HSD_ShapeAnimJoint, MenMainBack_Top.shapeanim_joint));
+        HSD_JObjReqAnimAll(back, 0.0f);
+        HSD_JObjAnimAll(back);
+    }
+#endif
 
     mnCharSel_804D6CBC = GObj_Create(4, 5, 0x80);
     if (mnCharSel_804D6CF5 == 1) {
