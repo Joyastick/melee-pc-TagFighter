@@ -1,5 +1,4 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "compat.h" /* force-includes the DISC_STRUCT macro melee/mod/tag_assist.h needs below */
 #include "net_match.h"
 #include "net_dht.h"
 #include "net_dht_item.h"
@@ -7,7 +6,6 @@
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "pc.h"
-#include <melee/mod/tag_assist.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_timer.h>
 #include <stddef.h>
@@ -27,6 +25,10 @@ typedef int MatchSocket;
 #endif
 
 extern const char* pc_get_net_name(void);
+/* From melee/mod/tag_assist.h. Declared rather than included: that header
+ * pulls in the decomp headers (DISC_STRUCT, debug.h's __assert), which the
+ * standalone netplay tests cannot compile against. */
+bool TagAssist_IsTagBattleOn(void);
 extern int pc_get_net_port(void);
 extern const char* pc_lan_disc_id(void);
 #if defined(__GNUC__) || defined(__clang__)
@@ -313,9 +315,9 @@ static void pairing_topic(enum PcNetMatchMode m, const char* direct, uint8_t out
     int n = m == PC_MATCH_DIRECT ?
                 snprintf(text, sizeof text, "meleepc/match/v1/direct/%s", direct) :
                 snprintf(text, sizeof text,
-                    m == PC_MATCH_RANKED    ? "meleepc/match/v1/ranked" :
+                    m == PC_MATCH_RANKED      ? "meleepc/match/v1/ranked" :
                     TagAssist_IsTagBattleOn() ? "meleepc/match/v1/unranked/tag" :
-                                                 "meleepc/match/v1/unranked");
+                                                "meleepc/match/v1/unranked");
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
 }
 
@@ -377,9 +379,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         const MatchHello* h = data;
         const char* terminator = memchr(h->code, '\0', sizeof h->code);
         if (ntohl(h->magic) != MATCH_MAGIC || h->version != MATCH_VERSION || h->type != 'H' ||
-            h->mode != (uint8_t)mode || h->nonce == local_nonce ||
-            memcmp(h->topic, topic, 20) || !terminator ||
-            !key_code_matches(h->public_key, h->code) ||
+            h->mode != (uint8_t)mode || h->nonce == local_nonce || memcmp(h->topic, topic, 20) ||
+            !terminator || !key_code_matches(h->public_key, h->code) ||
             (mode == PC_MATCH_DIRECT && target[0] && strcmp(h->code, target)) ||
             !signed_ok(h->public_key, h->signature, h, sizeof *h))
             return;

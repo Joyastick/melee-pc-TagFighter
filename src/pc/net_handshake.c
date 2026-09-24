@@ -125,9 +125,9 @@ static bool s_rules_on; /* a RULES set is in force (host or guest) */
 static bool s_rules_frozen;
 static bool s_rules_saved; /* guest: s_rules_orig holds its own values */
 static Rules s_rules_orig;
-static uint64_t s_nonce_local;   /* ours this session; 0: not drawn yet */
-static uint32_t s_nonce_session; /* net.session s_nonce_local was drawn for */
-static uint64_t s_nonce_peer;    /* theirs, from RULES (guest) or READY (host) */
+static uint64_t s_nonce_local;    /* ours this session; 0: not drawn yet */
+static uint32_t s_nonce_session;  /* net.session s_nonce_local was drawn for */
+static uint64_t s_nonce_peer;     /* theirs, from RULES (guest) or READY (host) */
 static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_net_remote_tag_bind */
 /* This machine's own MeleeVS: Tag Bind, pinned at the moment it went on the
  * wire (RULES.tag_bind for the host, Ready.tag_bind for the guest) - see
@@ -141,7 +141,7 @@ static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_ne
  * logs showed different fighters transitioning to different action states
  * on the exact same synced frame, right after a live Tag Bind change). */
 static uint8_t s_local_tag_bind;
-static bool s_unlock_saved;      /* s_unlock_orig holds what the player had */
+static bool s_unlock_saved; /* s_unlock_orig holds what the player had */
 static uint64_t s_unlock_orig;
 /* One log line per refusal class per session (the log-line rule): a peer, or
  * a stale process at its address, that keeps resending must not flood it. */
@@ -245,7 +245,7 @@ static void rules_capture(Rules* ru) {
     /* Port 0 always: capture_local_sample (net.c) always reads the local
      * human's real controller from physical port 0, whichever net-session
      * port (0 or 1) matchmaking assigns this peer. */
-    ru->tag_bind = (uint8_t) pc_get_tag_bind(0);
+    ru->tag_bind = (uint8_t)pc_get_tag_bind(0);
 }
 
 static void rules_apply(const Rules* ru, bool from_peer) {
@@ -394,8 +394,8 @@ static const char* rules_values_invalid(const Rules* ru) {
      * cover Very Low..Very High. */
     if (ru->game.mode > 3 || ru->game.time_limit > 99 || ru->game.stock_count > 99 ||
         ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 ||
-        (ru->item_freq > 4 && ru->item_freq != 0xFF) ||
-        ru->stage_mask == 0 || ru->game_mode > GAME_MODE_TAG_BATTLE ||
+        (ru->item_freq > 4 && ru->item_freq != 0xFF) || ru->stage_mask == 0 ||
+        ru->game_mode > GAME_MODE_TAG_BATTLE ||
         ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
     {
         return "value out of range";
@@ -516,7 +516,7 @@ static void on_rules(const uint8_t* payload, int len) {
         unlock_restore();
         return;
     }
-    s_local_tag_bind = (uint8_t) pc_get_tag_bind(0);
+    s_local_tag_bind = (uint8_t)pc_get_tag_bind(0);
     Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, 0};
     if (rd.nonce == 0) {
         hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
