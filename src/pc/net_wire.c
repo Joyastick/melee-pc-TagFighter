@@ -83,7 +83,9 @@ void wire_packet(Packet* pk) {
     be32(&pk->ck_frame);
     be32(&pk->ck);
     for (int i = 0; i < pk->count && i < REDUNDANCY; i++) {
-        be16(&pk->pads[i].button);
+        for (int j = 0; j < NET_LOCAL_PADS; j++) {
+            be16(&pk->pads[i].pad[j].button);
+        }
     }
 }
 

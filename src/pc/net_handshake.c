@@ -141,6 +141,13 @@ static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_ne
  * logs showed different fighters transitioning to different action states
  * on the exact same synced frame, right after a live Tag Bind change). */
 static uint8_t s_local_tag_bind;
+/* Couch partners (MeleeVS duo on one machine): NET_NO_PARTNER or that
+ * player's Tag Bind, pinned when it goes on the wire like the binds above
+ * (Rules/Ready.partner_bind). Whether a partner exists decides whether
+ * write_head (net.c) feeds that machine's second pad to port local/remote+2,
+ * so both peers must hold the same pair; the handshake is what makes it so. */
+static uint8_t s_local_partner_bind = NET_NO_PARTNER;
+static uint8_t s_remote_partner_bind = NET_NO_PARTNER;
 static bool s_unlock_saved; /* s_unlock_orig holds what the player had */
 static uint64_t s_unlock_orig;
 /* One log line per refusal class per session (the log-line rule): a peer, or
@@ -185,8 +192,10 @@ static void hs_done(void) {
     net.hs = HS_DONE;
     net.ck_from = net.start_frame;
     net.desync_reported = false; /* anything before start_frame was the lobbies differing */
-    pc_log_line("net: handshake done seed=%u start_frame=%d (frame %d)", net.seed, net.start_frame,
-        net.tick_frame);
+    pc_log_line("net: handshake done seed=%u start_frame=%d (frame %d) partners local=%s remote=%s",
+        net.seed, net.start_frame, net.tick_frame,
+        s_local_partner_bind != NET_NO_PARTNER ? "yes" : "no",
+        s_remote_partner_bind != NET_NO_PARTNER ? "yes" : "no");
 }
 
 /* Queue a handshake message, keeping it for a retry when the reliable lane
@@ -234,6 +243,16 @@ static void hs_flush(void) {
 
 /* The match-affecting part of RULES, from (capture) or into (apply) the
  * game's own copies. */
+/* This machine's couch partner as it goes on the wire: only in Tag Battle
+ * (a plain VS session stays two players), and only with a second controller
+ * plugged in. Its bind is the partner's own, pc_get_tag_bind(1). */
+static uint8_t local_partner_now(void) {
+    if (!TagAssist_IsTagBattleOn() || !net_local_partner_present()) {
+        return NET_NO_PARTNER;
+    }
+    return (uint8_t)pc_get_tag_bind(1);
+}
+
 static void rules_capture(Rules* ru) {
     const struct GamePrefs* p = gmMainLib_GetGamePrefs();
     ru->game = *gmMainLib_GetGameRules();
@@ -246,6 +265,7 @@ static void rules_capture(Rules* ru) {
      * human's real controller from physical port 0, whichever net-session
      * port (0 or 1) matchmaking assigns this peer. */
     ru->tag_bind = (uint8_t)pc_get_tag_bind(0);
+    ru->partner_bind = local_partner_now();
 }
 
 static void rules_apply(const Rules* ru, bool from_peer) {
@@ -273,6 +293,7 @@ static void rules_apply(const Rules* ru, bool from_peer) {
         /* The guest learning the host's own tag_bind; the host learns the
          * guest's symmetric way, from Ready.tag_bind in on_ready below. */
         s_remote_tag_bind = ru->tag_bind;
+        s_remote_partner_bind = ru->partner_bind;
     }
     pc_log_line("net: RULES %s mode=%u time=%u stock=%u handicap=%u dmg=%u stage_sel=%u ff=%u "
                 "pause=%u sd=%u items=%u/%016llx stages=%08x frozen=%u unlock_all=1 game_mode=%u",
@@ -355,6 +376,8 @@ void rules_restore(void) {
     s_nonce_local = s_nonce_peer = 0;
     s_remote_tag_bind = 0;
     s_local_tag_bind = 0;
+    s_remote_partner_bind = NET_NO_PARTNER;
+    s_local_partner_bind = NET_NO_PARTNER;
     s_hs_tx.len = 0;
     s_hs_logged = 0;
     s_direct_idle_ns = 0;
@@ -383,6 +406,27 @@ int pc_net_local_tag_bind(void) {
     return s_rules_on ? s_local_tag_bind : pc_get_tag_bind(0);
 }
 
+int pc_net_local_partner_bind(void) {
+    return s_rules_on && s_local_partner_bind != NET_NO_PARTNER ? s_local_partner_bind : -1;
+}
+
+int pc_net_remote_partner_bind(void) {
+    return s_rules_on && s_remote_partner_bind != NET_NO_PARTNER ? s_remote_partner_bind : -1;
+}
+
+bool pc_net_port_human(int port) {
+    if (port == net.local || port == net.remote) {
+        return true;
+    }
+    if (port == net.local + 2) {
+        return pc_net_local_partner_bind() >= 0;
+    }
+    if (port == net.remote + 2) {
+        return pc_net_remote_partner_bind() >= 0;
+    }
+    return false;
+}
+
 /* The value ranges a RULES set has to be inside. Split out because
  * rules_ready() below asks the same question about our own copies: the game
  * zeroes them at boot and fills them in during it, and a zeroed set fails
@@ -396,7 +440,9 @@ static const char* rules_values_invalid(const Rules* ru) {
         ru->game.damage_ratio < 5 || ru->game.damage_ratio > 20 ||
         (ru->item_freq > 4 && ru->item_freq != 0xFF) || ru->stage_mask == 0 ||
         ru->game_mode > GAME_MODE_TAG_BATTLE ||
-        ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */)
+        ru->tag_bind > 11 /* kTagBindNames/kTagBind* have 12 entries, see pc_get_tag_bind */ ||
+        (ru->partner_bind > 11 && ru->partner_bind != NET_NO_PARTNER) ||
+        (ru->partner_bind != NET_NO_PARTNER && ru->game_mode != GAME_MODE_TAG_BATTLE))
     {
         return "value out of range";
     }
@@ -517,7 +563,12 @@ static void on_rules(const uint8_t* payload, int len) {
         return;
     }
     s_local_tag_bind = (uint8_t)pc_get_tag_bind(0);
-    Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, 0};
+    /* The host's game_mode decides Tag Battle for both sides, so ask the
+     * RULES being answered, not this machine's own menu state. */
+    s_local_partner_bind = ru.game_mode == GAME_MODE_TAG_BATTLE && net_local_partner_present() ?
+                               (uint8_t)pc_get_tag_bind(1) :
+                               NET_NO_PARTNER;
+    Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, s_local_partner_bind, 0};
     if (rd.nonce == 0) {
         hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
         unlock_restore();
@@ -589,7 +640,15 @@ static void on_ready(const uint8_t* payload, int len) {
         return;
     }
     s_nonce_peer = rd.nonce;
+    /* Authenticated like unlock_hash above, so a bad value is a real
+     * disagreement: fail hard rather than wait out the timeout. */
+    if (rd.partner_bind != NET_NO_PARTNER && (rd.partner_bind > 11 || !TagAssist_IsTagBattleOn())) {
+        pc_log_line("net: READY rejected: partner_bind %u out of range", rd.partner_bind);
+        net.hs = HS_FAILED;
+        return;
+    }
     s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
+    s_remote_partner_bind = rd.partner_bind;
     /* This side's turn: the READY just authenticated is what carries the
      * guest's nonce, so from here both peers hold the same three values and
      * derive the same key without another message. Under tx_lock, like the
@@ -651,6 +710,7 @@ bool pc_net_host_match(uint32_t seed, int32_t* start_frame) {
         ru.nonce = s_nonce_local;
         rules_capture(&ru);
         s_local_tag_bind = ru.tag_bind;
+        s_local_partner_bind = ru.partner_bind;
         unlock_force();
         ru.unlock_hash = unlock_hash_now();
         ru.hash = rules_hash(ru, net.session);

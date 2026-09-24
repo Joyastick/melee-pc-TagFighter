@@ -89,12 +89,22 @@ struct GamePrefs* gmMainLib_GetGamePrefs(void) {
     return &s_prefs;
 }
 /* MeleeVS Tag Battle hooks net_handshake.c reads and applies from RULES.
- * This test plays plain VS: Tag Battle off, bind index 0 on both sides. */
+ * Checks 1-15 play plain VS with no second controller; check 16 turns both
+ * on for the couch-duo exchange. RULES applying game_mode drives s_tag_on
+ * the way the real TagAssist_EnterForcedOn/LeaveTagBattle do. */
+static bool s_tag_on, s_partner_plugged;
 bool TagAssist_IsTagBattleOn(void) {
-    return false;
+    return s_tag_on;
 }
-void TagAssist_EnterForcedOn(void) {}
-void TagAssist_LeaveTagBattle(void) {}
+void TagAssist_EnterForcedOn(void) {
+    s_tag_on = true;
+}
+void TagAssist_LeaveTagBattle(void) {
+    s_tag_on = false;
+}
+bool net_local_partner_present(void) {
+    return s_partner_plugged;
+}
 int pc_get_tag_bind(int port) {
     (void)port;
     return 0;
@@ -157,6 +167,7 @@ typedef struct Side {
     /* the side's own save data plus what the module saved off it */
     uint64_t unlock_live, unlock_orig;
     bool unlock_saved;
+    uint8_t local_partner, remote_partner;
 } Side;
 
 static void side_save(Side* s) {
@@ -180,6 +191,8 @@ static void side_save(Side* s) {
     s->unlock_live = s_unlock_live;
     s->unlock_orig = s_unlock_orig;
     s->unlock_saved = s_unlock_saved;
+    s->local_partner = s_local_partner_bind;
+    s->remote_partner = s_remote_partner_bind;
 }
 
 static void side_load(const Side* s) {
@@ -203,6 +216,8 @@ static void side_load(const Side* s) {
     s_unlock_live = s->unlock_live;
     s_unlock_orig = s->unlock_orig;
     s_unlock_saved = s->unlock_saved;
+    s_local_partner_bind = s->local_partner;
+    s_remote_partner_bind = s->remote_partner;
 }
 
 /* Load a side that has just connected to session `id` and learned nothing:
@@ -218,6 +233,7 @@ static void load_fresh(uint32_t id, int local) {
     s.local = local;
     s.remote = 1 - local;
     s.unlock_live = s_fresh_unlock;
+    s.local_partner = s.remote_partner = NET_NO_PARTNER;
     side_load(&s);
 }
 
@@ -261,7 +277,7 @@ static void reforge_unlock(uint8_t* buf, uint32_t session, uint32_t unlock_hash)
 
 static void forge_ready(
     uint8_t* out, uint32_t session, uint64_t nonce, uint64_t echo, uint32_t unlock_hash) {
-    Ready rd = {nonce, echo, unlock_hash, 0};
+    Ready rd = {nonce, echo, unlock_hash, 0, NET_NO_PARTNER, 0};
     rd.hash = ready_hash(rd, session);
     wire_ready(&rd);
     memcpy(out, &rd, sizeof rd);
@@ -275,8 +291,9 @@ int main(void) {
     Side host, guest;
 
     /* every check below depends on these sizes being the wire ones */
-    /* +2 in Rules (game_mode, tag_bind) and +1 in Ready (tag_bind): MeleeVS Tag Battle */
-    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 24 && sizeof(Ready) == 25);
+    /* +3 in Rules (game_mode, tag_bind, partner_bind) and +2 in Ready
+     * (tag_bind, partner_bind): MeleeVS Tag Battle and its couch duo */
+    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 25 && sizeof(Ready) == 26);
 
     s_game.mode = 1;
     s_game.time_limit = 8;
@@ -660,6 +677,63 @@ int main(void) {
     assert(net.hs == HS_IDLE);
     assert(s_out_len == -1);
     assert(!s_unlock_saved);
+
+    /* ---- 16. MeleeVS couch duo: each machine's partner reaches the other --
+     * Tag Battle on and a second controller plugged in on both machines:
+     * the host announces its partner in RULES, the guest in READY, and both
+     * sides then agree that ports 2 (host's partner) and 3 (guest's) are
+     * human. A plain VS session never carries a partner, controller or not. */
+    {
+        const uint32_t sess_e = 0x5eed0016;
+        Side duo_host;
+        s_tag_on = true;
+        s_partner_plugged = true;
+        net.tick_frame = 300;
+        load_fresh(sess_e, 0);
+        assert(!pc_net_host_match(77, &sf));
+        assert(s_out_type == REL_RULES && s_out_len == (int)sizeof(Rules));
+        uint8_t rules_e[sizeof(Rules)];
+        memcpy(rules_e, s_out, sizeof rules_e);
+        {
+            Rules ru;
+            memcpy(&ru, rules_e, sizeof ru);
+            wire_rules(&ru);
+            assert(ru.game_mode == GAME_MODE_TAG_BATTLE && ru.partner_bind == 0);
+        }
+        side_save(&duo_host);
+
+        load_fresh(sess_e, 1);
+        s_tag_on = false; /* the guest's own menu state; the host's RULES decides */
+        handshake_msg(REL_RULES, rules_e, (int)sizeof rules_e);
+        assert(net.hs == HS_DONE && s_tag_on);
+        assert(pc_net_local_partner_bind() == 0 && pc_net_remote_partner_bind() == 0);
+        assert(pc_net_port_human(0) && pc_net_port_human(1));
+        assert(pc_net_port_human(2) && pc_net_port_human(3));
+        uint8_t ready_e[sizeof(Ready)];
+        memcpy(ready_e, s_out, sizeof ready_e);
+
+        side_load(&duo_host);
+        handshake_msg(REL_READY, ready_e, (int)sizeof ready_e);
+        assert(net.hs == HS_DONE);
+        assert(pc_net_local_partner_bind() == 0 && pc_net_remote_partner_bind() == 0);
+        assert(pc_net_port_human(2) && pc_net_port_human(3));
+        rules_restore();
+        assert(pc_net_local_partner_bind() < 0 && !pc_net_port_human(2));
+
+        /* Plain VS: the same plugged-in controller is not a partner. */
+        s_tag_on = false;
+        load_fresh(sess_e + 1, 0);
+        assert(!pc_net_host_match(78, &sf));
+        {
+            Rules ru;
+            memcpy(&ru, s_out, sizeof ru);
+            wire_rules(&ru);
+            assert(ru.game_mode == GAME_MODE_VS && ru.partner_bind == NET_NO_PARTNER);
+        }
+        rules_restore();
+        s_partner_plugged = false;
+        printf("ok 16: couch partners exchanged in Tag Battle, never in plain VS\n");
+    }
 
     printf("test_net_handshake: all checks passed\n");
     return 0;

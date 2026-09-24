@@ -222,6 +222,12 @@ void rel_reset(void) {}
 /* net_handshake.c / net_sync.c */
 void rules_restore(void) {}
 void handshake_direct(void) {}
+int pc_net_local_partner_bind(void) {
+    return -1;
+}
+int pc_net_remote_partner_bind(void) {
+    return -1;
+}
 void adv_note(int remote_adv, int local_adv) {
     (void)remote_adv;
     (void)local_adv;
@@ -427,7 +433,7 @@ static void setup(void) {
     s_last_rx_ns = s_now;
     s_rc_window_ms = RECONNECT_MS;
     for (int32_t f = 0; f <= WROTE; f++) {
-        s_local_ring[f & (RING - 1)].button = (uint16_t)(0x1000 + f);
+        s_local_ring[f & (RING - 1)].pad[0].button = (uint16_t)(0x1000 + f);
     }
     s_resume_sends = 0;
     s_rel_fail = 0;
@@ -467,7 +473,7 @@ static void peer_pads(int32_t first, int32_t last) {
     pk.ck_frame = -1;
     pk.count = (uint8_t)(last - first + 1);
     for (int i = 0; i < pk.count; i++) {
-        pk.pads[i].button = (uint16_t)(0x2000 + first + i);
+        pk.pads[i].pad[0].button = (uint16_t)(0x2000 + first + i);
     }
     peer_heard();
     on_inputs(&pk);
@@ -529,7 +535,7 @@ static void case_resume_inside_ring(void) {
     assert(s_remote_have == 199);
     /* Their ring refilled into ours, frame by frame. */
     for (int32_t f = HAVE + 1; f <= 199; f++) {
-        assert(s_remote_ring[f & (RING - 1)].button == (uint16_t)(0x2000 + f));
+        assert(s_remote_ring[f & (RING - 1)].pad[0].button == (uint16_t)(0x2000 + f));
     }
     /* Ours refilled toward them: the reconnect send starts above the frame
      * the peer reported and carries every frame we hold, up to REDUNDANCY. */
@@ -537,7 +543,7 @@ static void case_resume_inside_ring(void) {
     assert(s_tx_pkt.first == 196 && s_tx_pkt.newest == WROTE);
     assert(s_tx_pkt.count == WROTE - 196 + 1);
     for (int i = 0; i < s_tx_pkt.count; i++) {
-        assert(s_tx_pkt.pads[i].button == (uint16_t)(0x1000 + 196 + i));
+        assert(s_tx_pkt.pads[i].pad[0].button == (uint16_t)(0x1000 + 196 + i));
     }
     assert(logged("net: interrupted at frame 200 (peer silent 3000 ms), reconnecting"));
     assert(logged("net: resumed at frame 200"));
@@ -1082,7 +1088,7 @@ static void deliver_changed_input(void) {
     pk.count = FRAME - pk.first + 1;
     pk.ck_frame = -1;
     for (int i = 0; i < pk.count; i++) {
-        pk.pads[i].button = 0x100;
+        pk.pads[i].pad[0].button = 0x100;
     }
     on_inputs(&pk);
     s_step = NULL;
