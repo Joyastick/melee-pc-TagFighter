@@ -31,6 +31,8 @@
 #include "pc/net_rank_session.h"
 extern const char* pc_get_net_target(void);
 extern void pc_set_net_target(const char* code);
+extern bool pc_get_meleevs_team(uint8_t out[9]);
+extern void pc_set_meleevs_team(const uint8_t team[9]);
 #include "pc/pc.h"
 #endif
 
@@ -156,6 +158,89 @@ OnlineKind gmOnline_GetKind(void)
     return online_kind;
 }
 
+/* MeleeVS TEAM SELECT runs the CSS inside GM_ONLINE with no network: the
+ * lobby hands straight to the CSS, and confirming it saves the team the
+ * next Matchmaking search takes along (the launcher's meleevs_team). */
+static bool team_select_css;
+static bool team_select_then_search;
+
+bool gmOnline_IsTeamSelect(void)
+{
+    return team_select_css;
+}
+
+void gmOnline_SetTeamSelectThenSearch(bool value)
+{
+    team_select_then_search = value;
+}
+
+#ifdef TARGET_PC
+static bool loadSavedTeam(PcNetTeam* team)
+{
+    uint8_t raw[9];
+    _Static_assert(sizeof(PcNetTeam) == sizeof raw, "PcNetTeam wire image");
+    if (!pc_get_meleevs_team(raw)) {
+        return false;
+    }
+    memcpy(team, raw, sizeof raw);
+    for (int i = 0; i < 2; i++) {
+        if (team->fighter[i].ckind < 0 || team->fighter[i].ckind >= CKind_Playable_Count) {
+            return false;
+        }
+    }
+    return team->point <= 1;
+}
+
+bool gmOnline_HasSavedTeam(void)
+{
+    PcNetTeam team;
+    return loadSavedTeam(&team);
+}
+
+/* The TEAM SELECT CSS starts on the saved team (or an empty port 1 and a
+ * CPU port 2): both on Red, CPU level 9, point as saved. */
+static void teamSelectPrefill(void)
+{
+    PlayerInitData* p = online_vs.start.players;
+    PcNetTeam team;
+    bool saved = loadSavedTeam(&team);
+    for (int i = 0; i < 2; i++) {
+        p[i].slot_type = i == 0 || (saved && team.fighter[1].human) ? Gm_PKind_Human
+                                                                    : Gm_PKind_Cpu;
+        p[i].team = 0;
+        p[i].cpu_level = 9;
+        if (saved) {
+            p[i].ckind = team.fighter[i].ckind;
+        }
+    }
+    TagAssist_SetExplicitPoint(0, saved ? team.point : 0);
+}
+
+/* What TEAM SELECT's CSS confirmed: port 1 is always this player, port 2
+ * the partner or CPU, point by the CSS's own Z choice. Costumes are left
+ * to Matchmaking's team colors. */
+static void teamSelectSave(const PlayerInitData* p)
+{
+    PcNetTeam team;
+    memset(&team, 0, sizeof team);
+    for (int i = 0; i < 2; i++) {
+        team.fighter[i].ckind = (int8_t) p[i].ckind;
+        team.fighter[i].human = i == 0 || p[i].slot_type == Gm_PKind_Human;
+        team.fighter[i].cpu_level = team.fighter[i].human ? 0 : 9;
+    }
+    team.point = TagAssist_IsPortPoint(1) ? 1 : 0;
+    pc_set_meleevs_team((const uint8_t*) &team);
+    pc_log_line("online: team select saved %d%s + %d (%s)%s", team.fighter[0].ckind,
+                team.point == 0 ? " point" : "", team.fighter[1].ckind,
+                team.fighter[1].human ? "human" : "cpu", team.point == 1 ? " point" : "");
+}
+#else
+bool gmOnline_HasSavedTeam(void)
+{
+    return false;
+}
+#endif
+
 #ifdef TARGET_PC
 static bool internetLobby(void);
 #endif
@@ -170,8 +255,9 @@ void onEnterLobby(UNUSED GameModeState* state)
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
     if (!awaiting_rank_result) {
         /* Internet lobbies keep the DHT node the online menu warmed up; LAN
-         * and Profile close it so LAN can bind the same port. */
-        if (internetLobby()) {
+         * and Profile close it so LAN can bind the same port. TEAM SELECT
+         * keeps it too: Matchmaking usually comes next. */
+        if (internetLobby() || online_kind == ONLINE_KIND_TEAM_SELECT) {
             pc_net_match_idle();
         } else {
             pc_net_match_stop();
@@ -186,6 +272,11 @@ void onEnterLobby(UNUSED GameModeState* state)
     online_vs.start.players[1].slot_type = Gm_PKind_Human;
     for (int i = 2; i < GM_MAX_PLAYERS; ++i)
         online_vs.start.players[i].slot_type = Gm_PKind_NA;
+#ifdef TARGET_PC
+    if (online_kind == ONLINE_KIND_TEAM_SELECT) {
+        teamSelectPrefill();
+    }
+#endif
 }
 
 #ifdef TARGET_PC
@@ -228,12 +319,32 @@ void onEnterCss(GameModeState* state)
 #ifdef TARGET_PC
     pc_log_line("online: enter CSS at frame %d", pc_net_frame());
 #endif
+    team_select_css = online_kind == ONLINE_KIND_TEAM_SELECT;
     gmVsMelee_EnterCss(state, &online_vs, VS_MELEE);
 }
 
 void onExitCss(GameModeState* state)
 {
 #ifdef TARGET_PC
+    if (team_select_css) {
+        CSSData* css = gm_GetGameModeStateExitData(state);
+        bool search = team_select_then_search;
+        team_select_css = false;
+        team_select_then_search = false;
+        if (css->pending_scene_change == CSSPendingSceneChange_2) {
+            gm_ChangeGameModeAfterCurrentScene(GM_MENU); /* backed out */
+            return;
+        }
+        teamSelectSave(css->vs.start.players);
+        if (search) {
+            /* MATCHMAKING with no saved team: now search with it. */
+            online_kind = ONLINE_KIND_UNRANKED;
+            gm_SetNextGameModeStateId(state_lobby);
+        } else {
+            gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+        }
+        return;
+    }
     if (pc_net_peer_status() != PC_NET_PEER_OK) {
         gm_SetNextGameModeStateId(state_lobby);
         return;
@@ -446,6 +557,7 @@ static void profileRefresh(void) {
 }
 static bool internetLobby(void) {
     return online_kind != ONLINE_KIND_LAN && online_kind != ONLINE_KIND_PROFILE &&
+           online_kind != ONLINE_KIND_TEAM_SELECT &&
            !(online_kind == ONLINE_KIND_DIRECT && getenv("MELEE_LAN_DIRECT"));
 }
 
@@ -453,9 +565,9 @@ static bool internetLobby(void) {
  * online CSS and SSS: each machine brings a team fixed before searching,
  * and the match starts straight from the two teams on a random legal stage.
  * Direct Connect and LAN keep the regular MeleeVS CSS and stage select.
- * ponytail: the team comes from the last offline MeleeVS CSS (the VS mode's
- * saved picks: port 1 and its teammate) until the pre-queue team select
- * screen exists; the handshake falls back to Fox/Falco for a missing pick. */
+ * The team is the one TEAM SELECT saved; without one, the last offline
+ * MeleeVS CSS's picks (port 1 and its teammate). The handshake falls back
+ * to Fox/Falco for a missing pick. */
 static bool matchmadeMode(void)
 {
     return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn();
@@ -466,6 +578,9 @@ static PcNetTeam matchmadeLocalTeam(void)
     const PlayerInitData* p = gmVsMelee_GetVsData()->start.players;
     PcNetTeam team;
     int mate = -1;
+    if (loadSavedTeam(&team)) {
+        return team;
+    }
     memset(&team, 0, sizeof team);
     for (int i = 1; i < 4; i++) {
         if (p[i].slot_type != Gm_PKind_NA && p[i].team == p[0].team) {
@@ -500,27 +615,14 @@ static void startMatch(enum PcNetMatchMode mode, const char* code)
  * Stadium, Yoshi's Story, Dream Land, Battlefield, Final Destination. */
 static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
 
-/* Exact same character and costume as an earlier port in `order`. */
-static bool matchmadeClash(const PlayerInitData* p, const int* order, int upto)
-{
-    for (int j = 0; j < upto; j++) {
-        const PlayerInitData* q = &p[order[j]];
-        if (q->ckind == p[order[upto]].ckind && q->color == p[order[upto]].color) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /* Build the whole match from the two handshake teams, identically on both
  * machines: ports by pc_net_game_port (player 0, the host, on 1+2 in red;
- * player 1 on 3+4 in blue), point from each team's choice, a costume clash
- * resolved in the host's favor, and a stage picked from the shared seed. */
+ * player 1 on 3+4 in blue), point from each team's choice, each fighter in
+ * its team color's costume the way a vanilla team battle dresses it, and a
+ * stage picked from the shared seed. */
 static void matchmadeBuild(void)
 {
     StartMeleeData* start = &online_vs.start;
-    int order[4];
-    int n = 0;
     start->rules.is_teams = 1;
     for (int i = 0; i < GM_MAX_PLAYERS; i++) {
         start->players[i].slot_type = Gm_PKind_NA;
@@ -532,24 +634,16 @@ static void matchmadeBuild(void)
             int port = pc_net_game_port(m, slot);
             PlayerInitData* p = &start->players[port];
             p->ckind = f->ckind;
-            p->color = f->color;
+            p->color = m == 0 ? gm_80169264((u8) f->ckind) : gm_801692BC((u8) f->ckind);
+            p->sub_color = 0;
             p->slot_type = f->human ? Gm_PKind_Human : Gm_PKind_Cpu;
             if (!f->human) {
                 p->cpu_level = f->cpu_level;
             }
             p->team = (u8) m;
             TagAssist_CssSyncPortTeam(port, (u8) m);
-            order[n++] = port;
         }
         TagAssist_SetExplicitPoint((u8) m, pc_net_game_port(m, team->point));
-    }
-    /* Host's fighters first, so only the guest's ever move. */
-    for (int k = 1; k < 4; k++) {
-        PlayerInitData* p = &start->players[order[k]];
-        int costumes = gm_GetNumCostumesForCKind((u8) p->ckind);
-        for (int tries = 0; tries < costumes && matchmadeClash(start->players, order, k); tries++) {
-            p->color = (u8) ((p->color + 1) % costumes);
-        }
     }
     {
         u32 h = pc_net_match_seed() * 2654435761u;
@@ -634,7 +728,9 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
     mnOnlineLobby_Create();
 #ifdef TARGET_PC
     direct_editing = false;
-    if (online_kind == ONLINE_KIND_PROFILE) {
+    if (online_kind == ONLINE_KIND_TEAM_SELECT) {
+        /* offline: the first frame goes straight on to the CSS */
+    } else if (online_kind == ONLINE_KIND_PROFILE) {
         profileRefresh();
     } else if (internetLobby() && online_kind == ONLINE_KIND_DIRECT) {
         /* Ask for the code first: starting on a stale launcher pref is how
@@ -782,6 +878,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     int n;
     u64 input = gm_GetButtonsTriggered(PAD_MAX_CONTROLLERS);
 
+    if (online_kind == ONLINE_KIND_TEAM_SELECT) {
+        gm_801A4B60(); /* on to the CSS (state_css) */
+        return;
+    }
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {
         memset(&view, 0, sizeof view);
         view.title = online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :

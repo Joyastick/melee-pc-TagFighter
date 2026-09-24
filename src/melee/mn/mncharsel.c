@@ -43,6 +43,7 @@
 #include <sysdolphin/baselib/random.h>
 #include <sysdolphin/baselib/sislib.h>
 #ifdef TARGET_PC
+#include <melee/gm/gmonlinemode.h>
 #include <pc/net.h>
 #endif
 
@@ -106,6 +107,13 @@ static s8 mnCharSel_804D6CF9;
 /// per-door jobjs it needs exist, by the random-character pass right after
 /// mnCharSel_802640A0() returns.
 static bool sTagAutoPopulate = false;
+
+/// MeleeVS TEAM SELECT (gmOnline_IsTeamSelect): only doors 1 and 2 are open,
+/// both on Red. Door 1 is always this player; door 2 toggles HMN/CPU.
+static inline bool teamSelectOn(void)
+{
+    return gmOnline_IsTeamSelect();
+}
 
 /// Tag Battle's own CSS title ("Melee"/"VS" two-tone) and per-door "POINT"
 /// labels, in place of the borrowed "TEAM BATTLE" banner. Created once by
@@ -2307,6 +2315,13 @@ void mnCharSel_CostumeChange(int door, u32 input)
 {
     u8 prev_costume = mnCharSel_803F0DFC.doors[door].costume;
 
+#ifdef TARGET_PC
+    /* Matchmaking decides team colors, costumes follow them. */
+    if (teamSelectOn()) {
+        return;
+    }
+#endif
+
     if (mnCharSel_803F0DFC.doors[door].sel_icon >= 0x19) {
         return;
     }
@@ -2509,6 +2524,11 @@ static inline bool cursorOverDoor(struct CSSCursorData* cursor, CSSDoor* dp)
 /// Advances the door's team colour when the cursor clicks its team box.
 static inline void cycleTeam(struct CSSCursorData* cursor, CSSDoor* dp, s32 di)
 {
+#ifdef TARGET_PC
+    if (teamSelectOn()) {
+        return; /* one team; Matchmaking picks its color */
+    }
+#endif
     if (cursorOverTeamBtn(cursor, dp)) {
         cursor->x10 = -3.4f;
         if (TagAssist_IsTagBattleOn()) {
@@ -3167,6 +3187,13 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             cy4 > -4.600000095367432)
                                         {
                                             cursor->x10 = -2.2f;
+#ifdef TARGET_PC
+                                            if (teamSelectOn() && door != 1) {
+                                                // Door 1 is always this
+                                                // player; 3 and 4 stay shut.
+                                                break;
+                                            }
+#endif
                                             if (TagAssist_IsTagBattleOn()) {
                                                 // Tag Battle always needs
                                                 // exactly 4 players (2v2) --
@@ -3271,7 +3298,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                     if (mnCharSel_803F0DFC.doors[door]
                                                 .is_hold_cpu_slider == 0 &&
                                         mnCharSel_803F0DFC.doors[door]
-                                                .p_kind == 1)
+                                                .p_kind == 1
+#ifdef TARGET_PC
+                                        /* TEAM SELECT's CPU is level 9 */
+                                        && !teamSelectOn()
+#endif
+                                    )
                                     {
                                         GameRules* rules2 =
                                             gmMainLib_GetGameRules();
@@ -3834,13 +3866,50 @@ void fn_80262648(HSD_GObj* gobj)
     HSD_JObjAnimAll(jobj);
 }
 
+#ifdef TARGET_PC
+/// Keep TEAM SELECT's layout whatever else got through: door 1 human on
+/// Red, door 2 on Red, doors 3 and 4 shut. The CPU is always level 9.
+static void teamSelectFrame(void)
+{
+    int i;
+    for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
+        CSSDoor* dp = &mnCharSel_803F0DFC.doors[i];
+        PlayerInitData* p = &mnCharSel_804D6CB0->vs.start.players[i];
+        u8 kind = i == 0 ? 0 : i == 1 ? dp->p_kind : 3;
+        if (i == 1 && kind == 3) {
+            kind = 1;
+        }
+        if (dp->p_kind != kind || (i < 2 && dp->team != 0)) {
+            dp->p_kind = kind;
+            p->slot_type = kind;
+            if (i < 2) {
+                dp->team = 0;
+                p->team = 0;
+            }
+            mnCharSel_8025DB34((u8) i);
+        }
+    }
+    mnCharSel_804D6CB0->vs.start.players[1].cpu_level = 9;
+}
+#endif
+
 void fn_80262F44(HSD_GObj* gobj)
 {
     HSD_JObj* jobj = GET_JOBJ(gobj);
     int i;
     int valid_count = 0;
+#ifdef TARGET_PC
+    bool team_select = teamSelectOn();
+#else
+    bool team_select = false;
+#endif
     PAD_STACK(0x8);
 
+#ifdef TARGET_PC
+    if (team_select) {
+        teamSelectFrame();
+    }
+#endif
     if (TagAssist_IsTagBattleOn()) {
         // Red/Blue team colors, matching the CSS's own name-tag palette
         // (mnCharSel_804DC594/584 below).
@@ -3941,7 +4010,10 @@ void fn_80262F44(HSD_GObj* gobj)
                         blue_count++;
                     }
                 }
-                if (red_count != 2 || blue_count != 2) {
+                // TEAM SELECT is one team of two: both on Red.
+                if (team_select ? (red_count != 2 || blue_count != 0)
+                                : (red_count != 2 || blue_count != 2))
+                {
                     goto hide;
                 }
                 {
@@ -3974,6 +4046,9 @@ void fn_80262F44(HSD_GObj* gobj)
                             goto hide;
                         }
                     }
+                }
+                if (team_select) {
+                    goto teams_ok; // no opposing team to require
                 }
             }
             if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
@@ -5605,7 +5680,24 @@ s32 mnCharSel_802640A0(void)
              * player press Start on their own door -- port 0/2 on Red, 1/3
              * on Blue, Human if that port's controller is plugged in, CPU
              * otherwise. */
-            if (sTagAutoPopulate) {
+            if (teamSelectOn()) {
+                /* TEAM SELECT: the saved team's doors 1-2 on Red (the
+                 * online lobby filled slot_type), 3-4 shut. */
+                mnCharSel_803F0DFC.doors[i].team = 0;
+                if (i >= 2) {
+                    mnCharSel_803F0DFC.doors[i].p_kind = 3;
+                } else if (i == 0) {
+                    mnCharSel_803F0DFC.doors[i].p_kind = 0;
+                } else if (mnCharSel_803F0DFC.doors[i].p_kind == 3) {
+                    mnCharSel_803F0DFC.doors[i].p_kind = 1;
+                }
+                mnCharSel_804D6CB0->vs.start.players[i].team = 0;
+                mnCharSel_804D6CB0->vs.start.players[i].slot_type =
+                    mnCharSel_803F0DFC.doors[i].p_kind;
+                /* 2 = no Red/Blue team, so a shut door never counts as
+                 * the team's default point (TagAssist_IsPortPoint). */
+                TagAssist_CssSyncPortTeam(i, i >= 2 ? 2 : 0);
+            } else if (sTagAutoPopulate) {
                 if (pc_net_active()) {
                     /* Online: net.c drives ports 0/1 (the two machines'
                      * players) and ports 2/3 only for a machine whose

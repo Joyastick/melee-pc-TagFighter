@@ -31,15 +31,17 @@ static const char* const online_descriptions[] = {
 
 /* MELEE VS's own submenu, see mnOnline_SetEnteredFromTagBattle. No Ranked
  * or Profile row: Tag Battle online is scoped to LAN + Direct + Matchmaking
- * (MATCHMAKING is ONLINE_KIND_UNRANKED under a player-facing MeleeVS name). */
+ * (MATCHMAKING is ONLINE_KIND_UNRANKED under a player-facing MeleeVS name).
+ * TEAM SELECT picks the fixed team Matchmaking queues with. */
 static const char* const tag_battle_labels[] = {
-    "LOCAL", "LAN PLAY", "DIRECT CONNECT", "MATCHMAKING",
+    "LOCAL", "LAN PLAY", "DIRECT CONNECT", "TEAM SELECT", "MATCHMAKING",
 };
 
 static const char* const tag_battle_descriptions[] = {
     "Play locally, same as MELEE VS today.",
     "Play another player on your local network.",
     "Connect to a friend using a connect code.",
+    "Pick the team you take into Matchmaking.",
     "Find an opponent online for a Tag Battle.",
 };
 
@@ -150,9 +152,21 @@ void mnOnline_Think(HSD_GObj* gp)
                 TagAssist_ApplyDefaultRules();
                 enterOnline(ONLINE_KIND_DIRECT);
                 break;
+            case SEL_TAG_TEAM_SELECT:
+                TagAssist_EnterForcedOn();
+                TagAssist_ApplyDefaultRules();
+                gmOnline_SetTeamSelectThenSearch(false);
+                enterOnline(ONLINE_KIND_TEAM_SELECT);
+                break;
             case SEL_TAG_UNRANKED:
                 TagAssist_EnterForcedOn();
                 TagAssist_ApplyDefaultRules();
+                /* No saved team yet: pick one first, then search. */
+                if (!gmOnline_HasSavedTeam()) {
+                    gmOnline_SetTeamSelectThenSearch(true);
+                    enterOnline(ONLINE_KIND_TEAM_SELECT);
+                    break;
+                }
                 enterOnline(ONLINE_KIND_UNRANKED);
                 break;
             default:

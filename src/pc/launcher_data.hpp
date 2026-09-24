@@ -52,6 +52,9 @@ struct Preferences {
     float music_volume = 1.0f;
     float sfx_volume = 1.0f;
     uint64_t install_id = 0;  // random once per install (LAN host election); 0 = not yet
+    // MeleeVS Matchmaking team from TEAM SELECT: the 9-byte PcNetTeam
+    // (net.h) as 18 lowercase hex digits; empty until a team is saved.
+    std::string meleevs_team;
 };
 DiscInfo inspect_disc(const std::string& path);
 Verification verify_disc(

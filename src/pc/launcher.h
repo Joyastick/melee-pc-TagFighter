@@ -16,6 +16,11 @@ bool pc_menu_is_open(void);
 /* Friend's connect code, persisted; written by the in-game Direct Connect
  * entry as well as the launcher and F1 menu fields. */
 void pc_set_net_target(const char* code);
+/* MeleeVS Matchmaking team saved by TEAM SELECT (the 9-byte PcNetTeam wire
+ * image, net.h), persisted in the launcher settings. get returns false when
+ * none has been saved yet. */
+bool pc_get_meleevs_team(uint8_t out[9]);
+void pc_set_meleevs_team(const uint8_t team[9]);
 #ifdef __cplusplus
 }
 #endif

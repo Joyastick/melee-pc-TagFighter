@@ -416,6 +416,11 @@ Preferences load_preferences(const std::filesystem::path& path) {
                 (key == "music_volume" ? prefs.music_volume : prefs.sfx_volume) = value;
         } else if (key == "install_id") {
             row >> std::hex >> prefs.install_id;
+        } else if (key == "meleevs_team") {
+            std::string value;
+            if (row >> value && value.size() == 18 &&
+                value.find_first_not_of("0123456789abcdef") == std::string::npos)
+                prefs.meleevs_team = value;
         }
     }
     return prefs;
@@ -448,6 +453,8 @@ bool save_preferences(
          << "\nmusic_volume " << prefs.music_volume << "\nsfx_volume " << prefs.sfx_volume
          << "\ninstall_id " << std::hex << prefs.install_id << std::dec << '\n';
     text << "reverb " << prefs.reverb << '\n';
+    if (!prefs.meleevs_team.empty())
+        text << "meleevs_team " << prefs.meleevs_team << '\n';
     auto data = text.str();
     size_t done = 0;
     bool ok = true;

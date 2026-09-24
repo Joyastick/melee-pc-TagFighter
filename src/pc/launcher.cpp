@@ -1925,6 +1925,23 @@ extern "C" void pc_set_net_target(const char* code) {
             e->SetValue(prefs.net_target);
     }
 }
+extern "C" bool pc_get_meleevs_team(uint8_t out[9]) {
+    if (prefs.meleevs_team.size() != 18)
+        return false;
+    for (int i = 0; i < 9; i++)
+        out[i] = (uint8_t)std::stoi(prefs.meleevs_team.substr(i * 2, 2), nullptr, 16);
+    return true;
+}
+extern "C" void pc_set_meleevs_team(const uint8_t team[9]) {
+    static const char hex[] = "0123456789abcdef";
+    prefs.meleevs_team.clear();
+    for (int i = 0; i < 9; i++) {
+        prefs.meleevs_team += hex[team[i] >> 4];
+        prefs.meleevs_team += hex[team[i] & 15];
+    }
+    std::string error;
+    launcher::save_preferences(config_path, prefs, error);
+}
 extern "C" int pc_get_net_port(void) {
     const char* env_port = getenv("MELEE_NET_PORT");
     if (env_port && *env_port) {
