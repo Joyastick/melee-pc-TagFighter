@@ -141,6 +141,9 @@ void pc_dht_set_datagram_callback(pc_dht_datagram_fn f, void* c) {
 intptr_t pc_dht_socket(void) {
     return dht_fd;
 }
+uint16_t pc_dht_port(void) {
+    return local_port;
+}
 bool pc_dht_next_candidate(struct pc_dht_endpoint* out) {
     if (!candidate)
         return false;
@@ -407,22 +410,36 @@ int main(int argc, char** argv) {
     memcpy(record + 36, &addr, 4);
     put_be(record + 40, 51234, 2);
     put_be(record + 42, (uint64_t)time(NULL), 8);
+    uint32_t lan_addr = htonl(0xc0a8010a);
+    memcpy(record + 50, &lan_addr, 4);
+    put_be(record + 54, 60000, 2);
     pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
-    struct pc_dht_endpoint found;
-    assert(direct_record_read(record, sizeof record, &found));
+    struct pc_dht_endpoint found, lan;
+    assert(direct_record_read(record, sizeof record, &found, &lan));
     assert(found.address == addr && found.port == 51234);
-    assert(!direct_record_read(record, sizeof record - 1, &found));
+    assert(lan.address == lan_addr && lan.port == 60000);
+    assert(!direct_record_read(record, sizeof record - 1, &found, &lan));
     record[41] ^= 1; /* endpoint is inside the signature */
-    assert(!direct_record_read(record, sizeof record, &found));
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
     record[41] ^= 1;
+    record[55] ^= 1; /* so is the LAN route */
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
+    record[55] ^= 1;
     put_be(record + 42, (uint64_t)time(NULL) - DIRECT_MAX_AGE - 60, 8);
     pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
-    assert(!direct_record_read(record, sizeof record, &found)); /* stale */
+    assert(!direct_record_read(record, sizeof record, &found, &lan)); /* stale */
     put_be(record + 42, (uint64_t)time(NULL), 8);
     pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
     target[strlen(target) - 1] ^= 1; /* someone else's code */
-    assert(!direct_record_read(record, sizeof record, &found));
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
     target[0] = 0;
+    /* Hello targets dedupe and stay bounded. */
+    hello_target_count = hello_target_cursor = 0;
+    for (unsigned i = 0; i < HELLO_TARGETS + 2; i++)
+        add_hello_target((struct pc_dht_endpoint){addr, (uint16_t)(1000 + i)});
+    add_hello_target((struct pc_dht_endpoint){addr, 1000 + HELLO_TARGETS + 1});
+    assert(hello_target_count == HELLO_TARGETS);
+    hello_target_count = 0;
     PcNetIdentity slot_a, slot_b;
     direct_slot_for("HOST#AAAAAAAA");
     slot_a = direct_slot;

@@ -47,10 +47,15 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
  * only the code; the value inside is signed by the host's real identity key,
  * which the dialer checks against the code the same way a Hello is. */
 #define DIRECT_SALT "meleepc/direct/v1"
-#define DIRECT_RECORD_BYTES 114 /* magic 4, key 32, ip 4, port 2, time 8, sig 64 */
-#define DIRECT_SIGNED_BYTES 50
+/* magic 4, key 32, public ip 4 + port 2, time 8, LAN ip 4 + port 2, sig 64 */
+#define DIRECT_RECORD_BYTES 120
+#define DIRECT_SIGNED_BYTES 56
 #define DIRECT_MAX_AGE 1800        /* seconds a published endpoint stays usable */
 #define DIRECT_REPUBLISH_MS 300000 /* refresh well inside DIRECT_MAX_AGE */
+/* Extra Hello destinations beyond DHT candidates (direct record addresses,
+ * same-network LAN routes), resent every HELLO_TARGET_MS until paired. */
+#define HELLO_TARGETS 4
+#define HELLO_TARGET_MS 1000
 
 #pragma pack(push, 1)
 typedef struct MatchHello {
@@ -108,9 +113,12 @@ static const char* publication_reason;
 static bool publication_record;
 static uint8_t publication_wire[PC_RANK_RECORD_BYTES];
 static PcNetIdentity direct_slot;
-static bool direct_pending, direct_found;
-static uint64_t direct_next, direct_next_hello;
+static bool direct_pending;
+static uint64_t direct_next;
 static struct pc_dht_endpoint direct_endpoint;
+static struct pc_dht_endpoint hello_targets[HELLO_TARGETS];
+static unsigned hello_target_count, hello_target_cursor;
+static uint64_t next_target_hello;
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -347,7 +355,54 @@ static void put_be(uint8_t* p, uint64_t v, int bytes) {
     for (int i = bytes - 1; i >= 0; i--, v >>= 8)
         p[i] = (uint8_t)v;
 }
-static bool direct_record_read(const uint8_t* v, size_t n, struct pc_dht_endpoint* out) {
+/* Our own address on the local network: the source address the OS would use
+ * to reach the internet. connect() on UDP only picks a route; nothing is sent. */
+static uint32_t lan_address(void) {
+    uint32_t result = 0;
+    MatchSocket s = socket(AF_INET, SOCK_DGRAM, 0);
+#ifdef _WIN32
+    if (s == INVALID_SOCKET)
+        return 0;
+#else
+    if (s < 0)
+        return 0;
+#endif
+    struct sockaddr_in to = {0}, self = {0};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(53);
+    to.sin_addr.s_addr = htonl(0x08080808);
+    socklen_t length = sizeof self;
+    if (!connect(s, (struct sockaddr*)&to, sizeof to) &&
+        !getsockname(s, (struct sockaddr*)&self, &length))
+        result = self.sin_addr.s_addr;
+#ifdef _WIN32
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return result;
+}
+/* Hairpin workaround: two players behind the same router see each other's
+ * public address, and many routers drop packets sent to their own public
+ * address from inside. Slippi dials the LAN address in that case; we add it
+ * (or a LAN broadcast) as an extra Hello destination alongside the public one. */
+static bool add_hello_target(struct pc_dht_endpoint ep) {
+    for (unsigned i = 0; i < hello_target_count; i++)
+        if (hello_targets[i].address == ep.address && hello_targets[i].port == ep.port)
+            return false;
+    if (hello_target_count < HELLO_TARGETS)
+        hello_targets[hello_target_count++] = ep;
+    else
+        hello_targets[hello_target_cursor++ % HELLO_TARGETS] = ep;
+    next_target_hello = 0;
+    return true;
+}
+static bool same_public_ip(uint32_t address) {
+    struct pc_dht_endpoint self;
+    return pc_dht_external_endpoint(&self) && self.address == address;
+}
+static bool direct_record_read(
+    const uint8_t* v, size_t n, struct pc_dht_endpoint* out, struct pc_dht_endpoint* lan) {
     if (n != DIRECT_RECORD_BYTES || memcmp(v, "MPD1", 4) || !key_code_matches(v + 4, target) ||
         !pc_identity_verify(v + 4, v + DIRECT_SIGNED_BYTES, v, DIRECT_SIGNED_BYTES))
         return false;
@@ -359,6 +414,8 @@ static bool direct_record_read(const uint8_t* v, size_t n, struct pc_dht_endpoin
         return false;
     memcpy(&out->address, v + 36, 4);
     out->port = (uint16_t)(v[40] << 8 | v[41]);
+    memcpy(&lan->address, v + 50, 4);
+    lan->port = (uint16_t)(v[54] << 8 | v[55]);
     return out->address && out->port;
 }
 static void direct_put_result(const PcDhtItemResult* r, void* context) {
@@ -378,16 +435,16 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
     direct_pending = false;
     if (r->status == PC_DHT_ITEM_CANCELLED)
         return;
-    struct pc_dht_endpoint ep;
-    if (r->status == PC_DHT_ITEM_OK && direct_record_read(r->value, r->value_length, &ep)) {
+    struct pc_dht_endpoint ep, lan;
+    if (r->status == PC_DHT_ITEM_OK && direct_record_read(r->value, r->value_length, &ep, &lan)) {
         uint32_t ip = ntohl(ep.address);
-        pc_log_line("match: direct record for %s -> %u.%u.%u.%u:%u", target, ip >> 24,
-            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port);
-        if (!direct_found || ep.address != direct_endpoint.address ||
-            ep.port != direct_endpoint.port)
-            direct_next_hello = 0;
-        direct_endpoint = ep;
-        direct_found = true;
+        bool local = lan.address && lan.port && same_public_ip(ep.address);
+        pc_log_line("match: direct record for %s -> %u.%u.%u.%u:%u%s", target, ip >> 24,
+            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port,
+            local ? " (same network, also dialing its LAN address)" : "");
+        add_hello_target(ep);
+        if (local)
+            add_hello_target(lan);
         direct_next = SDL_GetTicks() + 30000; /* pick up a host re-publish */
     } else {
         pc_log_line("match: no direct record for %s yet (status=%d)", target, (int)r->status);
@@ -401,10 +458,6 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
 static void direct_poll(uint64_t now) {
     if (mode != PC_MATCH_DIRECT || have_peer)
         return;
-    if (direct_found && now >= direct_next_hello) {
-        send_packet(&hello, sizeof hello, &direct_endpoint);
-        direct_next_hello = now + 1000;
-    }
     if (direct_pending || now < direct_next || !pc_dht_ready() || pc_dht_item_busy())
         return;
     if (target[0]) {
@@ -421,6 +474,9 @@ static void direct_poll(uint64_t now) {
         memcpy(record + 36, &ep.address, 4);
         put_be(record + 40, ep.port, 2);
         put_be(record + 42, (uint64_t)when, 8);
+        uint32_t lan = lan_address();
+        memcpy(record + 50, &lan, 4);
+        put_be(record + 54, pc_dht_port(), 2);
         pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
         direct_endpoint = ep;
         direct_pending = pc_dht_item_put(&direct_slot, DIRECT_SALT, strlen(DIRECT_SALT), when,
@@ -639,8 +695,10 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     digest();
     const char* direct = target[0] ? target : identity.code;
     pairing_topic(m, direct, topic);
-    direct_pending = direct_found = false;
-    direct_next = direct_next_hello = 0;
+    direct_pending = false;
+    direct_next = 0;
+    hello_target_count = hello_target_cursor = 0;
+    next_target_hello = 0;
     if (m == PC_MATCH_DIRECT)
         direct_slot_for(direct);
     if (!pc_dht_start((enum pc_dht_mode)m, m == PC_MATCH_UNRANKED ? unranked_pool() : direct, 0,
@@ -649,6 +707,8 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
         fail("DHT unavailable");
         return false;
     }
+    int on = 1; /* LAN broadcast Hellos, see add_hello_target() */
+    setsockopt((MatchSocket)pc_dht_socket(), SOL_SOCKET, SO_BROADCAST, (const char*)&on, sizeof on);
     memset(&hello, 0, sizeof hello);
     hello.magic = htonl(MATCH_MAGIC);
     hello.version = MATCH_VERSION;
@@ -699,6 +759,21 @@ void pc_net_match_poll(void) {
             for (int p = 0; p < 3; p++) {
                 send_packet(&hello, sizeof hello, &ep);
             }
+            /* Same public IP: another player behind our router (our own
+             * announce has our own external port and is skipped). Routers
+             * usually keep the local port as the public one, so broadcast
+             * the Hello on the LAN to that port. */
+            struct pc_dht_endpoint self;
+            if (pc_dht_external_endpoint(&self) && self.address == ep.address &&
+                self.port != ep.port &&
+                add_hello_target((struct pc_dht_endpoint){htonl(INADDR_BROADCAST), ep.port}))
+                pc_log_line(
+                    "match: candidate shares our public IP, broadcasting on LAN port %u", ep.port);
+        }
+        if (!have_peer && hello_target_count && now >= next_target_hello) {
+            for (unsigned i = 0; i < hello_target_count; i++)
+                send_packet(&hello, sizeof hello, &hello_targets[i]);
+            next_target_hello = now + HELLO_TARGET_MS;
         }
         if (have_peer && now >= next_send) {
             send_packet(
@@ -780,7 +855,8 @@ static void reset(bool keep_node) {
         pc_dht_idle();
     else
         pc_dht_stop();
-    direct_pending = direct_found = false;
+    direct_pending = false;
+    hello_target_count = 0;
     publication = 0;
     publication_reason = NULL;
     proof_pending = false;
