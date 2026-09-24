@@ -704,9 +704,17 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
 }
 /* Fill in (and re-sign for) our own addresses once they are known. */
 static void hello_refresh_from(void) {
-    static uint32_t lan;
+    static uint32_t lan, known_public;
     struct pc_dht_endpoint self;
     uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : 0;
+    /* A reopened DHT node relearns our public IP over a few seconds, while a
+     * rematch Hellos the last peer at once: keep signing the IP this process
+     * already learned rather than 0, which the peer only accepts from a LAN
+     * address (hello_source_ok). */
+    if (pub)
+        known_public = pub;
+    else
+        pub = known_public;
     if (!lan)
         lan = lan_address();
     if (pub == hello.from_public && lan == hello.from_lan)
