@@ -2667,7 +2667,7 @@ void mn_8022D594(HSD_GObj* gp)
             break;
 #ifdef TARGET_PC
         case SEL_VS_TAG_BATTLE:
-            /* Opens its own submenu (Local / Direct / Unranked) inside
+            /* Opens its own submenu (Local / Direct / Matchmaking) inside
              * MENU_KIND_ONLINE - see mnOnline_SetEnteredFromTagBattle.
              * SEL_TAG_LOCAL there is exactly this row's old direct-to-GM_VS
              * body. */

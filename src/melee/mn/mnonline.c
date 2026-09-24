@@ -30,9 +30,10 @@ static const char* const online_descriptions[] = {
 };
 
 /* MELEE VS's own submenu, see mnOnline_SetEnteredFromTagBattle. No Ranked
- * or Profile row: Tag Battle online is scoped to LAN + Direct + Unranked. */
+ * or Profile row: Tag Battle online is scoped to LAN + Direct + Matchmaking
+ * (MATCHMAKING is ONLINE_KIND_UNRANKED under a player-facing MeleeVS name). */
 static const char* const tag_battle_labels[] = {
-    "LOCAL", "LAN PLAY", "DIRECT CONNECT", "UNRANKED",
+    "LOCAL", "LAN PLAY", "DIRECT CONNECT", "MATCHMAKING",
 };
 
 static const char* const tag_battle_descriptions[] = {

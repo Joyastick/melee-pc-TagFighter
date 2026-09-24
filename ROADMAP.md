@@ -29,8 +29,8 @@ its own roadmap in [melee-pc](https://github.com/999sian/melee-pc).
 ## In progress
 
 - **2-player online Tag Battle** with rollback netcode, over LAN, Direct
-  Connect, and Unranked search. Tag Battle has its own Unranked pool, so it
-  only ever matches other Tag Battle players. Works in two-machine testing;
+  Connect, and Matchmaking. Matchmaking has its own pool, so it only ever
+  matches other Tag Battle players. Works in two-machine testing;
   not yet in a release.
 
 ## Planned

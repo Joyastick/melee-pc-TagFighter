@@ -657,7 +657,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {
         memset(&view, 0, sizeof view);
         view.title = online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
-                     online_kind == ONLINE_KIND_UNRANKED ? "UNRANKED" :
+                     online_kind == ONLINE_KIND_UNRANKED ?
+                         (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
