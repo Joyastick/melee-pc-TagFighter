@@ -20,6 +20,8 @@ bool pc_net_match_start(enum PcNetMatchMode mode, const char* target_code);
 void pc_net_match_stop(void);
 void pc_net_match_idle(void);
 void pc_net_match_warm(void);
+/* Direct Connect code entry: warm the DHT and publish our direct record early. */
+void pc_net_match_prepublish(void);
 void pc_net_match_poll(void);
 int pc_net_match_state(const char** why);
 bool pc_net_match_is_host(void);

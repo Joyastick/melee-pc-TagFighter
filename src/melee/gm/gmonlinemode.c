@@ -168,6 +168,9 @@ void onEnterLobby(UNUSED GameModeState* state)
         (pc_rank_session_set_complete() ||
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
     if (!awaiting_rank_result) {
+        if (pc_net_active()) {
+            pc_log_line("lobby: entering the lobby scene drops the active session");
+        }
         /* Internet lobbies keep the DHT node the online menu warmed up; LAN
          * and Profile close it so LAN can bind the same port. */
         if (internetLobby()) {
@@ -669,8 +672,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             snprintf(view.message, sizeof view.message, "%s", profile_message);
         } else if (direct_editing) {
             u64 repeat = gm_801A36C0(PAD_MAX_CONTROLLERS);
-            /* Bootstrap while the code is being typed, not after START. */
-            pc_net_match_warm();
+            /* Bootstrap while the code is being typed, not after START, and
+             * start publishing our direct record. */
+            pc_net_match_prepublish();
             bool edited = false;
             if (repeat & PAD_ANY_LEFT) {
                 direct_cursor = (direct_cursor + DIRECT_CODE_SLOTS - 1) % DIRECT_CODE_SLOTS;
