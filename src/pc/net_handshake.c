@@ -319,7 +319,29 @@ static bool team_invalid(const PcNetTeam* t, uint8_t partner_bind) {
     return false;
 }
 
-static void rules_capture(Rules* ru) {
+/* MeleeVS Matchmaking always plays one ruleset, whatever either player's
+ * own settings are: Stock, 3 lives, 8-minute stock timer, items off, team
+ * attack off. The host sends it; the guest refuses anything else. */
+#define MM_STOCKS 3
+#define MM_STOCK_MINUTES 8
+#define MM_ITEMS_OFF 0xFF /* mnItemSw_CommitItems' x21 - 1 for "Off" */
+static void matchmade_rules(Rules* ru) {
+    ru->game.mode = Mode_Stock;
+    ru->game.stock_count = MM_STOCKS;
+    ru->game.stock_time_limit = MM_STOCK_MINUTES;
+    ru->game.friendly_fire = 0;
+    ru->item_freq = MM_ITEMS_OFF;
+}
+
+static bool matchmade_rules_differ(const Rules* ru) {
+    return ru->game.mode != Mode_Stock || ru->game.stock_count != MM_STOCKS ||
+           ru->game.stock_time_limit != MM_STOCK_MINUTES || ru->game.friendly_fire != 0 ||
+           ru->item_freq != MM_ITEMS_OFF;
+}
+
+/* The game's own settings as they are, with no session overrides: what
+ * rules_restore() puts back. */
+static void rules_capture_own(Rules* ru) {
     const struct GamePrefs* p = gmMainLib_GetGamePrefs();
     ru->game = *gmMainLib_GetGameRules();
     ru->item_freq = p->item_freq;
@@ -332,15 +354,28 @@ static void rules_capture(Rules* ru) {
      * port (0 or 1) matchmaking assigns this peer. */
     ru->tag_bind = (uint8_t)pc_get_tag_bind(0);
     ru->partner_bind = local_partner_now();
+    ru->layout = NET_LAYOUT_DIRECT;
+}
+
+/* What this side would put in RULES: its own settings, the session layout,
+ * its team, and for Matchmaking the fixed ruleset. */
+static void rules_capture(Rules* ru) {
+    rules_capture_own(ru);
     ru->layout =
         s_want_matchmade && TagAssist_IsTagBattleOn() ? NET_LAYOUT_MATCHMADE : NET_LAYOUT_DIRECT;
     ru->team = team_for_wire(ru->partner_bind);
+    if (ru->layout == NET_LAYOUT_MATCHMADE) {
+        matchmade_rules(ru);
+    }
 }
 
 static void rules_apply(const Rules* ru, bool from_peer) {
     struct GamePrefs* p = gmMainLib_GetGamePrefs();
-    if (from_peer && !s_rules_saved) {
-        rules_capture(&s_rules_orig);
+    /* Keep our own settings to put back: the guest always overwrites them
+     * with the host's, and a Matchmaking host overwrites its own with the
+     * fixed ruleset. */
+    if ((from_peer || ru->layout == NET_LAYOUT_MATCHMADE) && !s_rules_saved) {
+        rules_capture_own(&s_rules_orig);
         s_rules_saved = true;
     }
     *gmMainLib_GetGameRules() = ru->game;
@@ -540,7 +575,8 @@ static const char* rules_values_invalid(const Rules* ru) {
         (ru->partner_bind != NET_NO_PARTNER && ru->game_mode != GAME_MODE_TAG_BATTLE) ||
         ru->layout > NET_LAYOUT_MATCHMADE ||
         (ru->layout == NET_LAYOUT_MATCHMADE &&
-            (ru->game_mode != GAME_MODE_TAG_BATTLE || team_invalid(&ru->team, ru->partner_bind))))
+            (ru->game_mode != GAME_MODE_TAG_BATTLE || team_invalid(&ru->team, ru->partner_bind) ||
+                matchmade_rules_differ(ru))))
     {
         return "value out of range";
     }
