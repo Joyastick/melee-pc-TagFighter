@@ -34,6 +34,7 @@ static enum pc_dht_mode mode;
 static char direct_code[32];
 static int rating_band;
 static uint64_t started, next_search, next_periodic;
+static bool searching, cache_saved;
 static pc_dht_datagram_fn datagram;
 static void* datagram_context;
 static struct pc_dht_endpoint queue[64];
@@ -332,7 +333,9 @@ bool pc_dht_topic(
         if (!code || !*code || strlen(code) >= sizeof(direct_code))
             return false;
         n = snprintf(topic, sizeof(topic), "meleepc/v1/direct/%s", code);
-    } else if (m == PC_DHT_UNRANKED)
+    } else if (m == PC_DHT_UNRANKED && code && *code)
+        n = snprintf(topic, sizeof(topic), "meleepc/v1/unranked/%s/%lld", code, (long long)minute);
+    else if (m == PC_DHT_UNRANKED)
         n = snprintf(topic, sizeof(topic), "meleepc/v1/unranked/%lld", (long long)minute);
     else if (m == PC_DHT_RANKED && band >= 0)
         n = snprintf(topic, sizeof(topic), "meleepc/v1/ranked/%d/%lld", band, (long long)minute);
@@ -448,10 +451,27 @@ static void values(void* ctx, int event, const unsigned char* hash, const void* 
         }
     }
 }
-bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port) {
-    unsigned char id[20], topic[20];
-    if (!pc_dht_topic(m, code, band, 0, topic))
-        return false;
+/* Ports this process has bound its DHT node to recently. The DHT keeps
+ * announcements from our own earlier sessions for a while, so they come back
+ * as "candidates" pointing at ourselves; pairing skips those. */
+#define OWN_PORTS 16
+static uint16_t own_ports[OWN_PORTS];
+static unsigned own_port_cursor;
+static uint16_t last_bound_port;
+static bool keep_item_on_start;
+bool pc_dht_is_own_port(uint16_t port) {
+    for (unsigned i = 0; i < OWN_PORTS; i++)
+        if (own_ports[i] == port)
+            return true;
+    return false;
+}
+void pc_dht_keep_item_on_start(bool keep) {
+    keep_item_on_start = keep;
+}
+bool pc_dht_warm(uint16_t port) {
+    unsigned char id[20];
+    if (fd >= 0 && (!port || port == bound_port))
+        return true;
     pc_dht_stop();
 #ifdef _WIN32
     WSADATA w;
@@ -467,9 +487,17 @@ bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port)
     }
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)))
-        goto fail;
+    /* Random-port mode: prefer the port of the previous node, so the NAT
+     * mapping and any direct record already published for it stay valid
+     * across matches. Falls back to a fresh random port if it is taken. */
+    addr.sin_port = htons(port ? port : last_bound_port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr))) {
+        if (port || !last_bound_port)
+            goto fail;
+        addr.sin_port = 0;
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)))
+            goto fail;
+    }
 #ifdef _WIN32
     u_long on = 1;
     if (ioctlsocket(fd, FIONBIO, &on))
@@ -483,14 +511,14 @@ bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port)
     if (getsockname(fd, (struct sockaddr*)&addr, &size))
         goto fail;
     bound_port = ntohs(addr.sin_port);
+    last_bound_port = bound_port;
+    if (!pc_dht_is_own_port(bound_port))
+        own_ports[own_port_cursor++ % OWN_PORTS] = bound_port;
     if (dht_random_bytes(id, sizeof(id)) < 0 ||
         dht_init((int)fd, -1, id, (const unsigned char*)"MP01") < 0)
         goto fail;
     memcpy(local_node_id, id, 20);
-    mode = m;
-    rating_band = band;
-    snprintf(direct_code, sizeof(direct_code), "%s", code ? code : "");
-    started = SDL_GetTicks();
+    searching = cache_saved = false;
     next_search = next_periodic = 0;
     queue_count = 0;
     memset(requests, 0, sizeof(requests));
@@ -512,12 +540,44 @@ bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port)
         }
     }
 #endif
+    pc_log_line("dht: node opened on port %u", bound_port);
     return true;
 fail:
     CLOSE(fd);
     fd = -1;
     bound_port = 0;
     return false;
+}
+bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port) {
+    unsigned char topic[20];
+    if (!pc_dht_topic(m, code, band, 0, topic))
+        return false;
+    bool reused = fd >= 0 && (!port || port == bound_port);
+    if (!pc_dht_warm(port))
+        return false;
+    /* A reused node keeps its routing table, NAT votes and request log; only
+     * the search itself restarts. Its earlier topic's search is left to run
+     * out in jech/dht (there is no cancel), which is harmless: peers found
+     * through it are dropped by the pairing topic check. */
+    if (!keep_item_on_start)
+        pc_dht_item_cancel();
+    mode = m;
+    rating_band = band;
+    snprintf(direct_code, sizeof(direct_code), "%s", code ? code : "");
+    started = SDL_GetTicks();
+    next_search = 0;
+    queue_count = 0;
+    searching = true;
+    pc_log_line("dht: search started (%s node)", reused ? "warm" : "cold");
+    return true;
+}
+void pc_dht_idle(void) {
+    searching = false;
+    queue_count = 0;
+    datagram = NULL;
+    datagram_context = NULL;
+    if (!keep_item_on_start)
+        pc_dht_item_cancel();
 }
 bool pc_dht_ready(void) {
     int good = 0, dubious = 0;
@@ -543,6 +603,12 @@ void pc_dht_poll(void) {
         dht_nodes(AF_INET, &good, &dubious, NULL, NULL);
         pc_log_line("dht: status: good=%d dubious=%d (ready=%d)", good, dubious, pc_dht_ready());
         last_dht_log = now;
+    }
+    /* Save the table as soon as it is useful, not only at handoff/stop, so
+     * the next launch bootstraps from live nodes even after a crash. */
+    if (!cache_saved && pc_dht_ready()) {
+        node_cache(true);
+        cache_saved = true;
     }
     time_t sleep = 1;
     for (unsigned i = 0; i < 64; i++) {
@@ -580,7 +646,7 @@ void pc_dht_poll(void) {
     pc_dht_item_tick();
     if (fd < 0)
         return;
-    if (now >= next_search && pc_dht_ready()) {
+    if (searching && now >= next_search && pc_dht_ready()) {
         int width = mode == PC_DHT_RANKED ? (now - started >= 90000    ? 2 :
                                                 now - started >= 30000 ? 1 :
                                                                          0) :
@@ -621,6 +687,7 @@ intptr_t pc_dht_take_socket(void) {
     fd = -1;
     bound_port = 0;
     queue_count = 0;
+    searching = false;
     pc_dht_item_cancel();
     return result;
 }

@@ -125,12 +125,34 @@ bool pc_dht_start(enum pc_dht_mode m, const char* c, int b, uint16_t p) {
         .sin_port = htons(local_port)};
     return bind(dht_fd, (void*)&a, sizeof a) == 0;
 }
+bool pc_dht_warm(uint16_t p) {
+    (void)p;
+    return dht_fd >= 0;
+}
+bool pc_dht_is_own_port(uint16_t p) {
+    (void)p;
+    return false;
+}
+void pc_dht_keep_item_on_start(bool keep) {
+    (void)keep;
+}
+void pc_dht_idle(void) {
+    pc_dht_item_cancel();
+    dht_cb = NULL;
+}
+bool pc_dht_external_endpoint(struct pc_dht_endpoint* out) {
+    (void)out;
+    return false;
+}
 void pc_dht_set_datagram_callback(pc_dht_datagram_fn f, void* c) {
     dht_cb = f;
     dht_ctx = c;
 }
 intptr_t pc_dht_socket(void) {
     return dht_fd;
+}
+uint16_t pc_dht_port(void) {
+    return local_port;
 }
 bool pc_dht_next_candidate(struct pc_dht_endpoint* out) {
     if (!candidate)
@@ -154,6 +176,10 @@ void pc_dht_poll(void) {
     socklen_t z = sizeof a;
     int n;
     while ((n = recvfrom(dht_fd, b, sizeof b, MSG_DONTWAIT, (void*)&a, &z)) > 0) {
+        /* Idle node (after a failed attempt): no callback, like net_dht.c,
+         * which only hands non-DHT datagrams to a registered callback. */
+        if (!dht_cb)
+            continue;
         if (n > 5 && b[5] == 'O' && !dropped_offer++) {
             continue;
         }
@@ -388,10 +414,60 @@ int main(int argc, char** argv) {
     h.code[strlen(h.code) - 1] ^= 1;
     assert(!key_code_matches(h.public_key, h.code));
 
+    /* Direct connect record: bound to the host's code, its signature and
+     * freshness; the slot key is derived from the code alone. */
+    snprintf(target, sizeof target, "%s", identity.code);
+    uint8_t record[DIRECT_RECORD_BYTES];
+    memcpy(record, "MPD1", 4);
+    memcpy(record + 4, identity.public_key, 32);
+    uint32_t addr = htonl(0x4a2c2ff7);
+    memcpy(record + 36, &addr, 4);
+    put_be(record + 40, 51234, 2);
+    put_be(record + 42, (uint64_t)time(NULL), 8);
+    uint32_t lan_addr = htonl(0xc0a8010a);
+    memcpy(record + 50, &lan_addr, 4);
+    put_be(record + 54, 60000, 2);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    struct pc_dht_endpoint found, lan;
+    assert(direct_record_read(record, sizeof record, &found, &lan));
+    assert(found.address == addr && found.port == 51234);
+    assert(lan.address == lan_addr && lan.port == 60000);
+    assert(!direct_record_read(record, sizeof record - 1, &found, &lan));
+    record[41] ^= 1; /* endpoint is inside the signature */
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
+    record[41] ^= 1;
+    record[55] ^= 1; /* so is the LAN route */
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
+    record[55] ^= 1;
+    put_be(record + 42, (uint64_t)time(NULL) - DIRECT_MAX_AGE - 60, 8);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    assert(!direct_record_read(record, sizeof record, &found, &lan)); /* stale */
+    put_be(record + 42, (uint64_t)time(NULL), 8);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    target[strlen(target) - 1] ^= 1; /* someone else's code */
+    assert(!direct_record_read(record, sizeof record, &found, &lan));
+    target[0] = 0;
+    /* Hello targets dedupe and stay bounded. */
+    hello_target_count = hello_target_cursor = 0;
+    for (unsigned i = 0; i < HELLO_TARGETS + 2; i++)
+        add_hello_target((struct pc_dht_endpoint){addr, (uint16_t)(1000 + i)});
+    add_hello_target((struct pc_dht_endpoint){addr, 1000 + HELLO_TARGETS + 1});
+    assert(hello_target_count == HELLO_TARGETS);
+    hello_target_count = 0;
+    PcNetIdentity slot_a, slot_b;
+    direct_slot_for("HOST#AAAAAAAA");
+    slot_a = direct_slot;
+    direct_slot_for("HOST#AAAAAAAA");
+    slot_b = direct_slot;
+    assert(!memcmp(slot_a.public_key, slot_b.public_key, 32));
+    direct_slot_for("HOST#AAAAAAAB");
+    assert(memcmp(slot_a.public_key, direct_slot.public_key, 32));
+
     char file[512];
     snprintf(file, sizeof file, "%s/identity.key", path);
     unlink(file);
     rmdir(path);
-    puts("pairing transcript signature, nonce/mode binding, code binding and packet bounds passed");
+    puts("pairing transcript signature, nonce/mode binding, code binding, packet bounds and "
+         "direct record checks passed");
     return 0;
 }

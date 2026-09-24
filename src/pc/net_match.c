@@ -40,7 +40,25 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
 #define MATCH_VERSION 3         /* v3: hello.code grew 14 -> 18 (40-bit key suffix) */
 #define RETRY_MS 250
-#define TIMEOUT_MS 8000
+/* How long a peer that answered our Hello gets to finish Offer/Ack before we
+ * drop it and keep searching. The exchange is one round trip retried every
+ * RETRY_MS, so 3s is a dozen resends; 8s only delayed the next candidate. */
+#define TIMEOUT_MS 3000
+/* Direct connect rendezvous record (BEP44 mutable item). The slot key is
+ * derived from the host's connect code, so a dialer can address it knowing
+ * only the code; the value inside is signed by the host's real identity key,
+ * which the dialer checks against the code the same way a Hello is. */
+#define DIRECT_SALT "meleepc/direct/v1"
+/* magic 4, key 32, public ip 4 + port 2, time 8, LAN ip 4 + port 2, sig 64 */
+#define DIRECT_RECORD_BYTES 120
+#define DIRECT_SIGNED_BYTES 56
+#define DIRECT_MAX_AGE 300        /* seconds a published endpoint stays usable */
+#define DIRECT_REPUBLISH_MS 90000 /* refresh well inside DIRECT_MAX_AGE */
+#define DIRECT_REPOLL_MS 3000     /* dialer re-fetch: pick up a fresher record fast */
+/* Extra Hello destinations beyond DHT candidates (direct record addresses,
+ * same-network LAN routes), resent every HELLO_TARGET_MS until paired. */
+#define HELLO_TARGETS 4
+#define HELLO_TARGET_MS 1000
 
 #pragma pack(push, 1)
 typedef struct MatchHello {
@@ -97,6 +115,17 @@ static uint64_t publication_deadline;
 static const char* publication_reason;
 static bool publication_record;
 static uint8_t publication_wire[PC_RANK_RECORD_BYTES];
+static PcNetIdentity direct_slot;
+static bool direct_pending;
+static bool direct_put_inflight; /* direct_pending is a publish, not a lookup */
+static bool direct_get_logged;
+static uint64_t direct_fresh_until; /* our record stays valid until then ... */
+static uint16_t direct_fresh_port;  /* ... as long as the node keeps this port */
+static uint64_t direct_next;
+static struct pc_dht_endpoint direct_endpoint;
+static struct pc_dht_endpoint hello_targets[HELLO_TARGETS];
+static unsigned hello_target_count, hello_target_cursor;
+static uint64_t next_target_hello;
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -283,9 +312,12 @@ static void sign_packet(void* p, size_t n) {
     pc_identity_sign(&identity, (uint8_t*)p + n - 64, p, n - 64);
 }
 static void fail(const char* why) {
+    pc_log_line("match: fail '%s' (state was %d, net active %d)", why ? why : "?", (int)state,
+        (int)pc_net_active());
     state = PC_MATCH_FAIL;
     failure = why;
-    pc_dht_stop();
+    /* Keep the node warm for the retry; only the search stops. */
+    pc_dht_idle();
     if (pc_net_active())
         pc_net_disconnect();
     if (mode == PC_MATCH_RANKED && pc_rank_session_state(NULL) != PC_RANK_SESSION_SAVED)
@@ -306,12 +338,8 @@ static void pairing_topic(enum PcNetMatchMode m, const char* direct, uint8_t out
      * candidate, waste a MatchHello/MatchOffer round trip, and only then
      * fail on the mode check the offer/ack path already carries (the same
      * outcome, just later and noisier) instead of never matching at all.
-     * ponytail: pc_dht_start's own DHT announce bucket (net_dht.c's
-     * PC_DHT_UNRANKED, still time-bucketed only) is not split the same way,
-     * so a Tag Battle and a plain-VS searcher still discover each other as
-     * DHT candidates before this topic check drops the mismatch - wasted
-     * round trips, not a correctness issue. Split pc_dht_topic() too if
-     * unranked search ever gets crowded enough for that to matter. */
+     * The DHT announce topic is split the same way (unranked_pool() below),
+     * so the two pools never even see each other as candidates. */
     int n = m == PC_MATCH_DIRECT ?
                 snprintf(text, sizeof text, "meleepc/match/v1/direct/%s", direct) :
                 snprintf(text, sizeof text,
@@ -319,6 +347,187 @@ static void pairing_topic(enum PcNetMatchMode m, const char* direct, uint8_t out
                     TagAssist_IsTagBattleOn() ? "meleepc/match/v1/unranked/tag" :
                                                 "meleepc/match/v1/unranked");
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
+}
+
+/* PC_DHT_UNRANKED pool name: Tag Battle searchers announce under their own
+ * DHT topic, plain VS keeps the original one. */
+static const char* unranked_pool(void) {
+    return TagAssist_IsTagBattleOn() ? "tag" : NULL;
+}
+
+static void direct_slot_for(const char* code) {
+    char material[64];
+    int n = snprintf(material, sizeof material, "%s/%s", DIRECT_SALT, code);
+    pc_identity_derive(&direct_slot, material, n > 0 ? (size_t)n : 0);
+}
+static void put_be(uint8_t* p, uint64_t v, int bytes) {
+    for (int i = bytes - 1; i >= 0; i--, v >>= 8)
+        p[i] = (uint8_t)v;
+}
+/* Our own address on the local network: the source address the OS would use
+ * to reach the internet. connect() on UDP only picks a route; nothing is sent. */
+static uint32_t lan_address(void) {
+    uint32_t result = 0;
+    MatchSocket s = socket(AF_INET, SOCK_DGRAM, 0);
+#ifdef _WIN32
+    if (s == INVALID_SOCKET)
+        return 0;
+#else
+    if (s < 0)
+        return 0;
+#endif
+    struct sockaddr_in to = {0}, self = {0};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(53);
+    to.sin_addr.s_addr = htonl(0x08080808);
+    socklen_t length = sizeof self;
+    if (!connect(s, (struct sockaddr*)&to, sizeof to) &&
+        !getsockname(s, (struct sockaddr*)&self, &length))
+        result = self.sin_addr.s_addr;
+#ifdef _WIN32
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return result;
+}
+/* Hairpin workaround: two players behind the same router see each other's
+ * public address, and many routers drop packets sent to their own public
+ * address from inside. Slippi dials the LAN address in that case; we add it
+ * (or a LAN broadcast) as an extra Hello destination alongside the public one. */
+static bool add_hello_target(struct pc_dht_endpoint ep) {
+    for (unsigned i = 0; i < hello_target_count; i++)
+        if (hello_targets[i].address == ep.address && hello_targets[i].port == ep.port)
+            return false;
+    if (hello_target_count < HELLO_TARGETS)
+        hello_targets[hello_target_count++] = ep;
+    else
+        hello_targets[hello_target_cursor++ % HELLO_TARGETS] = ep;
+    next_target_hello = 0;
+    return true;
+}
+static bool same_public_ip(uint32_t address) {
+    struct pc_dht_endpoint self;
+    return pc_dht_external_endpoint(&self) && self.address == address;
+}
+static bool direct_record_read(
+    const uint8_t* v, size_t n, struct pc_dht_endpoint* out, struct pc_dht_endpoint* lan) {
+    if (n != DIRECT_RECORD_BYTES || memcmp(v, "MPD1", 4) || !key_code_matches(v + 4, target) ||
+        !pc_identity_verify(v + 4, v + DIRECT_SIGNED_BYTES, v, DIRECT_SIGNED_BYTES))
+        return false;
+    int64_t when = 0;
+    for (int i = 0; i < 8; i++)
+        when = (int64_t)((uint64_t)when << 8 | v[42 + i]);
+    int64_t now = (int64_t)time(NULL);
+    if (when < now - DIRECT_MAX_AGE || when > now + DIRECT_MAX_AGE)
+        return false;
+    memcpy(&out->address, v + 36, 4);
+    out->port = (uint16_t)(v[40] << 8 | v[41]);
+    memcpy(&lan->address, v + 50, 4);
+    lan->port = (uint16_t)(v[54] << 8 | v[55]);
+    return out->address && out->port;
+}
+static void direct_put_result(const PcDhtItemResult* r, void* context) {
+    (void)context;
+    direct_pending = direct_put_inflight = false;
+    if (r->status == PC_DHT_ITEM_CANCELLED)
+        return;
+    bool ok = r->status == PC_DHT_ITEM_OK && r->acknowledgements;
+    uint32_t ip = ntohl(direct_endpoint.address);
+    pc_log_line("match: direct record %s for %u.%u.%u.%u:%u (status=%d acks=%u)",
+        ok ? "published" : "not published", ip >> 24, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF,
+        ip & 0xFF, direct_endpoint.port, (int)r->status, r->acknowledgements);
+    direct_next = SDL_GetTicks() + (ok ? DIRECT_REPUBLISH_MS : 10000);
+    if (ok) {
+        direct_fresh_until = direct_next;
+        direct_fresh_port = pc_dht_port();
+    }
+}
+static void direct_get_result(const PcDhtItemResult* r, void* context) {
+    (void)context;
+    direct_pending = false;
+    if (r->status == PC_DHT_ITEM_CANCELLED)
+        return;
+    struct pc_dht_endpoint ep, lan;
+    if (r->status == PC_DHT_ITEM_OK && direct_record_read(r->value, r->value_length, &ep, &lan)) {
+        uint32_t ip = ntohl(ep.address);
+        bool local = lan.address && lan.port && same_public_ip(ep.address);
+        pc_log_line("match: direct record for %s -> %u.%u.%u.%u:%u%s", target, ip >> 24,
+            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port,
+            local ? " (same network, also dialing its LAN address)" : "");
+        add_hello_target(ep);
+        if (local)
+            add_hello_target(lan);
+        direct_next = SDL_GetTicks() + DIRECT_REPOLL_MS; /* pick up a host re-publish */
+    } else {
+        pc_log_line("match: no direct record for %s yet (status=%d)", target, (int)r->status);
+        direct_next = SDL_GetTicks() + 2000;
+    }
+}
+/* Direct connect fast path, alongside (not instead of) the announce search:
+ * the host publishes its NAT-observed endpoint, the dialer fetches it and
+ * starts sending Hellos straight away. A host behind a restrictive NAT still
+ * needs to find the dialer through the announce search to open its side. */
+/* Publish our NAT-observed endpoint under our connect code. Needs the DHT's
+ * NAT consensus, so it can decline; the caller retries. */
+static bool direct_publish(void) {
+    struct pc_dht_endpoint ep;
+    if (!pc_dht_external_endpoint(&ep))
+        return false; /* NAT consensus needs a few more DHT replies */
+    uint8_t record[DIRECT_RECORD_BYTES];
+    int64_t when = (int64_t)time(NULL);
+    memcpy(record, "MPD1", 4);
+    memcpy(record + 4, identity.public_key, 32);
+    memcpy(record + 36, &ep.address, 4);
+    put_be(record + 40, ep.port, 2);
+    put_be(record + 42, (uint64_t)when, 8);
+    uint32_t lan = lan_address();
+    memcpy(record + 50, &lan, 4);
+    put_be(record + 54, pc_dht_port(), 2);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    direct_endpoint = ep;
+    direct_pending = direct_put_inflight = pc_dht_item_put(&direct_slot, DIRECT_SALT,
+        strlen(DIRECT_SALT), when, record, sizeof record, direct_put_result, NULL);
+    if (direct_pending) {
+        uint32_t ip = ntohl(ep.address);
+        pc_log_line("match: publishing direct record for %u.%u.%u.%u:%u", ip >> 24,
+            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port);
+    }
+    return direct_pending;
+}
+static void direct_poll(uint64_t now) {
+    if (mode != PC_MATCH_DIRECT || have_peer)
+        return;
+    if (direct_pending || now < direct_next || !pc_dht_ready() || pc_dht_item_busy())
+        return;
+    if (target[0]) {
+        direct_pending = pc_dht_item_get_first(direct_slot.public_key, DIRECT_SALT,
+            strlen(DIRECT_SALT), (int64_t)time(NULL) - DIRECT_MAX_AGE, direct_get_result, NULL);
+        if (direct_pending && !direct_get_logged) {
+            direct_get_logged = true;
+            pc_log_line("match: direct record lookup started for %s", target);
+        }
+    } else {
+        direct_publish();
+    }
+    if (!direct_pending)
+        direct_next = now + 2000;
+}
+/* Direct Connect code entry: the host code is fixed per identity, so start
+ * publishing the record while the player is still on the entry screen. The
+ * put takes tens of seconds; begun here it is ready (or nearly) by the time
+ * a friend dials, instead of starting only after START. */
+void pc_net_match_prepublish(void) {
+    pc_net_match_warm();
+    if (state == PC_MATCH_SEARCH || state == PC_MATCH_CONNECT || state == PC_MATCH_READY ||
+        pc_net_active() || !load_identity())
+        return;
+    uint64_t now = SDL_GetTicks();
+    if (direct_pending || now < direct_next || !pc_dht_ready() || pc_dht_item_busy())
+        return;
+    direct_slot_for(identity.code);
+    if (!direct_publish())
+        direct_next = now + 2000;
 }
 
 static bool accept_ack(const MatchAck* a) {
@@ -501,8 +710,16 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         accept_ack(data);
 }
 
+static void reset(bool keep_node);
 bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
-    pc_net_match_stop();
+    /* Hosting Direct: a publish begun on the code entry screen must survive
+     * this restart (reset() and pc_dht_start() would both cancel it). */
+    bool keep_publish = m == PC_MATCH_DIRECT && !(code && *code) && direct_put_inflight;
+    pc_dht_keep_item_on_start(keep_publish);
+    reset(true);
+    pc_dht_keep_item_on_start(false);
+    if (keep_publish)
+        direct_pending = direct_put_inflight = true;
     failure = NULL;
     mode = m;
     start_frame = -1;
@@ -528,10 +745,26 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     digest();
     const char* direct = target[0] ? target : identity.code;
     pairing_topic(m, direct, topic);
-    if (!pc_dht_start((enum pc_dht_mode)m, direct, 0, (uint16_t)pc_get_net_port())) {
+    direct_get_logged = false;
+    direct_next = 0;
+    hello_target_count = hello_target_cursor = 0;
+    next_target_hello = 0;
+    if (m == PC_MATCH_DIRECT)
+        direct_slot_for(direct);
+    pc_dht_keep_item_on_start(keep_publish);
+    bool started = pc_dht_start((enum pc_dht_mode)m,
+        m == PC_MATCH_UNRANKED ? unranked_pool() : direct, 0, (uint16_t)pc_get_net_port());
+    pc_dht_keep_item_on_start(false);
+    if (!started) {
         fail("DHT unavailable");
         return false;
     }
+    /* A record published earlier is still good while the node kept its port. */
+    if (m == PC_MATCH_DIRECT && !target[0] && SDL_GetTicks() < direct_fresh_until &&
+        pc_dht_port() == direct_fresh_port)
+        direct_next = direct_fresh_until;
+    int on = 1; /* LAN broadcast Hellos, see add_hello_target() */
+    setsockopt((MatchSocket)pc_dht_socket(), SOL_SOCKET, SO_BROADCAST, (const char*)&on, sizeof on);
     memset(&hello, 0, sizeof hello);
     hello.magic = htonl(MATCH_MAGIC);
     hello.version = MATCH_VERSION;
@@ -573,6 +806,7 @@ void pc_net_match_poll(void) {
                 }
             }
         }
+        direct_poll(now);
         struct pc_dht_endpoint ep;
         while (pc_dht_next_candidate(&ep)) {
             /* Paired already: a Hello now would lock that player onto us while
@@ -580,12 +814,35 @@ void pc_net_match_poll(void) {
              * rediscovers them if this attempt expires. */
             if (have_peer)
                 continue;
+            /* The DHT still holds announcements from our own earlier sessions
+             * (same public IP, one of our recent ports): not a peer. Skipped
+             * only in random-port mode, where a fixed port could genuinely
+             * match another machine behind our router. */
+            struct pc_dht_endpoint own;
+            if (!pc_get_net_port() && pc_dht_external_endpoint(&own) && own.address == ep.address &&
+                pc_dht_is_own_port(ep.port))
+                continue;
             uint32_t cip = ntohl(ep.address);
             pc_log_line("match: sending MatchHello to %u.%u.%u.%u:%u (target=%s)", cip >> 24,
                 (cip >> 16) & 0xFF, (cip >> 8) & 0xFF, cip & 0xFF, ep.port, target);
             for (int p = 0; p < 3; p++) {
                 send_packet(&hello, sizeof hello, &ep);
             }
+            /* Same public IP: another player behind our router (our own
+             * announce has our own external port and is skipped). Routers
+             * usually keep the local port as the public one, so broadcast
+             * the Hello on the LAN to that port. */
+            struct pc_dht_endpoint self;
+            if (pc_dht_external_endpoint(&self) && self.address == ep.address &&
+                self.port != ep.port &&
+                add_hello_target((struct pc_dht_endpoint){htonl(INADDR_BROADCAST), ep.port}))
+                pc_log_line(
+                    "match: candidate shares our public IP, broadcasting on LAN port %u", ep.port);
+        }
+        if (!have_peer && hello_target_count && now >= next_target_hello) {
+            for (unsigned i = 0; i < hello_target_count; i++)
+                send_packet(&hello, sizeof hello, &hello_targets[i]);
+            next_target_hello = now + HELLO_TARGET_MS;
         }
         if (have_peer && now >= next_send) {
             send_packet(
@@ -605,6 +862,8 @@ void pc_net_match_poll(void) {
             next_send = 0; /* peer attempt expired: remain queued in DHT */
             failure = "Could not connect to opponent. Searching again...";
         }
+    } else if (state == PC_MATCH_FAIL) {
+        pc_net_match_warm();
     } else if (state == PC_MATCH_CONNECT) {
         pc_net_poll();
         if (!handshake_done)
@@ -614,6 +873,7 @@ void pc_net_match_poll(void) {
             if (!pc_net_send_reliable(0x11, NULL, 0)) {
                 state = PC_MATCH_FAIL;
                 failure = "ready barrier not sent";
+                pc_log_line("match: ready barrier not sent");
             } else
                 barrier_sent = true;
         }
@@ -647,6 +907,8 @@ void pc_net_match_poll(void) {
             } else if (pc_net_frame() > start_frame) {
                 state = PC_MATCH_FAIL;
                 failure = "late ready barrier";
+                pc_log_line(
+                    "match: late ready barrier (frame %d > start %d)", pc_net_frame(), start_frame);
             } else {
                 state = PC_MATCH_READY;
                 pc_net_set_datagram_handler(NULL);
@@ -655,11 +917,22 @@ void pc_net_match_poll(void) {
         if (pc_net_handshake_state() == 3) {
             state = PC_MATCH_FAIL;
             failure = "match handshake failed";
+            pc_log_line("match: match handshake failed");
         }
     }
 }
-void pc_net_match_stop(void) {
-    pc_dht_stop();
+/* Warm DHT between searches: after a failure the node stays open (idle) so a
+ * retry skips bootstrap; it still needs polling to keep its table fresh. */
+static void reset(bool keep_node) {
+    if (pc_net_active())
+        pc_log_line("match: reset (keep node %d) drops the active session, state was %d",
+            (int)keep_node, (int)state);
+    if (keep_node)
+        pc_dht_idle();
+    else
+        pc_dht_stop();
+    direct_pending = direct_put_inflight = false;
+    hello_target_count = 0;
     publication = 0;
     publication_reason = NULL;
     proof_pending = false;
@@ -669,6 +942,27 @@ void pc_net_match_stop(void) {
         pc_net_disconnect();
     state = PC_MATCH_FAIL;
     failure = "cancelled";
+}
+void pc_net_match_stop(void) {
+    reset(false);
+}
+void pc_net_match_idle(void) {
+    reset(true);
+}
+void pc_net_match_warm(void) {
+    static uint64_t next_attempt;
+    if (state == PC_MATCH_SEARCH || state == PC_MATCH_CONNECT || state == PC_MATCH_READY ||
+        publication == 1 || pc_net_active())
+        return;
+    uint64_t now = SDL_GetTicks();
+    if (pc_dht_socket() < 0) {
+        if (now < next_attempt)
+            return;
+        next_attempt = now + 5000; /* e.g. port busy: do not rebind every frame */
+        if (!pc_dht_warm((uint16_t)pc_get_net_port()))
+            return;
+    }
+    pc_dht_poll();
 }
 int pc_net_match_state(const char** why) {
     if (why)
