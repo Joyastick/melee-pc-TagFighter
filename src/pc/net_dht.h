@@ -20,6 +20,11 @@ typedef void (*pc_dht_datagram_fn)(const void*, size_t, const struct pc_dht_endp
  * For PC_DHT_UNRANKED, a non-empty code names a separate pool (e.g. "tag").
  * idle stops searching and drops the datagram callback but keeps the node. */
 bool pc_dht_warm(uint16_t port);
+/* True for a port one of this process's recent DHT nodes was bound to. */
+bool pc_dht_is_own_port(uint16_t port);
+/* While set, pc_dht_start() leaves an in-flight item operation running (a
+ * direct record publish begun before the search) instead of cancelling it. */
+void pc_dht_keep_item_on_start(bool keep);
 bool pc_dht_start(enum pc_dht_mode mode, const char* code, int band, uint16_t port);
 void pc_dht_idle(void);
 void pc_dht_poll(void);
