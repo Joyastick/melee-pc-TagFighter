@@ -3048,7 +3048,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                     goto update_display;
                 }
 
-                if (mnCharSel_804D6CB0->match_type != 2) {
+                if (mnCharSel_804D6CB0->match_type != 2
+#ifdef TARGET_PC
+                    && !teamSelectOn()
+#endif
+                )
+                {
                     f32 cx3 = cursor->xC;
                     if (cx3 > -17.0f && cx3 < 15.0f && cursor->x10 > 22.0f) {
                         cursor->x8 = 1;
@@ -5589,6 +5594,24 @@ s32 mnCharSel_802640A0(void)
         HSD_SisLib_803A6368(text, 0x4A);
 #endif
         mnCharSel_8025BD30();
+#ifdef TARGET_PC
+        /* TEAM SELECT has no rules to show or open (Matchmaking forces its
+         * own ruleset): say what the page is where the ruleset line was. */
+        if (teamSelectOn()) {
+            HSD_Text* page = HSD_SisLib_803A6754(0, ctx);
+            text->hidden = 1;
+            page->pos_x = 3.0f;
+            page->pos_y = -23.3f;
+            page->pos_z = 0.0f;
+            page->box_size_x = 450.0f;
+            page->box_size_y = 32.0f;
+            page->default_alignment = 1;
+            page->default_kerning = 1;
+            page->font_size.x = 0.06f;
+            page->font_size.y = 0.06f;
+            HSD_SisLib_803A6B98(page, 0.0f, 0.0f, "MATCHMAKING TEAM SELECT");
+        }
+#endif
         mt = mnCharSel_804D6CB0->match_type;
         if ((s32) mt < 3) {
             if ((s32) mt == 0) {
@@ -5831,6 +5854,14 @@ s32 mnCharSel_802640A0(void)
         HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "VS");
         HSD_SisLib_803A74F0(text, 0, (GXColor*) &vs_green);
 
+        /* TEAM SELECT: no RULES button. It is drawn as part of the header
+         * mesh (joint 1: the ruleset bar, VS emblem and frame lines), so
+         * the whole header goes; the click is blocked in the cursor code. */
+        if (teamSelectOn()) {
+            lb_80011E24(mnCharSel_804D6CC0, &sp108, 1, -1);
+            HSD_JObjSetFlagsAll(sp108, JOBJ_HIDDEN);
+        }
+
         // Per-door "POINT" tag, anchored off team_joint (see fn_80262F44,
         // which repositions/recolors/shows-hides these every frame off the
         // same joint -- team_joint sits consistently near the top of the
@@ -5942,7 +5973,9 @@ void mnCharSel_Scene_OnEnter(void* arg0)
     mnCharSel_802640A0();
 
 #ifdef TARGET_PC
-    if (sTagAutoPopulate) {
+    /* TEAM SELECT keeps the saved team the lobby pre-filled: a random pick
+     * here moved the coin and the real pick but not the door's portrait. */
+    if (sTagAutoPopulate && !teamSelectOn()) {
         // Opening a door (above) doesn't pick a character for it -- without
         // one, sel_icon stays at its unselected sentinel and the CSS never
         // shows Start (see the sel_icon >= 0x19 check in the per-frame
@@ -5956,6 +5989,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
         for (port = 0; port < 4; port++) {
             if (mnCharSel_803F0DFC.doors[port].p_kind != 3) {
                 mnCharSel_8025FB50((u8) port, 1);
+                /* The door itself: without this redraw it still showed no
+                 * character while the coin and the pick had one, and the
+                 * CSS already read as ready. */
+                mnCharSel_8025DB34((u8) port);
             }
         }
     }
