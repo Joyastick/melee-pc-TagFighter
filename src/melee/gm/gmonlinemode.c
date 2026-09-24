@@ -167,6 +167,9 @@ void onEnterLobby(UNUSED GameModeState* state)
         (pc_rank_session_set_complete() ||
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
     if (!awaiting_rank_result) {
+        if (pc_net_active()) {
+            pc_log_line("lobby: entering the lobby scene drops the active session");
+        }
         /* Internet lobbies keep the DHT node the online menu warmed up; LAN
          * and Profile close it so LAN can bind the same port. */
         if (internetLobby()) {
