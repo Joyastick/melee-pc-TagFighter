@@ -181,6 +181,10 @@ jobs:
 
   android:
     name: Android (arm64-v8a)
+    # Not part of releases (the release job does not need it) and there is no
+    # signing key for one, so skip tag builds: this also keeps a test-signed
+    # APK from being picked up by the release job's artifact download.
+    if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -213,8 +217,8 @@ jobs:
           MELEE_KEY_ALIAS: ${{ secrets.MELEE_KEY_ALIAS }}
           MELEE_KEY_PASSWORD: ${{ secrets.MELEE_KEY_PASSWORD }}
           # No signing secrets (forks, PRs): tools/build_android.sh signs with
-          # a throwaway key instead of failing. Tag builds still need the real one.
-          MELEE_ALLOW_THROWAWAY_KEY: ${{ github.ref_type != 'tag' && '1' || '0' }}
+          # a throwaway key instead of failing. This job never runs on tags.
+          MELEE_ALLOW_THROWAWAY_KEY: '1'
         run: |
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/26.3.11579264"
           tools/build_android.sh
