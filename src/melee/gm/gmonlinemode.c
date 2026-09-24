@@ -182,6 +182,13 @@ static bool am_live;          /* false once the opponent is gone */
 static int am_cursor[2];      /* per machine, 0 = host */
 static int am_pick[2];        /* -1 while choosing */
 static unsigned am_game;      /* rematches played in this session */
+/* A decision that ends the session is carried out AM_HOLD_FRAMES later:
+ * in lockstep that guarantees the other machine has also simulated the
+ * decision frame, so its goodbye can never be mistaken for a quit. */
+#define AM_HOLD_FRAMES 30
+enum { AM_OUT_NONE, AM_OUT_LEAVE, AM_OUT_TEAM_REMATCH };
+static int am_outcome;
+static int am_leave_frame;
 static bool rematch_direct;   /* the lobby reconnects to the last opponent */
 static bool rematch_host;
 static char rematch_code[18]; /* the host's connect code */
@@ -305,6 +312,7 @@ void onEnterLobby(UNUSED GameModeState* state)
         am_live = true;
         am_cursor[0] = am_cursor[1] = 0;
         am_pick[0] = am_pick[1] = -1;
+        am_outcome = AM_OUT_NONE;
     }
 #endif
 }
@@ -791,6 +799,42 @@ static void afterMatchFollow(int pick)
     }
 }
 
+/* End the session our own way: our disconnect marks the peer as gone, and
+ * GM_ONLINE ends any non-lobby scene while it does (gmscene.c), which would
+ * close TEAM SELECT on its first frame. */
+static void afterMatchEndSession(void)
+{
+    am_live = false;
+    pc_net_match_idle();
+    pc_net_peer_status_clear();
+}
+
+static void afterMatchExecute(int me)
+{
+    int mine = am_pick[me];
+    int outcome = am_outcome;
+    am_outcome = AM_OUT_NONE;
+    pc_log_line("after match: carrying out %s (our pick %d)",
+                outcome == AM_OUT_LEAVE ? "no rematch" : "rematch with a team change", mine);
+    afterMatchEndSession();
+    if (outcome == AM_OUT_LEAVE) {
+        if (mine >= 0) {
+            afterMatchFollow(mine);
+        } else {
+            am_cursor[me] = AM_SAME_SEARCH;
+        }
+        return;
+    }
+    after_match = false;
+    if (mine == AM_CHANGE_REMATCH) {
+        afterMatchTeamSelect(true);
+    } else {
+        online_kind = ONLINE_KIND_DIRECT;
+        rematch_direct = true;
+        startRematch();
+    }
+}
+
 static void afterMatchFrame(OnlineLobbyView* view)
 {
     static const char* const label[4] = { "SAME TEAM - REMATCH", "CHANGE TEAM - REMATCH",
@@ -806,13 +850,27 @@ static void afterMatchFrame(OnlineLobbyView* view)
         view->menu[i] = label[i];
     }
 
+    if (am_outcome != AM_OUT_NONE) {
+        /* Decided: wait out the hold (or the peer's goodbye), then go. */
+        view->phase = LOBBY_PHASE_CONNECTING;
+        for (int i = 0; i < 4; i++) {
+            view->menu_tag[i] = am_pick[me] == i ? "YOU" : am_pick[them] == i ? "OPPONENT" : "";
+        }
+        view->menu_cursor = am_pick[me];
+        snprintf(view->message, sizeof view->message, "%s",
+                 am_outcome == AM_OUT_LEAVE ? "No rematch" : "Rematch with a new team...");
+        if (pc_net_frame() >= am_leave_frame || !pc_net_active() ||
+            pc_net_peer_status() != PC_NET_PEER_OK) {
+            afterMatchExecute(me);
+        }
+        return;
+    }
+
     if (am_live && (!pc_net_active() || pc_net_peer_status() != PC_NET_PEER_OK)) {
         /* The opponent quit on its own (not a synced pick). */
         int mine = am_pick[me];
         pc_log_line("after match: opponent left (our pick %d)", mine);
-        am_live = false;
-        pc_net_peer_status_clear();
-        pc_net_match_idle();
+        afterMatchEndSession();
         if (mine >= 0) {
             afterMatchFollow(mine);
             return;
@@ -887,15 +945,9 @@ static void afterMatchFrame(OnlineLobbyView* view)
     if (a >= AM_SAME_SEARCH || b >= AM_SAME_SEARCH) {
         /* Someone leaves: no rematch. Both sides end the session on this
          * frame; each goes on with its own pick. */
-        int mine = am_pick[me];
         pc_log_line("after match: no rematch (host %d, guest %d)", a, b);
-        am_live = false;
-        pc_net_match_idle();
-        if (mine >= 0) {
-            afterMatchFollow(mine);
-        } else {
-            am_cursor[me] = AM_SAME_SEARCH;
-        }
+        am_outcome = AM_OUT_LEAVE;
+        am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
         return;
     }
     if (a < 0 || b < 0) {
@@ -917,16 +969,8 @@ static void afterMatchFrame(OnlineLobbyView* view)
     snprintf(rematch_code, sizeof rematch_code, "%s",
              rematch_host ? pc_net_match_local_code() : pc_net_match_opponent_code());
     pc_log_line("after match: rematch with a team change (host %d, guest %d)", a, b);
-    int mine = am_pick[me];
-    after_match = false;
-    pc_net_match_idle();
-    if (mine == AM_CHANGE_REMATCH) {
-        afterMatchTeamSelect(true);
-    } else {
-        online_kind = ONLINE_KIND_DIRECT;
-        rematch_direct = true;
-        startRematch();
-    }
+    am_outcome = AM_OUT_TEAM_REMATCH;
+    am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
 }
 
 static void directEntryBegin(void)
