@@ -156,9 +156,9 @@ first if a mapping below goes stale.
 ## Online Tag Battle (in progress)
 
 Online Tag Battle is under active development: 2-player matches work over LAN,
-Direct Connect, and Unranked search. Tag Battle searches use their own
-Unranked pool, so you are only matched with other MeleeVS players in Tag
-Battle, never with a plain VS search. Both players need the same MeleeVS
+Direct Connect, and Matchmaking (MELEE VS → MATCHMAKING). Matchmaking uses its
+own pool, so you are only matched with other MeleeVS players in Tag Battle,
+never with a plain VS Unranked search. Both players need the same MeleeVS
 build and the same disc image. Ranked has no Tag Battle entry. For how
 melee-pc's netplay works (ports, firewall, environment variables, test
 harnesses), see [melee-pc](https://github.com/999sian/melee-pc).
