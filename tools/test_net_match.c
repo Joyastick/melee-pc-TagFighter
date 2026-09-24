@@ -475,12 +475,42 @@ int main(int argc, char** argv) {
     assert(!memcmp(slot_a.public_key, slot_b.public_key, 32));
     direct_slot_for("HOST#AAAAAAAB");
     assert(memcmp(slot_a.public_key, direct_slot.public_key, 32));
-
     char file[512];
+    /* The host's code also names a separate dial-back slot. */
+    assert(memcmp(dial_slot.public_key, direct_slot.public_key, 32));
+
+    /* Dial-back record: any dialer's key, but signed, fresh and never our own. */
+    PcNetIdentity dialer;
+    char dial_path[] = "/tmp/melee-dial-XXXXXX";
+    assert(mkdtemp(dial_path));
+    assert(pc_identity_load(&dialer, dial_path, "DIAL"));
+    memcpy(record, "MPB1", 4);
+    memcpy(record + 4, dialer.public_key, 32);
+    put_be(record + 42, (uint64_t)time(NULL), 8);
+    pc_identity_sign(&dialer, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    assert(dial_record_read(record, sizeof record, &found, &lan));
+    assert(found.address == addr && found.port == 51234 && lan.port == 60000);
+    record[41] ^= 1;
+    assert(!dial_record_read(record, sizeof record, &found, &lan)); /* tampered */
+    record[41] ^= 1;
+    memcpy(record, "MPD1", 4);
+    assert(!dial_record_read(record, sizeof record, &found, &lan)); /* wrong kind */
+    memcpy(record, "MPB1", 4);
+    put_be(record + 42, (uint64_t)time(NULL) - DIRECT_MAX_AGE - 60, 8);
+    pc_identity_sign(&dialer, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    assert(!dial_record_read(record, sizeof record, &found, &lan)); /* stale */
+    memcpy(record + 4, identity.public_key, 32);
+    put_be(record + 42, (uint64_t)time(NULL), 8);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    assert(!dial_record_read(record, sizeof record, &found, &lan)); /* our own */
+    snprintf(file, sizeof file, "%s/identity.key", dial_path);
+    unlink(file);
+    rmdir(dial_path);
+
     snprintf(file, sizeof file, "%s/identity.key", path);
     unlink(file);
     rmdir(path);
     puts("pairing transcript signature, nonce/mode binding, code binding, packet bounds and "
-         "direct record checks passed");
+         "direct and dial-back record checks passed");
     return 0;
 }
