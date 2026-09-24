@@ -83,6 +83,9 @@ bool pc_dht_item_send(const void* data, size_t length, const struct pc_dht_endpo
     item_endpoint = *ep;
     return true;
 }
+bool TagAssist_IsTagBattleOn(void) {
+    return false;
+}
 bool pc_net_resim(void) {
     return false;
 }

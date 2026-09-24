@@ -88,6 +88,17 @@ GameRules* gmMainLib_GetGameRules(void) {
 struct GamePrefs* gmMainLib_GetGamePrefs(void) {
     return &s_prefs;
 }
+/* MeleeVS Tag Battle hooks net_handshake.c reads and applies from RULES.
+ * This test plays plain VS: Tag Battle off, bind index 0 on both sides. */
+bool TagAssist_IsTagBattleOn(void) {
+    return false;
+}
+void TagAssist_EnterForcedOn(void) {}
+void TagAssist_LeaveTagBattle(void) {}
+int pc_get_tag_bind(int port) {
+    (void)port;
+    return 0;
+}
 bool pc_is_frozen_stadium_enabled(void) {
     return true;
 }
@@ -264,7 +275,8 @@ int main(void) {
     Side host, guest;
 
     /* every check below depends on these sizes being the wire ones */
-    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 22 && sizeof(Ready) == 24);
+    /* +2 in Rules (game_mode, tag_bind) and +1 in Ready (tag_bind): MeleeVS Tag Battle */
+    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 24 && sizeof(Ready) == 25);
 
     s_game.mode = 1;
     s_game.time_limit = 8;

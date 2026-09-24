@@ -401,7 +401,8 @@ Preferences load_preferences(const std::filesystem::path& path) {
             if (row >> value && value >= 0 && value <= 11)
                 prefs.tag_bind[0] = value;
         } else if (key.size() == 9 && key.compare(0, 8, "tag_bind") == 0 && key[8] >= '0' &&
-                   key[8] <= '3') {
+                   key[8] <= '3')
+        {
             int value;
             if (row >> value && value >= 0 && value <= 11)
                 prefs.tag_bind[key[8] - '0'] = value;
@@ -444,9 +445,8 @@ bool save_preferences(
          << prefs.frozen_stadium << "\nfree_camera " << prefs.free_camera << "\nucf " << prefs.ucf
          << "\ntag_bind0 " << prefs.tag_bind[0] << "\ntag_bind1 " << prefs.tag_bind[1]
          << "\ntag_bind2 " << prefs.tag_bind[2] << "\ntag_bind3 " << prefs.tag_bind[3]
-         << "\nmusic_volume " << prefs.music_volume
-         << "\nsfx_volume " << prefs.sfx_volume << "\ninstall_id " << std::hex << prefs.install_id
-         << std::dec << '\n';
+         << "\nmusic_volume " << prefs.music_volume << "\nsfx_volume " << prefs.sfx_volume
+         << "\ninstall_id " << std::hex << prefs.install_id << std::dec << '\n';
     text << "reverb " << prefs.reverb << '\n';
     auto data = text.str();
     size_t done = 0;
