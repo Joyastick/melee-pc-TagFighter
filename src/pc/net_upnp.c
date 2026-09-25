@@ -281,9 +281,7 @@ static bool describe(const char* location, size_t n, Igd* g) {
     if (len)
         parse_url(at, len, &base);
     for (size_t i = 0; i < SDL_arraysize(services) && !g->found; i++) {
-        for (const char* s = strstr(xml, "<service>"); s && !g->found;
-            s = strstr(s + 1, "<service>"))
-        {
+        for (const char* s = xml; !g->found && (s = strstr(s, "<service>")) != NULL; s++) {
             const char* end = strstr(s, "</service>");
             const char* type;
             size_t type_len = tag_text(s, end, "serviceType", &type);

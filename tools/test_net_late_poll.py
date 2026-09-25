@@ -20,6 +20,7 @@ static void PADRead(PADStatus* pads) {
     for (int i=0;i<4;++i) { pads[i].button=100+i; pads[i].err=0; }
     if (unplugged) pads[1].err=-1;
 }
+static void local_pause_filter(void) {} /* matchmade only, defined above the slice */
 ''' + s[a:b] + r'''
 int main(void) {
     s_raw_last.button=7;
