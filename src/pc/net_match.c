@@ -271,12 +271,14 @@ static void publication_result(const PcDhtItemResult* r, void* context) {
                              "rank saved locally; publication failed, retry available";
 }
 
+static char identity_name[9]; /* the player name identity.code was made with */
 static bool load_identity(void) {
     if (identity_loaded)
         return true;
     char* dir = SDL_GetPrefPath(NULL, "melee-pc_TagFighter");
     const char* name = pc_get_net_name();
-    bool ok = dir && pc_identity_load(&identity, dir, name && *name ? name : "PLAYER");
+    snprintf(identity_name, sizeof identity_name, "%s", name && *name ? name : "PLAYER");
+    bool ok = dir && pc_identity_load(&identity, dir, identity_name);
     if (dir && ok)
         snprintf(profile_directory, sizeof profile_directory, "%s", dir);
     SDL_free(dir);
@@ -1234,6 +1236,13 @@ uint32_t pc_net_match_seed(void) {
     return seed;
 }
 const char* pc_net_match_local_code(void) {
+    /* A new player name shows in the code at once (same key, so the part
+     * after '#' stays). Not during a search: its Hellos carry the code it
+     * started with, and the name applies from the next search anyway. */
+    const char* name = pc_get_net_name();
+    if (identity_loaded && name && *name && strcmp(name, identity_name) &&
+        state != PC_MATCH_SEARCH && state != PC_MATCH_CONNECT && state != PC_MATCH_READY)
+        identity_loaded = false;
     return load_identity() ? identity.code : "";
 }
 const char* pc_net_match_profile_error(void) {

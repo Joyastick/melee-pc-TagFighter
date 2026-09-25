@@ -7,6 +7,7 @@
 #include "version.hpp"
 #include "updater.hpp"
 #include "net_match.h"
+#include "net_identity.h"
 #include "net.h"
 #include "pc.h"
 #include <RmlUi/Core/Elements/ElementFormControl.h>
@@ -52,6 +53,37 @@ void refresh_online(Rml::ElementDocument* doc) {
     if (auto* e = doc->GetElementById("net-code"))
         e->SetInnerRML(pc_net_match_local_code());
 }
+/* The Online page's Copy / Paste buttons (launcher and F1 menu). A <p> can't
+ * be selected in RmlUi, and typing '#' is awkward on some keyboards. */
+std::string copy_connect_code() {
+    const char* code = pc_net_match_local_code();
+    if (!code || !*code || !SDL_SetClipboardText(code))
+        return "";
+    return code;
+}
+/* The clipboard as the friend's code: spaces dropped, upper-cased, and only
+ * taken when it is a whole connect code (NAME#XXXXXXXX). */
+bool paste_connect_code() {
+    char* clip = SDL_GetClipboardText();
+    if (!clip)
+        return false;
+    std::string value;
+    bool ok = true;
+    for (const char* c = clip; *c && ok; c++) {
+        char ch = *c;
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
+            continue;
+        if (ch >= 'a' && ch <= 'z')
+            ch -= 'a' - 'A';
+        ok = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '#';
+        value += ch;
+    }
+    SDL_free(clip);
+    if (!ok || value.size() > 17 || !pc_identity_code_valid(value.c_str()))
+        return false;
+    prefs.net_target = value;
+    return true;
+}
 bool change_online(Rml::Event& event) {
     auto* target = event.GetTargetElement();
     if (!target)
@@ -70,8 +102,12 @@ bool change_online(Rml::Event& event) {
             return true;
     }
     if (id == "net-name") {
-        if (!value.empty())
+        if (!value.empty()) {
             prefs.net_name = value;
+            /* The code's name part follows the new name straight away. */
+            if (auto* code = target->GetOwnerDocument()->GetElementById("net-code"))
+                code->SetInnerRML(pc_net_match_local_code());
+        }
     } else
         prefs.net_target = value;
     return true;
@@ -261,7 +297,7 @@ class Launcher final : public Rml::EventListener {
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-bind"};
         case 4:
-            return {"net-name", "net-target", "net-delay"};
+            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay"};
         default:
             return {};
         }
@@ -474,6 +510,24 @@ class Launcher final : public Rml::EventListener {
             prefs.net_delay = prefs.net_delay == 4 ? -1 : prefs.net_delay + 1;
             save();
             refresh_settings();
+            return;
+        }
+        if (id == "copy-code") {
+            std::string code = copy_connect_code();
+            status(code.empty() ? "No connect code yet." : "Copied " + code + " to the clipboard.",
+                code.empty());
+            element("copy-code")->Focus();
+            return;
+        }
+        if (id == "paste-code") {
+            if (paste_connect_code()) {
+                save();
+                refresh_settings();
+                status("Pasted " + prefs.net_target + " as your friend's code.");
+            } else {
+                status("The clipboard does not hold a connect code (NAME#XXXXXXXX).", true);
+            }
+            element("paste-code")->Focus();
             return;
         }
         if (id == "quit") {
@@ -1264,7 +1318,7 @@ public:
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
         case 4:
-            return {"net-name", "net-target", "net-delay"};
+            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay"};
         default: {
             std::vector<std::string> ids{"pad-port", "tag-bind"};
             for (int i = 0; i < PAD_BUTTON_COUNT; ++i)
@@ -1500,6 +1554,21 @@ public:
             prefs.net_delay = prefs.net_delay == 4 ? -1 : prefs.net_delay + 1;
             saved();
             refresh();
+            return;
+        }
+        if (id == "copy-code") {
+            std::string code = copy_connect_code();
+            label("menu-status",
+                code.empty() ? "No connect code yet." : "Copied " + code + " to the clipboard.");
+            return;
+        }
+        if (id == "paste-code") {
+            if (paste_connect_code()) {
+                saved();
+                label("menu-status", "Pasted " + prefs.net_target + " as your friend's code.");
+            } else {
+                label("menu-status", "The clipboard does not hold a connect code.");
+            }
             return;
         }
         if (id == "resume") {
