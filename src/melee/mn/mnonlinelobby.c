@@ -32,7 +32,7 @@
 #define ROW_DY 32.0f
 #define COL_YOU 48.0f
 #define COL_NAME 104.0f
-#define COL_HOST 336.0f
+#define COL_HOST 392.0f /* clear of a 17-character connect code at scale 0.6 */
 #define COL_PING 480.0f
 
 typedef struct Line {
@@ -84,14 +84,16 @@ static void setColor(Line* l, GXColor* c)
 }
 
 /* Peer names come off the network; keep them inside the encoder's ASCII set
- * so a stray byte cannot swallow the character after it. */
+ * so a stray byte cannot swallow the character after it. '#' separates a
+ * connect code's name from its key part. */
 static void sanitizeName(char* dst, size_t cap, const char* src)
 {
     size_t i;
     for (i = 0; i + 1 < cap && src[i] != '\0'; i++) {
         char c = src[i];
         bool ok = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-                  (c >= 'a' && c <= 'z') || c == ' ' || c == '-' || c == '.';
+                  (c >= 'a' && c <= 'z') || c == ' ' || c == '-' || c == '.' ||
+                  c == '#';
         dst[i] = ok ? c : '-';
     }
     dst[i] = '\0';

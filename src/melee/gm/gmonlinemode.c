@@ -893,10 +893,9 @@ static void afterMatchFrame(OnlineLobbyView* view)
     int me = pc_net_match_is_host() ? 0 : 1;
     int them = 1 - me;
 
-    /* Our team is the host's (red, team 0) or the guest's (blue, team 1).
-     * The text encoder has no ASCII '!', hence the Shift-JIS one. */
+    /* Our team is the host's (red, team 0) or the guest's (blue, team 1). */
     view->title = am_result == AM_RESULT_NONE ? "MATCH OVER" :
-                  am_result == me             ? "You won" "\x81\x49" :
+                  am_result == me             ? "You won!" :
                                                 "You lost.";
     view->phase = LOBBY_PHASE_FOUND;
     view->menu_count = 4;

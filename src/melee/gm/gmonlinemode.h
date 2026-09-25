@@ -42,7 +42,7 @@ void gm_Scene_OnlineLobby_OnExit(void*);
  * scene fills an OnlineLobbyView every frame and calls mnOnlineLobby_Update. */
 
 #define ONLINE_LOBBY_MAX_PLAYERS 8
-#define ONLINE_LOBBY_NAME_LEN 16
+#define ONLINE_LOBBY_NAME_LEN 18 /* a whole connect code: 8 + "#" + 8, and NUL */
 #define ONLINE_LOBBY_MSG_LEN 96
 
 typedef struct OnlineLobbyPlayer {
