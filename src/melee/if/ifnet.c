@@ -56,10 +56,11 @@ static void ifNet_Think(HSD_GObj* gobj)
     const char* code = pc_net_match_state(NULL) == PC_MATCH_READY ?
                        pc_net_match_opponent_code() : NULL;
     if (code && code[0]) snprintf(opponent, sizeof opponent, "%s", code);
-    else snprintf(opponent, sizeof opponent, "P%d", 2 - pc_net_local_player());
+    else snprintf(opponent, sizeof opponent, "P%d",
+                  pc_net_game_port(1 - pc_net_local_player(), 0) + 1);
     if (ifNet.debug) snprintf(debug, sizeof debug, "  rb %u", rollbacks);
     snprintf(line, sizeof line, "P%d vs %s  delay %d  ping %dms%s%s%s",
-             pc_net_local_player() + 1, opponent, delay, ping, debug,
+             pc_net_game_port(pc_net_local_player(), 0) + 1, opponent, delay, ping, debug,
              pc_net_desync() ? "  DESYNC" : "",
              ifNet_Marker(pc_net_quality()));
     if (strcmp(line, ifNet.line)) {

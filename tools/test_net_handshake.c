@@ -102,6 +102,10 @@ void TagAssist_EnterForcedOn(void) {
 void TagAssist_LeaveTagBattle(void) {
     s_tag_on = false;
 }
+u8 gm_GetNumCostumesForCKind(u8 ckind) {
+    (void)ckind;
+    return 4;
+}
 bool net_local_partner_present(void) {
     return s_partner_plugged;
 }
@@ -168,6 +172,9 @@ typedef struct Side {
     uint64_t unlock_live, unlock_orig;
     bool unlock_saved;
     uint8_t local_partner, remote_partner;
+    bool want_matchmade;
+    PcNetTeam want_team, team[2];
+    uint8_t layout;
 } Side;
 
 static void side_save(Side* s) {
@@ -193,6 +200,10 @@ static void side_save(Side* s) {
     s->unlock_saved = s_unlock_saved;
     s->local_partner = s_local_partner_bind;
     s->remote_partner = s_remote_partner_bind;
+    s->want_matchmade = s_want_matchmade;
+    s->want_team = s_want_team;
+    memcpy(s->team, s_team, sizeof s->team);
+    s->layout = s_layout;
 }
 
 static void side_load(const Side* s) {
@@ -218,6 +229,10 @@ static void side_load(const Side* s) {
     s_unlock_saved = s->unlock_saved;
     s_local_partner_bind = s->local_partner;
     s_remote_partner_bind = s->remote_partner;
+    s_want_matchmade = s->want_matchmade;
+    s_want_team = s->want_team;
+    memcpy(s_team, s->team, sizeof s_team);
+    s_layout = s->layout;
 }
 
 /* Load a side that has just connected to session `id` and learned nothing:
@@ -277,7 +292,8 @@ static void reforge_unlock(uint8_t* buf, uint32_t session, uint32_t unlock_hash)
 
 static void forge_ready(
     uint8_t* out, uint32_t session, uint64_t nonce, uint64_t echo, uint32_t unlock_hash) {
-    Ready rd = {nonce, echo, unlock_hash, 0, NET_NO_PARTNER, 0};
+    Ready rd = {
+        .nonce = nonce, .echo = echo, .unlock_hash = unlock_hash, .partner_bind = NET_NO_PARTNER};
     rd.hash = ready_hash(rd, session);
     wire_ready(&rd);
     memcpy(out, &rd, sizeof rd);
@@ -291,9 +307,9 @@ int main(void) {
     Side host, guest;
 
     /* every check below depends on these sizes being the wire ones */
-    /* +3 in Rules (game_mode, tag_bind, partner_bind) and +2 in Ready
-     * (tag_bind, partner_bind): MeleeVS Tag Battle and its couch duo */
-    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 25 && sizeof(Ready) == 26);
+    /* MeleeVS: Rules +13 (game_mode, tag_bind, partner_bind, layout, team)
+     * and Ready +11 (tag_bind, partner_bind, team) */
+    assert(sizeof(Rules) == 16 + sizeof(GameRules) + 35 && sizeof(Ready) == 35);
 
     s_game.mode = 1;
     s_game.time_limit = 8;
@@ -733,6 +749,81 @@ int main(void) {
         rules_restore();
         s_partner_plugged = false;
         printf("ok 16: couch partners exchanged in Tag Battle, never in plain VS\n");
+    }
+
+    /* ---- 17. Matchmaking: layout and both teams agreed, ports by team --
+     * The host (player 0) has a couch partner, the guest a CPU assist. Both
+     * sides end up with the matchmade layout, each other's team, and the
+     * Matchmaking ports: host 0+1, guest 2+3. The guest's stale team (an
+     * out-of-range character, a human flag it has no partner for, point on
+     * its CPU) is repaired before it goes on the wire. */
+    {
+        const uint32_t sess_f = 0x5eed0017;
+        Side mm_host;
+        PcNetTeam host_team = {{{2, 1, 1, 0}, {14, 0, 1, 0}}, 1};  /* Fox, Falco, point Falco */
+        PcNetTeam guest_team = {{{99, 7, 0, 0}, {9, 2, 1, 0}}, 1}; /* stale */
+        s_tag_on = true;
+        s_partner_plugged = true;
+        net.tick_frame = 300;
+        load_fresh(sess_f, 0);
+        pc_net_set_matchmade(true, &host_team);
+        assert(!pc_net_host_match(55, &sf));
+        uint8_t rules_f[sizeof(Rules)];
+        memcpy(rules_f, s_out, sizeof rules_f);
+        side_save(&mm_host);
+
+        load_fresh(sess_f, 1);
+        s_partner_plugged = false; /* the guest has no second controller */
+        pc_net_set_matchmade(true, &guest_team);
+        handshake_msg(REL_RULES, rules_f, (int)sizeof rules_f);
+        assert(net.hs == HS_DONE && pc_net_matchmade());
+        /* The Matchmaking ruleset, whatever the host's own settings were. */
+        assert(s_game.mode == Mode_Stock && s_game.stock_count == 3);
+        assert(s_game.stock_time_limit == 8 && s_game.friendly_fire == 0);
+        assert(s_prefs.item_freq == 0xFF);
+        const PcNetTeam* h = pc_net_team(0);
+        const PcNetTeam* g = pc_net_team(1);
+        assert(h && g);
+        assert(h->fighter[0].ckind == 2 && h->fighter[1].ckind == 14 && h->point == 1);
+        assert(h->fighter[1].human == 1);
+        assert(g->fighter[0].ckind == CKind_Fox && g->fighter[0].color == 0); /* repaired */
+        assert(g->fighter[0].human == 1 && g->fighter[1].human == 0);
+        assert(g->fighter[1].cpu_level == 9 && g->point == 0);
+        assert(pc_net_game_port(0, 0) == 0 && pc_net_game_port(0, 1) == 1);
+        assert(pc_net_game_port(1, 0) == 2 && pc_net_game_port(1, 1) == 3);
+        assert(pc_net_port_human(0) && pc_net_port_human(1) && pc_net_port_human(2));
+        assert(!pc_net_port_human(3));
+        uint8_t ready_f[sizeof(Ready)];
+        memcpy(ready_f, s_out, sizeof ready_f);
+
+        side_load(&mm_host);
+        handshake_msg(REL_READY, ready_f, (int)sizeof ready_f);
+        assert(net.hs == HS_DONE && pc_net_matchmade());
+        assert(pc_net_team(1)->fighter[0].ckind == CKind_Fox && pc_net_team(1)->point == 0);
+        assert(pc_net_game_port(1, 0) == 2 && !pc_net_port_human(3) && pc_net_port_human(1));
+        rules_restore();
+        assert(!pc_net_matchmade() && pc_net_team(0) == NULL);
+        assert(s_game.stock_count == 4); /* the host's own settings are back */
+
+        /* A matchmade RULES with any other ruleset is refused. */
+        {
+            Rules ru;
+            memcpy(&ru, rules_f, sizeof ru);
+            wire_rules(&ru);
+            ru.game.stock_count = 4;
+            ru.hash = rules_hash(ru, sess_f);
+            wire_rules(&ru);
+            memcpy(rules_f, &ru, sizeof ru);
+        }
+        load_fresh(sess_f, 1);
+        handshake_msg(REL_RULES, rules_f, (int)sizeof rules_f);
+        assert(net.hs != HS_DONE && !pc_net_matchmade());
+        rules_restore();
+        /* Direct layout again once the session is over. */
+        assert(pc_net_game_port(1, 0) == 1 && pc_net_game_port(0, 1) == 2);
+        pc_net_set_matchmade(false, NULL);
+        s_tag_on = false;
+        printf("ok 17: Matchmaking layout, teams and ruleset agreed; others refused\n");
     }
 
     printf("test_net_handshake: all checks passed\n");

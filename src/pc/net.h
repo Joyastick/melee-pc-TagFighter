@@ -29,8 +29,10 @@ extern "C" {
  * Rules.tag_bind / Ready.tag_bind (each peer's own MeleeVS: Tag Bind).
  * Version 10 sends two pads per frame (each machine's player and its couch
  * partner, WireFrame) and adds Rules/Ready.partner_bind, so a MeleeVS duo
- * can share one machine (ports 3 and 4 follow ports 1 and 2's machines). */
-#define PC_NET_PROTO_VERSION 10
+ * can share one machine (ports 3 and 4 follow ports 1 and 2's machines).
+ * Version 11 adds Rules.layout and each machine's team setup (Rules.team,
+ * Ready.team) for MeleeVS Matchmaking, which skips the online CSS/SSS. */
+#define PC_NET_PROTO_VERSION 11
 void pc_net_init(void);
 void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
@@ -106,6 +108,35 @@ int pc_net_local_tag_bind(void);
  * Battle session, and -1 while no session is in force. */
 int pc_net_local_partner_bind(void);
 int pc_net_remote_partner_bind(void);
+/* MeleeVS Matchmaking team setup: one per machine, fixed before searching
+ * and carried by the handshake (Rules.team for the host, Ready.team for the
+ * guest). fighter[0] is the machine's own player, fighter[1] its couch
+ * partner (human) or CPU assist. point is the fighter that starts on point:
+ * a human+CPU team must start with the human. Exact wire image. */
+typedef struct PcNetTeamFighter {
+    int8_t ckind;      /* CharacterKind, 0..CKind_Playable_Count-1 */
+    uint8_t color;     /* costume, < gm_GetNumCostumesForCKind(ckind) */
+    uint8_t human;     /* 1: a player; 0: CPU assist */
+    uint8_t cpu_level; /* 1..9, CPU fighters only */
+} __attribute__((packed)) PcNetTeamFighter;
+typedef struct PcNetTeam {
+    PcNetTeamFighter fighter[2];
+    uint8_t point; /* 0 or 1 */
+} __attribute__((packed)) PcNetTeam;
+
+/* Set before connecting: whether this side is joining a Matchmaking game,
+ * and its team. The host's choice decides the session (Rules.layout); a
+ * NULL team clears it (Direct, LAN, plain VS). */
+void pc_net_set_matchmade(bool matchmade, const PcNetTeam* team);
+/* After the handshake: whether this session is a Matchmaking game, and each
+ * machine's team (machine 0 the host, 1 the guest; NULL outside one). */
+bool pc_net_matchmade(void);
+const PcNetTeam* pc_net_team(int machine);
+/* Game port (0-3) of a machine's fighter: slot 0 its player, slot 1 its
+ * partner or assist. Direct/LAN keep MeleeVS's CSS layout (host 1+3, guest
+ * 2+4); Matchmaking puts each team together (host 1+2, guest 3+4). */
+int pc_net_game_port(int machine, int slot);
+
 /* Whether game port 0-3 is a human in this session: ports 0/1 always, 2/3
  * only for a machine that announced a couch partner. The CSS uses it to
  * open those doors as Human instead of CPU. */

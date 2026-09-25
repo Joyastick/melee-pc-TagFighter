@@ -2454,7 +2454,7 @@ static void head_check(void) {
     }
     const PadLibData* p = &HSD_PadLibData;
     for (int i = 0; i < 2; i++) {
-        int port = i == 0 ? net.local : net.remote;
+        int port = pc_net_game_port(i == 0 ? net.local : net.remote, 0);
         /* HSD_PadADConvert ORs synthetic direction bits above 0xffff into
          * button (controller.c), so only the real pad bits can be compared. */
         uint32_t saw = HSD_PadMasterStatus[port].button & 0xffffu;
@@ -2490,16 +2490,21 @@ static void head_check(void) {
     s_head_frame = -1;
 }
 
-/* Ports 0-3 of the queue head become the synced inputs for frame f. Ports
- * 0/1 are the two machines' players; ports 2/3 are each machine's couch
- * partner when its handshake announced one (MeleeVS duo, same team as the
- * machine's own port), and no controller otherwise. Both peers decide this
- * from the same handshake values, so the sims agree. */
+/* Ports 0-3 of the queue head become the synced inputs for frame f. Each
+ * machine's player and, when its handshake announced one, its couch partner
+ * go to that machine's ports (pc_net_game_port: host 1+3 / guest 2+4 for
+ * Direct and LAN, host 1+2 / guest 3+4 for Matchmaking); every other port
+ * is "no controller" (a CPU assist, or empty). Both peers decide this from
+ * the same handshake values, so the sims agree. */
 static void write_head(PADStatus* head, int32_t f) {
     static const WireFrame neutral;
     const WireFrame* mine_frame = f >= net.delay ? &s_local_ring[f & (RING - 1)] : &neutral;
     const WirePad* mine = &mine_frame->pad[0];
-    from_wire(&head[net.local], mine);
+    for (int i = 0; i < 4; i++) {
+        memset(&head[i], 0, sizeof head[i]);
+        head[i].err = PAD_ERR_NO_CONTROLLER;
+    }
+    from_wire(&head[pc_net_game_port(net.local, 0)], mine);
     const WireFrame* theirs_frame = &s_remote_ring[f & (RING - 1)];
     const WirePad* theirs = &theirs_frame->pad[0];
     WirePad wrong;
@@ -2509,20 +2514,16 @@ static void write_head(PADStatus* head, int32_t f) {
         wrong.button ^= 0x0100; /* A */
         theirs = &wrong;
     }
-    from_wire(&head[net.remote], theirs);
+    from_wire(&head[pc_net_game_port(net.remote, 0)], theirs);
     if (!s_seen_remote && theirs->button != 0) {
         s_seen_remote = true;
         pc_log_line("net: first remote button press (%04x) at frame %d", theirs->button, f);
     }
-    for (int i = 2; i < 4; i++) {
-        memset(&head[i], 0, sizeof head[i]);
-        head[i].err = PAD_ERR_NO_CONTROLLER;
-    }
     if (pc_net_local_partner_bind() >= 0) {
-        from_wire(&head[net.local + 2], &mine_frame->pad[1]);
+        from_wire(&head[pc_net_game_port(net.local, 1)], &mine_frame->pad[1]);
     }
     if (pc_net_remote_partner_bind() >= 0) {
-        from_wire(&head[net.remote + 2], &theirs_frame->pad[1]);
+        from_wire(&head[pc_net_game_port(net.remote, 1)], &theirs_frame->pad[1]);
     }
     head_note(head, f);
 }

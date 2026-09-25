@@ -462,11 +462,14 @@ void OSPanic(const char* file, int line, const char* msg, ...) {
     fprintf(stderr, "PANIC %s:%d: %s\n", file, line, buf);
     fflush(stderr);
 #else
-    fprintf(stderr, "PANIC %s:%d: ", file, line);
-    vfprintf(stderr, msg, args);
-    fputc('\n', stderr);
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), msg, args);
+    fprintf(stderr, "PANIC %s:%d: %s\n", file, line, buf);
     fflush(stderr);
 #endif
     va_end(args);
+    /* abort() bypasses the crash handler, so without this a failed decomp
+     * assert leaves melee-pc.log ending with no reason at all. */
+    pc_log_line("[FATAL] PANIC %s:%d", file ? file : "?", line);
     abort();
 }
