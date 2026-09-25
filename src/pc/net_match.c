@@ -42,13 +42,21 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
 /* v4: hello signs its sender's own public and LAN address.
- * v5: hello, offer and ack carry X25519 keys for the session secret. */
-#define MATCH_VERSION 5
+ * v5: hello, offer and ack carry X25519 keys for the session secret.
+ * v6: MatchPing between Hello and Offer: the ping and Accept / Decline. */
+#define MATCH_VERSION 6
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
  * RETRY_MS, so 3s is a dozen resends; 8s only delayed the next candidate. */
 #define TIMEOUT_MS 3000
+/* Matchmaking asks before it commits: once Hellos have locked a peer, both
+ * sides exchange MatchPings (the round trip, and each side's Accept or
+ * Decline) and the host only sends its Offer after both accepted. */
+#define ACCEPT_MS 10000     /* no answer by then counts as a decline */
+#define PING_MS 250         /* MatchPing interval while a peer is locked */
+#define PEER_SILENT_MS 3000 /* no MatchPing for that long: the peer is gone */
+#define AVOID_MS 120000     /* a declined player is not offered again for this long */
 /* Direct connect rendezvous record (BEP44 mutable item). The slot key is
  * derived from the host's connect code, so a dialer can address it knowing
  * only the code; the value inside is signed by the host's real identity key,
@@ -92,6 +100,17 @@ typedef struct MatchOffer {
     uint32_t seed;
     uint8_t signature[64];
 } MatchOffer;
+/* Between Hello and Offer, both ways every PING_MS. stamp is the sender's
+ * clock; echo returns the peer's latest stamp, held ms after it arrived, so
+ * the round trip is now - echo - held. choice is final once set. */
+typedef struct MatchPing {
+    uint32_t magic;
+    uint8_t version, type, mode, choice;
+    uint64_t sender_nonce, receiver_nonce;
+    uint64_t stamp, echo;
+    uint32_t held;
+    uint8_t signature[64];
+} MatchPing;
 typedef struct MatchAck {
     uint32_t magic;
     uint8_t version, type, mode, reserved;
@@ -147,6 +166,20 @@ static struct pc_dht_endpoint direct_endpoint;
 static struct pc_dht_endpoint hello_targets[HELLO_TARGETS];
 static unsigned hello_target_count, hello_target_cursor;
 static uint64_t next_target_hello;
+/* Accept / Decline (MatchPing). */
+static uint8_t local_choice, peer_choice;
+static bool prompting;        /* this peer waits for the player's answer */
+static bool agreed;           /* both accepted: Offer / Ack may run */
+static uint64_t choose_until; /* auto-decline then */
+static uint64_t next_ping, last_peer_ping;
+static uint64_t peer_stamp, peer_stamp_at, last_echo;
+static int rtt[8];
+static unsigned rtt_count;
+static struct {
+    uint8_t key[32];
+    uint64_t until;
+} avoided[4];
+static unsigned avoided_cursor;
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -788,11 +821,124 @@ static void hello_refresh_from(void) {
     hello.from_lan = lan;
     sign_packet(&hello, sizeof hello);
 }
+static bool is_avoided(const uint8_t key[32]) {
+    uint64_t now = SDL_GetTicks();
+    for (unsigned i = 0; i < SDL_arraysize(avoided); i++)
+        if (avoided[i].until > now && !memcmp(avoided[i].key, key, 32))
+            return true;
+    return false;
+}
+static void send_ping(void) {
+    uint64_t now = SDL_GetTicks();
+    MatchPing p;
+    memset(&p, 0, sizeof p);
+    p.magic = htonl(MATCH_MAGIC);
+    p.version = MATCH_VERSION;
+    p.type = 'P';
+    p.mode = (uint8_t)mode;
+    p.choice = local_choice;
+    p.sender_nonce = local_nonce;
+    p.receiver_nonce = peer_nonce;
+    p.stamp = now + 1; /* never 0, which means "nothing to echo" */
+    p.echo = peer_stamp;
+    p.held = peer_stamp ? (uint32_t)(now - peer_stamp_at) : 0;
+    sign_packet(&p, sizeof p);
+    send_packet(&p, sizeof p, &peer);
+}
+/* Median round trip so far, -1 while there is no sample. */
+static int ping_ms(void) {
+    int sorted[SDL_arraysize(rtt)];
+    unsigned n = rtt_count < SDL_arraysize(rtt) ? rtt_count : (unsigned)SDL_arraysize(rtt);
+    if (!n)
+        return -1;
+    memcpy(sorted, rtt, n * sizeof *sorted);
+    for (unsigned i = 1; i < n; i++)
+        for (unsigned j = i; j > 0 && sorted[j - 1] > sorted[j]; j--) {
+            int t = sorted[j];
+            sorted[j] = sorted[j - 1];
+            sorted[j - 1] = t;
+        }
+    return sorted[n / 2];
+}
+static void receive_ping(const MatchPing* p, const struct pc_dht_endpoint* ep) {
+    if (ntohl(p->magic) != MATCH_MAGIC || p->version != MATCH_VERSION || p->type != 'P' ||
+        p->mode != (uint8_t)mode || !have_peer || ep->address != peer.address ||
+        ep->port != peer.port || p->sender_nonce != peer_nonce ||
+        p->receiver_nonce != local_nonce || p->choice > PC_MATCH_CHOICE_DECLINE ||
+        !signed_ok(peer_key, p->signature, p, sizeof *p))
+        return;
+    uint64_t now = SDL_GetTicks();
+    last_peer_ping = now;
+    if (p->stamp > peer_stamp) {
+        peer_stamp = p->stamp;
+        peer_stamp_at = now;
+    }
+    if (p->echo && p->echo != last_echo && p->echo <= now + 1) {
+        int64_t sample = (int64_t)(now + 1 - p->echo) - (int64_t)p->held;
+        last_echo = p->echo;
+        if (sample >= 0 && sample < 5000)
+            rtt[rtt_count++ % SDL_arraysize(rtt)] = (int)sample;
+    }
+    if (p->choice && !peer_choice) {
+        peer_choice = p->choice;
+        pc_log_line(
+            "match: opponent %s", peer_choice == PC_MATCH_CHOICE_ACCEPT ? "accepted" : "declined");
+    }
+}
+static void send_offer(void) {
+    memset(&offer, 0, sizeof offer);
+    offer.magic = htonl(MATCH_MAGIC);
+    offer.version = MATCH_VERSION;
+    offer.type = 'O';
+    offer.mode = (uint8_t)mode;
+    offer.host_nonce = local_nonce;
+    offer.guest_nonce = peer_nonce;
+    memcpy(offer.host_key, identity.public_key, 32);
+    memcpy(offer.guest_key, peer_key, 32);
+    memcpy(offer.host_kx, kx_public, 32);
+    memcpy(offer.guest_kx, peer_kx, 32);
+    memcpy(offer.compatibility, compatibility, 20);
+    memcpy(offer.topic, topic, 20);
+    if (!seed && !pc_identity_random(&seed, sizeof seed)) {
+        fail("random source failed");
+        return;
+    }
+    offer.seed = htonl(seed);
+    sign_packet(&offer, sizeof offer);
+    pc_dht_sha1(&offer, sizeof offer, offer_hash);
+    if (!begin_rank()) {
+        fail("rank history unavailable");
+        return;
+    }
+    pc_log_line("match: sending MatchOffer to peer (seed=%u)", seed);
+    send_packet(&offer, sizeof offer, &peer);
+    next_send = SDL_GetTicks() + RETRY_MS;
+}
+/* Let the locked peer go and keep searching (queued again on the server,
+ * which is asked not to pair us with it straight back). */
+static void drop_peer(const char* why, bool avoid) {
+    if (avoid) {
+        unsigned slot = avoided_cursor++ % SDL_arraysize(avoided);
+        memcpy(avoided[slot].key, peer_key, 32);
+        avoided[slot].until = SDL_GetTicks() + AVOID_MS;
+    }
+    pc_rdv_retry_avoiding(&peer);
+    have_peer = agreed = false;
+    peer_nonce = 0;
+    memset(peer_key, 0, sizeof peer_key);
+    memset(peer_kx, 0, sizeof peer_kx);
+    opponent[0] = 0;
+    seed = 0;
+    next_send = 0; /* peer attempt expired: remain queued in DHT */
+    failure = why;
+}
 static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused) {
     (void)unused;
     if (pc_rdv_receive(data, n, ep))
         return;
-    if (n == sizeof(MatchHello)) {
+    if (n == sizeof(MatchPing)) {
+        receive_ping(data, ep);
+    } else if (n == sizeof(MatchHello)) {
         const MatchHello* h = data;
         const char* terminator = memchr(h->code, '\0', sizeof h->code);
         if (ntohl(h->magic) != MATCH_MAGIC || h->version != MATCH_VERSION || h->type != 'H' ||
@@ -823,6 +969,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
             return;
         }
         bool fresh = !have_peer;
+        if (fresh && is_avoided(h->public_key))
+            return; /* declined a moment ago */
         if (have_peer &&
             (h->nonce != peer_nonce || memcmp(h->public_key, peer_key, 32) ||
                 memcmp(h->kx, peer_kx, 32) || ep->address != peer.address || ep->port != peer.port))
@@ -844,37 +992,23 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
                 send_packet(&hello, sizeof hello, ep); /* answer one-sided discovery burst */
             }
         }
-        if (fresh)
-            deadline = SDL_GetTicks() + (mode == PC_MATCH_RANKED ? 90000 : TIMEOUT_MS);
-        if (host) {
-            memset(&offer, 0, sizeof offer);
-            offer.magic = htonl(MATCH_MAGIC);
-            offer.version = MATCH_VERSION;
-            offer.type = 'O';
-            offer.mode = (uint8_t)mode;
-            offer.host_nonce = local_nonce;
-            offer.guest_nonce = peer_nonce;
-            memcpy(offer.host_key, identity.public_key, 32);
-            memcpy(offer.guest_key, peer_key, 32);
-            memcpy(offer.host_kx, kx_public, 32);
-            memcpy(offer.guest_kx, peer_kx, 32);
-            memcpy(offer.compatibility, compatibility, 20);
-            memcpy(offer.topic, topic, 20);
-            if (!seed && !pc_identity_random(&seed, sizeof seed)) {
-                fail("random source failed");
-                return;
-            }
-            offer.seed = htonl(seed);
-            sign_packet(&offer, sizeof offer);
-            pc_dht_sha1(&offer, sizeof offer, offer_hash);
-            if (!begin_rank()) {
-                fail("rank history unavailable");
-                return;
-            }
-            pc_log_line("match: sending MatchOffer to peer (seed=%u)", seed);
-            send_packet(&offer, sizeof offer, &peer);
-            next_send = SDL_GetTicks() + RETRY_MS;
+        if (fresh) {
+            /* Matchmaking asks the player first; Direct Connect already
+             * named its opponent, so it accepts at once. */
+            uint64_t now = SDL_GetTicks();
+            prompting = mode != PC_MATCH_DIRECT;
+            local_choice = prompting ? PC_MATCH_CHOICE_NONE : PC_MATCH_CHOICE_ACCEPT;
+            peer_choice = PC_MATCH_CHOICE_NONE;
+            agreed = false;
+            choose_until = now + ACCEPT_MS;
+            deadline = choose_until + TIMEOUT_MS;
+            next_ping = 0;
+            last_peer_ping = now;
+            peer_stamp = last_echo = 0;
+            rtt_count = 0;
         }
+        if (host && agreed)
+            send_offer();
     } else if (n == sizeof(MatchOffer)) {
         const MatchOffer* o = data;
         if (ntohl(o->magic) != MATCH_MAGIC || o->version != MATCH_VERSION || o->type != 'O' ||
@@ -885,7 +1019,7 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
             memcmp(o->topic, topic, 20) || memcmp(o->host_kx, peer_kx, 32) ||
             memcmp(o->guest_kx, kx_public, 32) || !signed_ok(peer_key, o->signature, o, sizeof *o))
             return;
-        if (host || (offer_received && memcmp(&offer, o, sizeof offer)))
+        if (host || !agreed || (offer_received && memcmp(&offer, o, sizeof offer)))
             return;
         offer_received = true;
         seed = ntohl(o->seed);
@@ -958,7 +1092,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     start_frame = -1;
     seed = 0;
     opponent[0] = 0;
-    have_peer = false;
+    have_peer = agreed = false;
     handshake_done = barrier_sent = barrier_received = false;
     publication = 0;
     publication_reason = NULL;
@@ -1108,25 +1242,47 @@ void pc_net_match_poll(void) {
                 send_packet(&hello, sizeof hello, &hello_targets[i]);
             next_target_hello = now + HELLO_TARGET_MS;
         }
+        if (have_peer && !agreed) {
+            bool unanswered = local_choice == PC_MATCH_CHOICE_NONE && now >= choose_until;
+            if (unanswered)
+                pc_net_match_decide(false);
+            if (local_choice == PC_MATCH_CHOICE_DECLINE) {
+                drop_peer(
+                    unanswered ? "No answer. Searching again..." : "Declined. Searching again...",
+                    true);
+            } else if (peer_choice == PC_MATCH_CHOICE_DECLINE) {
+                drop_peer("Opponent declined. Searching again...", true);
+            } else if (now - last_peer_ping >= PEER_SILENT_MS) {
+                drop_peer("Could not connect to opponent. Searching again...", false);
+            } else if (local_choice == PC_MATCH_CHOICE_ACCEPT &&
+                       peer_choice == PC_MATCH_CHOICE_ACCEPT)
+            {
+                agreed = true;
+                deadline = now + (mode == PC_MATCH_RANKED ? 90000 : TIMEOUT_MS);
+                pc_log_line("match: both accepted (ping %d ms)", ping_ms());
+                if (host) {
+                    send_offer();
+                    if (state != PC_MATCH_SEARCH)
+                        return;
+                }
+            }
+        }
+        if (have_peer && now >= next_ping) {
+            send_ping();
+            next_ping = now + PING_MS;
+        }
         if (have_peer && now >= next_send) {
-            send_packet(
-                host ? (void*)&offer : (void*)&hello, host ? sizeof offer : sizeof hello, &peer);
+            bool offering = host && agreed;
+            send_packet(offering ? (void*)&offer : (void*)&hello,
+                offering ? sizeof offer : sizeof hello, &peer);
             next_send = now + RETRY_MS;
         }
         if (have_peer && now >= deadline) {
-            if (mode == PC_MATCH_RANKED) {
+            if (mode == PC_MATCH_RANKED && agreed) {
                 fail("rank proof pairing timed out");
                 return;
             }
-            pc_rdv_retry_avoiding(&peer);
-            have_peer = false;
-            peer_nonce = 0;
-            memset(peer_key, 0, sizeof peer_key);
-            memset(peer_kx, 0, sizeof peer_kx);
-            opponent[0] = 0;
-            seed = 0;
-            next_send = 0; /* peer attempt expired: remain queued in DHT */
-            failure = "Could not connect to opponent. Searching again...";
+            drop_peer("Could not connect to opponent. Searching again...", false);
         }
     } else if (state == PC_MATCH_FAIL) {
         pc_net_match_warm();
@@ -1238,6 +1394,29 @@ int pc_net_match_state(const char** why) {
     if (why)
         *why = failure;
     return state;
+}
+bool pc_net_match_pending(int* ping, int* seconds_left, int* choice) {
+    if (state != PC_MATCH_SEARCH || !have_peer || !prompting || agreed)
+        return false;
+    uint64_t now = SDL_GetTicks();
+    if (ping)
+        *ping = ping_ms();
+    if (seconds_left)
+        *seconds_left = now < choose_until ? (int)((choose_until - now + 999) / 1000) : 0;
+    if (choice)
+        *choice = local_choice;
+    return true;
+}
+void pc_net_match_decide(bool accept) {
+    if (state != PC_MATCH_SEARCH || !have_peer || local_choice != PC_MATCH_CHOICE_NONE)
+        return;
+    local_choice = accept ? PC_MATCH_CHOICE_ACCEPT : PC_MATCH_CHOICE_DECLINE;
+    pc_log_line("match: %s %s (ping %d ms)", accept ? "accepted" : "declined", opponent, ping_ms());
+    /* Tell the peer now rather than at the next tick; a decline is the last
+     * thing it hears from us. */
+    for (int i = 0; i < (accept ? 1 : 3); i++)
+        send_ping();
+    next_ping = SDL_GetTicks() + PING_MS;
 }
 bool pc_net_match_is_host(void) {
     return host;

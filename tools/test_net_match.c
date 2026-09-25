@@ -187,6 +187,8 @@ void pc_dht_poll(void) {
          * which only hands non-DHT datagrams to a registered callback. */
         if (!dht_cb)
             continue;
+        /* Decline run: the host never offers without both accepts. */
+        assert(!(n > 5 && b[5] == 'O' && getenv("MATCH_DECLINE")));
         if (n > 5 && b[5] == 'O' && !dropped_offer++) {
             continue;
         }
@@ -321,10 +323,32 @@ int main(int argc, char** argv) {
             candidate = 0;
         assert(
             pc_net_match_start(getenv("MATCH_RANKED") ? PC_MATCH_RANKED : PC_MATCH_UNRANKED, ""));
-        for (int i = 0; i < 400 && pc_net_match_state(NULL) != PC_MATCH_READY; i++) {
+        /* Both players accept the opponent they are offered; in the decline
+         * run P0 declines instead, and both must end up searching again. */
+        bool decline = getenv("MATCH_DECLINE") != NULL;
+        bool declines = decline && !strcmp(getenv("MATCH_NAME"), "P0");
+        int prompted = 0, choice = -1, ping = -1;
+        for (int i = 0; i < 800 && pc_net_match_state(NULL) != PC_MATCH_READY; i++) {
             pc_net_match_poll();
+            if (pc_net_match_pending(&ping, NULL, &choice) && choice == PC_MATCH_CHOICE_NONE) {
+                prompted++;
+                if (ping >= 0 || prompted > 200) /* once the ping is measured */
+                    pc_net_match_decide(!declines);
+            }
+            if (decline && prompted && !have_peer)
+                break;
             usleep(5000);
         }
+        if (decline) {
+            const char* why;
+            assert(prompted && !have_peer && pc_net_match_state(&why) == PC_MATCH_SEARCH);
+            assert(!strcmp(why, declines ? "Declined. Searching again..." :
+                                           "Opponent declined. Searching again..."));
+            pc_net_match_stop();
+            puts(declines ? "declined" : "was declined");
+            return 0;
+        }
+        assert(prompted && ping >= 0);
         if (getenv("MATCH_PROOF_TIMEOUT") || getenv("MATCH_PROOF_MISMATCH")) {
             assert(pc_net_match_state(NULL) == PC_MATCH_FAIL);
             assert(game_fd < 0);
