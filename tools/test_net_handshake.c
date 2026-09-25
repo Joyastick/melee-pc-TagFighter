@@ -316,6 +316,7 @@ int main(void) {
     s_game.stock_count = 4;
     s_game.damage_ratio = 10;
     s_game.stage_sel = 1;
+    s_game.pause = 1;         /* on, so Matchmaking visibly turns it off */
     s_prefs.item_freq = 0xFF; /* Items: Off (mnitemsw.c stores x21 - 1); refused before #91 */
     s_prefs.item_mask = 0x1234567890abcdefull;
     s_prefs.stage_mask = 0x00ff00ffu;
@@ -798,6 +799,7 @@ int main(void) {
         /* The Matchmaking ruleset, whatever the host's own settings were. */
         assert(s_game.mode == Mode_Stock && s_game.stock_count == 3);
         assert(s_game.stock_time_limit == 8 && s_game.friendly_fire == 0);
+        assert(s_game.pause == 0);
         assert(s_prefs.item_freq == 0xFF);
         const PcNetTeam* h = pc_net_team(0);
         const PcNetTeam* g = pc_net_team(1);
@@ -821,7 +823,7 @@ int main(void) {
         assert(pc_net_game_port(1, 0) == 2 && !pc_net_port_human(3) && pc_net_port_human(1));
         rules_restore();
         assert(!pc_net_matchmade() && pc_net_team(0) == NULL);
-        assert(s_game.stock_count == 4); /* the host's own settings are back */
+        assert(s_game.stock_count == 4 && s_game.pause == 1); /* the host's own settings are back */
 
         /* A matchmade RULES with any other ruleset is refused. */
         {

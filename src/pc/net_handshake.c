@@ -321,7 +321,8 @@ static bool team_invalid(const PcNetTeam* t, uint8_t partner_bind) {
 
 /* MeleeVS Matchmaking always plays one ruleset, whatever either player's
  * own settings are: Stock, 3 lives, 8-minute stock timer, items off, team
- * attack off. The host sends it; the guest refuses anything else. */
+ * attack off, pause off. The host sends it; the guest refuses anything
+ * else. */
 #define MM_STOCKS 3
 #define MM_STOCK_MINUTES 8
 #define MM_ITEMS_OFF 0xFF /* mnItemSw_CommitItems' x21 - 1 for "Off" */
@@ -330,13 +331,14 @@ static void matchmade_rules(Rules* ru) {
     ru->game.stock_count = MM_STOCKS;
     ru->game.stock_time_limit = MM_STOCK_MINUTES;
     ru->game.friendly_fire = 0;
+    ru->game.pause = 0; /* gm_80167BC8 turns this into disable_pausing */
     ru->item_freq = MM_ITEMS_OFF;
 }
 
 static bool matchmade_rules_differ(const Rules* ru) {
     return ru->game.mode != Mode_Stock || ru->game.stock_count != MM_STOCKS ||
            ru->game.stock_time_limit != MM_STOCK_MINUTES || ru->game.friendly_fire != 0 ||
-           ru->item_freq != MM_ITEMS_OFF;
+           ru->game.pause != 0 || ru->item_freq != MM_ITEMS_OFF;
 }
 
 /* The game's own settings as they are, with no session overrides: what
