@@ -708,7 +708,8 @@ static const char* const ckind_name[CKind_Playable_Count] = {
 };
 
 /* "Your team: Fox (point) + Falco CPU": both fighters, which starts on
- * point, and whether the partner is a CPU. */
+ * point, and whether the partner is a CPU or a second player on the same
+ * machine ("(Couch)", a couch duo). */
 static void teamLine(char* out, size_t size, const char* label, const PcNetTeam* team)
 {
     const char* name[2];
@@ -726,7 +727,7 @@ static void teamLine(char* out, size_t size, const char* label, const PcNetTeam*
     }
     snprintf(out, size, "%s: %s%s + %s%s%s", label, name[0], team->point == 0 ? " (point)" : "",
              name[1], team->point == 1 ? " (point)" : "",
-             team->fighter[1].human ? "" : " CPU");
+             team->fighter[1].human ? " (Couch)" : " CPU");
 }
 
 /* Every search starts here, so the netcode always knows whether this side
