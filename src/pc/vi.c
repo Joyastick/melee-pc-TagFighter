@@ -184,7 +184,15 @@ void pc_frame_boundary(void) {
         } else if (event->type == AURORA_SDL_EVENT) {
             if (event->sdl.type == SDL_EVENT_KEY_DOWN &&
                 event->sdl.key.scancode == SDL_SCANCODE_F1 && !event->sdl.key.repeat)
-                pc_menu_toggle();
+            {
+                /* The overlay freezes this machine's simulation, which stalls
+                 * the opponent too; a matchmade session plays with no pausing
+                 * of any kind. Closing an already open menu still works. */
+                if (pc_net_matchmade() && !pc_menu_is_open())
+                    pc_log_line("menu: F1 is off during a Matchmaking session");
+                else
+                    pc_menu_toggle();
+            }
             pc_menu_event(&event->sdl);
             pc_keyboard_event(&event->sdl);
             pc_touch_event(&event->sdl);
