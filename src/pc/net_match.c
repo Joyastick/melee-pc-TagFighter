@@ -6,6 +6,7 @@
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "pc.h"
+#include "monocypher.h"
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_timer.h>
 #include <stddef.h>
@@ -38,7 +39,9 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #endif
 
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
-#define MATCH_VERSION 4         /* v4: hello signs its sender's own public and LAN address */
+/* v4: hello signs its sender's own public and LAN address.
+ * v5: hello, offer and ack carry X25519 keys for the session secret. */
+#define MATCH_VERSION 5
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
@@ -74,6 +77,8 @@ typedef struct MatchHello {
      * the sender's NAT-observed public IP and its LAN IP. Signed, so a
      * relay that forwards the Hello cannot swap in its own address. */
     uint32_t from_public, from_lan;
+    /* This search's ephemeral X25519 public key (session_secret()). */
+    uint8_t kx[32];
     uint8_t signature[64];
 } MatchHello;
 typedef struct MatchOffer {
@@ -81,6 +86,7 @@ typedef struct MatchOffer {
     uint8_t version, type, mode, reserved;
     uint64_t host_nonce, guest_nonce;
     uint8_t host_key[32], guest_key[32], compatibility[20], topic[20];
+    uint8_t host_kx[32], guest_kx[32];
     uint32_t seed;
     uint8_t signature[64];
 } MatchOffer;
@@ -89,6 +95,7 @@ typedef struct MatchAck {
     uint8_t version, type, mode, reserved;
     uint64_t host_nonce, guest_nonce;
     uint8_t host_key[32], guest_key[32], offer_hash[20];
+    uint8_t host_kx[32], guest_kx[32];
     uint8_t signature[64];
 } MatchAck;
 #pragma pack(pop)
@@ -100,6 +107,8 @@ static const char* failure = "not started";
 static char target[18], opponent[18];
 static uint8_t peer_key[32], compatibility[20], topic[20], offer_hash[20];
 static uint64_t local_nonce, peer_nonce, deadline, next_send;
+/* Ephemeral X25519 pair drawn per search, and the peer's public half. */
+static uint8_t kx_secret[32], kx_public[32], peer_kx[32];
 static struct pc_dht_endpoint peer;
 static bool have_peer, host;
 static uint32_t seed;
@@ -124,6 +133,7 @@ static bool publication_record;
 static uint8_t publication_wire[PC_RANK_RECORD_BYTES];
 static PcNetIdentity direct_slot;
 static PcNetIdentity dial_slot;
+static bool rematch_hint;  /* next start: Hello the last peer's endpoint at once */
 static uint64_t dial_next; /* dialer: next dial-back publish; host: next lookup */
 static bool direct_pending;
 static bool direct_put_inflight; /* direct_pending is a publish, not a lookup */
@@ -632,11 +642,49 @@ void pc_net_match_prepublish(void) {
         direct_next = now + 2000;
 }
 
+/* The session secret: X25519 between this search's ephemeral key and the
+ * peer's, both signed into the Hello/Offer/Ack, hashed together with both
+ * identities. Nothing on the wire reveals it, so a relay or anyone else on
+ * the path cannot derive the datagram key (net_key_session) even though the
+ * handshake nonces it also covers travel in the clear. The ephemeral secret
+ * is wiped once used, so a later leak cannot recover this session's key. */
+static bool session_secret(bool as_host) {
+    static const char label[] = "meleepc/match secret v1";
+    uint8_t shared[32], out[32];
+    crypto_x25519(shared, kx_secret, peer_kx);
+    crypto_wipe(kx_secret, sizeof kx_secret);
+    unsigned any = 0;
+    for (int i = 0; i < 32; i++)
+        any |= shared[i];
+    if (!any) {
+        /* A low-order peer key: the result would be public. */
+        pc_log_line("match: peer's exchange key is invalid");
+        return false;
+    }
+    const uint8_t* host_kx = as_host ? kx_public : peer_kx;
+    const uint8_t* guest_kx = as_host ? peer_kx : kx_public;
+    const uint8_t* host_id = as_host ? identity.public_key : peer_key;
+    const uint8_t* guest_id = as_host ? peer_key : identity.public_key;
+    crypto_blake2b_ctx ctx;
+    crypto_blake2b_init(&ctx, sizeof out);
+    crypto_blake2b_update(&ctx, (const uint8_t*)label, sizeof label - 1);
+    crypto_blake2b_update(&ctx, shared, sizeof shared);
+    crypto_blake2b_update(&ctx, host_kx, 32);
+    crypto_blake2b_update(&ctx, guest_kx, 32);
+    crypto_blake2b_update(&ctx, host_id, 32);
+    crypto_blake2b_update(&ctx, guest_id, 32);
+    crypto_blake2b_final(&ctx, out);
+    pc_net_set_session_secret(out);
+    crypto_wipe(shared, sizeof shared);
+    crypto_wipe(out, sizeof out);
+    return true;
+}
 static bool accept_ack(const MatchAck* a) {
     if (ntohl(a->magic) != MATCH_MAGIC || a->version != MATCH_VERSION || a->type != 'A' ||
         a->mode != (uint8_t)mode || a->host_nonce != local_nonce || a->guest_nonce != peer_nonce ||
         memcmp(a->host_key, identity.public_key, 32) || memcmp(a->guest_key, peer_key, 32) ||
-        memcmp(a->offer_hash, offer_hash, 20) || !signed_ok(peer_key, a->signature, a, sizeof *a))
+        memcmp(a->offer_hash, offer_hash, 20) || memcmp(a->host_kx, kx_public, 32) ||
+        memcmp(a->guest_kx, peer_kx, 32) || !signed_ok(peer_key, a->signature, a, sizeof *a))
         return false;
     ack = *a;
     ack_received = true;
@@ -652,7 +700,12 @@ static bool accept_ack(const MatchAck* a) {
     inet_ntop(AF_INET, &peer.address, ip, sizeof ip);
     pc_log_line(
         "match: accept_ack -> connecting socket as host to %s:%u (seed=%u)", ip, peer.port, seed);
+    if (!session_secret(true)) {
+        fail("key exchange failed");
+        return true;
+    }
     if (!pc_net_connect_socket(fd, ip, peer.port, 0, seed)) {
+        pc_net_set_session_secret(NULL);
 #ifdef _WIN32
         closesocket((SOCKET)fd);
 #else
@@ -674,6 +727,7 @@ static bool after_handoff(const void* data, size_t n, uint32_t address, uint16_t
             o->mode == (uint8_t)mode && o->host_nonce == peer_nonce &&
             o->guest_nonce == local_nonce && !memcmp(o->host_key, peer_key, 32) &&
             !memcmp(o->guest_key, identity.public_key, 32) && !memcmp(hash, offer_hash, 20) &&
+            !memcmp(o->host_kx, peer_kx, 32) && !memcmp(o->guest_kx, kx_public, 32) &&
             signed_ok(peer_key, o->signature, o, sizeof *o))
         {
             for (int p = 0; p < 3; p++) {
@@ -703,9 +757,17 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
 }
 /* Fill in (and re-sign for) our own addresses once they are known. */
 static void hello_refresh_from(void) {
-    static uint32_t lan;
+    static uint32_t lan, known_public;
     struct pc_dht_endpoint self;
     uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : 0;
+    /* A reopened DHT node relearns our public IP over a few seconds, while a
+     * rematch Hellos the last peer at once: keep signing the IP this process
+     * already learned rather than 0, which the peer only accepts from a LAN
+     * address (hello_source_ok). */
+    if (pub)
+        known_public = pub;
+    else
+        pub = known_public;
     if (!lan)
         lan = lan_address();
     if (pub == hello.from_public && lan == hello.from_lan)
@@ -747,10 +809,12 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
             return;
         }
         bool fresh = !have_peer;
-        if (have_peer && (h->nonce != peer_nonce || memcmp(h->public_key, peer_key, 32) ||
-                             ep->address != peer.address || ep->port != peer.port))
+        if (have_peer &&
+            (h->nonce != peer_nonce || memcmp(h->public_key, peer_key, 32) ||
+                memcmp(h->kx, peer_kx, 32) || ep->address != peer.address || ep->port != peer.port))
             return;
         memcpy(peer_key, h->public_key, 32);
+        memcpy(peer_kx, h->kx, 32);
         peer_nonce = h->nonce;
         peer = *ep;
         have_peer = true;
@@ -778,6 +842,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
             offer.guest_nonce = peer_nonce;
             memcpy(offer.host_key, identity.public_key, 32);
             memcpy(offer.guest_key, peer_key, 32);
+            memcpy(offer.host_kx, kx_public, 32);
+            memcpy(offer.guest_kx, peer_kx, 32);
             memcpy(offer.compatibility, compatibility, 20);
             memcpy(offer.topic, topic, 20);
             if (!seed && !pc_identity_random(&seed, sizeof seed)) {
@@ -802,7 +868,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
             o->mode != (uint8_t)mode || o->guest_nonce != local_nonce ||
             o->host_nonce != peer_nonce || memcmp(o->guest_key, identity.public_key, 32) ||
             memcmp(o->host_key, peer_key, 32) || memcmp(o->compatibility, compatibility, 20) ||
-            memcmp(o->topic, topic, 20) || !signed_ok(peer_key, o->signature, o, sizeof *o))
+            memcmp(o->topic, topic, 20) || memcmp(o->host_kx, peer_kx, 32) ||
+            memcmp(o->guest_kx, kx_public, 32) || !signed_ok(peer_key, o->signature, o, sizeof *o))
             return;
         if (host || (offer_received && memcmp(&offer, o, sizeof offer)))
             return;
@@ -820,6 +887,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         memcpy(ack.host_key, peer_key, 32);
         memcpy(ack.guest_key, identity.public_key, 32);
         memcpy(ack.offer_hash, offer_hash, 20);
+        memcpy(ack.host_kx, peer_kx, 32);
+        memcpy(ack.guest_kx, kx_public, 32);
         sign_packet(&ack, sizeof ack);
         if (!begin_rank()) {
             fail("rank history unavailable");
@@ -837,7 +906,12 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         pc_log_line("match: recv valid MatchOffer -> sending MatchAck and connecting socket as "
                     "guest to %s:%u (seed=%u)",
             ip, ep->port, seed);
+        if (!session_secret(false)) {
+            fail("key exchange failed");
+            return;
+        }
         if (!pc_net_connect_socket(fd, ip, ep->port, 1, seed)) {
+            pc_net_set_session_secret(NULL);
 #ifdef _WIN32
             closesocket((SOCKET)fd);
 #else
@@ -882,10 +956,14 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
         return false;
     }
     snprintf(target, sizeof target, "%s", code ? code : "");
-    if (!load_identity() || !pc_identity_random(&local_nonce, sizeof local_nonce)) {
+    if (!load_identity() || !pc_identity_random(&local_nonce, sizeof local_nonce) ||
+        !pc_identity_random(kx_secret, sizeof kx_secret))
+    {
         fail("identity unavailable");
         return false;
     }
+    crypto_x25519_public_key(kx_public, kx_secret);
+    memset(peer_kx, 0, sizeof peer_kx);
     digest();
     const char* direct = target[0] ? target : identity.code;
     pairing_topic(m, direct, topic);
@@ -894,6 +972,11 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     dial_next = m == PC_MATCH_DIRECT && target[0] ? UINT64_MAX : 0;
     hello_target_count = hello_target_cursor = 0;
     next_target_hello = 0;
+    /* A rematch reconnects to the peer we just played: its endpoint (stable
+     * DHT port, NAT mapping still fresh) is the fastest way back to it. */
+    if (rematch_hint && peer.address && peer.port)
+        add_hello_target(peer);
+    rematch_hint = false;
     if (m == PC_MATCH_DIRECT)
         direct_slot_for(direct);
     pc_dht_keep_item_on_start(keep_publish);
@@ -920,6 +1003,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     memcpy(hello.compatibility, compatibility, 20);
     memcpy(hello.topic, topic, 20);
     memcpy(hello.code, identity.code, sizeof hello.code);
+    memcpy(hello.kx, kx_public, sizeof hello.kx);
     sign_packet(&hello, sizeof hello);
     hello_refresh_from();
     pc_dht_set_datagram_callback(receive, NULL);
@@ -1004,6 +1088,7 @@ void pc_net_match_poll(void) {
             have_peer = false;
             peer_nonce = 0;
             memset(peer_key, 0, sizeof peer_key);
+            memset(peer_kx, 0, sizeof peer_kx);
             opponent[0] = 0;
             seed = 0;
             next_send = 0; /* peer attempt expired: remain queued in DHT */
@@ -1095,6 +1180,9 @@ void pc_net_match_stop(void) {
 }
 void pc_net_match_idle(void) {
     reset(true);
+}
+void pc_net_match_rematch_hint(void) {
+    rematch_hint = true;
 }
 void pc_net_match_warm(void) {
     static uint64_t next_attempt;

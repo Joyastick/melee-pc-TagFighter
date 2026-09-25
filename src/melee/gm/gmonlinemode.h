@@ -69,6 +69,14 @@ typedef struct OnlineLobbyView {
     char message[ONLINE_LOBBY_MSG_LEN]; /* one status line, may be "" */
     const char* link;                  /* quality word by the ping, or NULL */
     int countdown_frames;              /* STARTING only, else 0 */
+    /* After-match choice: when menu_count > 0 the rows show this menu
+     * instead of players (cursor marked, a tag at the right), and hint
+     * replaces the bottom line. */
+    int menu_count;
+    const char* menu[4];
+    const char* menu_tag[4];
+    int menu_cursor; /* -1: none */
+    const char* hint;
 } OnlineLobbyView;
 
 void mnOnlineLobby_Create(void);

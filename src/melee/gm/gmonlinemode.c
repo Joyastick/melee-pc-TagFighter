@@ -164,6 +164,34 @@ OnlineKind gmOnline_GetKind(void)
  * next Matchmaking search takes along (the launcher's meleevs_team). */
 static bool team_select_css;
 static bool team_select_then_search;
+static bool team_select_then_rematch; /* confirming reconnects to the last opponent */
+
+/* After a Matchmaking game: RESULTS leaves for the lobby with the session
+ * still up (as Ranked's awaiting_rank_result does) and each side picks one
+ * of four options. Both machines read both picks from the synced pads, so
+ * they reach the same outcome on the same frame without a message. */
+enum {
+    AM_SAME_REMATCH,
+    AM_CHANGE_REMATCH,
+    AM_SAME_SEARCH,
+    AM_CHANGE_SEARCH,
+    AM_MENU, /* B with nothing picked: leave */
+};
+static bool after_match;
+static bool am_live;          /* false once the opponent is gone */
+static int am_cursor[2];      /* per machine, 0 = host */
+static int am_pick[2];        /* -1 while choosing */
+static unsigned am_game;      /* rematches played in this session */
+/* A decision that ends the session is carried out AM_HOLD_FRAMES later:
+ * in lockstep that guarantees the other machine has also simulated the
+ * decision frame, so its goodbye can never be mistaken for a quit. */
+#define AM_HOLD_FRAMES 30
+enum { AM_OUT_NONE, AM_OUT_LEAVE, AM_OUT_TEAM_REMATCH };
+static int am_outcome;
+static int am_leave_frame;
+static bool rematch_direct;   /* the lobby reconnects to the last opponent */
+static bool rematch_host;
+static char rematch_code[18]; /* the host's connect code */
 
 bool gmOnline_IsTeamSelect(void)
 {
@@ -254,7 +282,7 @@ void onEnterLobby(UNUSED GameModeState* state)
     awaiting_rank_result = online_kind == ONLINE_KIND_RANKED &&
         (pc_rank_session_set_complete() ||
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
-    if (!awaiting_rank_result) {
+    if (!awaiting_rank_result && !after_match) {
         if (pc_net_active()) {
             pc_log_line("lobby: entering the lobby scene drops the active session");
         }
@@ -279,6 +307,12 @@ void onEnterLobby(UNUSED GameModeState* state)
 #ifdef TARGET_PC
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         teamSelectPrefill();
+    }
+    if (after_match) {
+        am_live = true;
+        am_cursor[0] = am_cursor[1] = 0;
+        am_pick[0] = am_pick[1] = -1;
+        am_outcome = AM_OUT_NONE;
     }
 #endif
 }
@@ -333,14 +367,21 @@ void onExitCss(GameModeState* state)
     if (team_select_css) {
         CSSData* css = gm_GetGameModeStateExitData(state);
         bool search = team_select_then_search;
+        bool rematch = team_select_then_rematch;
         team_select_css = false;
         team_select_then_search = false;
+        team_select_then_rematch = false;
         if (css->pending_scene_change == CSSPendingSceneChange_2) {
             gm_ChangeGameModeAfterCurrentScene(GM_MENU); /* backed out */
             return;
         }
         teamSelectSave(css->vs.start.players);
-        if (search) {
+        if (rematch) {
+            /* Change team + rematch: back to the same opponent. */
+            online_kind = ONLINE_KIND_DIRECT;
+            rematch_direct = true;
+            gm_SetNextGameModeStateId(state_lobby);
+        } else if (search) {
             /* MATCHMAKING with no saved team: now search with it. */
             online_kind = ONLINE_KIND_UNRANKED;
             gm_SetNextGameModeStateId(state_lobby);
@@ -521,6 +562,11 @@ void onExitResults(GameModeState* state)
 #endif
     gmVsMelee_ExitResults(state, &online_vs, state_css);
 #ifdef TARGET_PC
+    /* Matchmaking has no online CSS to go back to: the lobby asks what next. */
+    if (pc_net_matchmade()) {
+        after_match = true;
+        gm_SetNextGameModeStateId(state_lobby);
+    }
     if (rankedMode()) {
         /* The results exit is driven by synchronized pads. Reliable-message
          * arrival and disk speed must never choose different next scenes.
@@ -624,7 +670,7 @@ static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
  * player 1 on 3+4 in blue), point from each team's choice, each fighter in
  * its team color's costume the way a vanilla team battle dresses it, and a
  * stage picked from the shared seed. */
-static void matchmadeBuild(void)
+static void matchmadeBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
     start->rules.is_teams = 1;
@@ -650,7 +696,7 @@ static void matchmadeBuild(void)
         TagAssist_SetExplicitPoint((u8) m, pc_net_game_port(m, team->point));
     }
     {
-        u32 h = pc_net_match_seed() * 2654435761u;
+        u32 h = seed * 2654435761u;
         start->rules.stkind = matchmade_stages[(h >> 16) % ARRAY_SIZE(matchmade_stages)];
     }
     /* What gmVsMelee_ExitCss / ExitSss would have queued: the fighters'
@@ -702,6 +748,231 @@ static int direct_cursor;
 static bool direct_editing;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
 
+/* Reconnect to the last opponent as a Matchmaking (fixed teams, random
+ * stage) Direct session: the original host hosts its code, the other side
+ * dials it, and the last peer endpoint is tried at once. */
+static void startRematch(void)
+{
+    PcNetTeam team = matchmadeLocalTeam();
+    pc_net_set_matchmade(true, &team);
+    pc_net_match_rematch_hint();
+    pc_log_line("lobby: rematch, %s %s", rematch_host ? "hosting" : "dialing", rematch_code);
+    pc_net_match_start(PC_MATCH_DIRECT, rematch_host ? NULL : rematch_code);
+}
+
+/* TEAM SELECT from the lobby, then a search or a rematch. */
+static void afterMatchTeamSelect(bool then_rematch)
+{
+    online_kind = ONLINE_KIND_TEAM_SELECT;
+    team_select_then_search = !then_rematch;
+    team_select_then_rematch = then_rematch;
+    TagAssist_EnterForcedOn();
+    gm_InitVsMode(&online_vs);
+    for (int i = 0; i < GM_MAX_PLAYERS; ++i) {
+        online_vs.start.players[i].slot_type = Gm_PKind_NA;
+    }
+    teamSelectPrefill();
+    gm_SetNextGameModeStateId(state_css);
+    gm_801A4B60();
+}
+
+/* What this side does once the session is over: a rematch pick that got no
+ * rematch searches with its own choice's team, as the matchmake picks do. */
+static void afterMatchFollow(int pick)
+{
+    after_match = false;
+    switch (pick) {
+    case AM_SAME_REMATCH:
+    case AM_SAME_SEARCH:
+        online_kind = ONLINE_KIND_UNRANKED;
+        startMatch(PC_MATCH_UNRANKED, NULL);
+        break;
+    case AM_CHANGE_REMATCH:
+    case AM_CHANGE_SEARCH:
+        afterMatchTeamSelect(false);
+        break;
+    default:
+        pc_net_match_stop();
+        gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+        gm_801A4B60();
+        break;
+    }
+}
+
+/* End the session our own way: our disconnect marks the peer as gone, and
+ * GM_ONLINE ends any non-lobby scene while it does (gmscene.c), which would
+ * close TEAM SELECT on its first frame. */
+static void afterMatchEndSession(void)
+{
+    am_live = false;
+    pc_net_match_idle();
+    pc_net_peer_status_clear();
+}
+
+static void afterMatchExecute(int me)
+{
+    int mine = am_pick[me];
+    int outcome = am_outcome;
+    am_outcome = AM_OUT_NONE;
+    pc_log_line("after match: carrying out %s (our pick %d)",
+                outcome == AM_OUT_LEAVE ? "no rematch" : "rematch with a team change", mine);
+    afterMatchEndSession();
+    if (outcome == AM_OUT_LEAVE) {
+        if (mine >= 0) {
+            afterMatchFollow(mine);
+        } else {
+            am_cursor[me] = AM_SAME_SEARCH;
+        }
+        return;
+    }
+    after_match = false;
+    if (mine == AM_CHANGE_REMATCH) {
+        afterMatchTeamSelect(true);
+    } else {
+        online_kind = ONLINE_KIND_DIRECT;
+        rematch_direct = true;
+        startRematch();
+    }
+}
+
+static void afterMatchFrame(OnlineLobbyView* view)
+{
+    static const char* const label[4] = { "SAME TEAM - REMATCH", "CHANGE TEAM - REMATCH",
+                                          "SAME TEAM - MATCHMAKE",
+                                          "CHANGE TEAM - MATCHMAKE" };
+    int me = pc_net_match_is_host() ? 0 : 1;
+    int them = 1 - me;
+
+    view->title = "MATCH OVER";
+    view->phase = LOBBY_PHASE_FOUND;
+    view->menu_count = 4;
+    for (int i = 0; i < 4; i++) {
+        view->menu[i] = label[i];
+    }
+
+    if (am_outcome != AM_OUT_NONE) {
+        /* Decided: wait out the hold (or the peer's goodbye), then go. */
+        view->phase = LOBBY_PHASE_CONNECTING;
+        for (int i = 0; i < 4; i++) {
+            view->menu_tag[i] = am_pick[me] == i ? "YOU" : am_pick[them] == i ? "OPPONENT" : "";
+        }
+        view->menu_cursor = am_pick[me];
+        snprintf(view->message, sizeof view->message, "%s",
+                 am_outcome == AM_OUT_LEAVE ? "No rematch" : "Rematch with a new team...");
+        if (pc_net_frame() >= am_leave_frame || !pc_net_active() ||
+            pc_net_peer_status() != PC_NET_PEER_OK) {
+            afterMatchExecute(me);
+        }
+        return;
+    }
+
+    if (am_live && (!pc_net_active() || pc_net_peer_status() != PC_NET_PEER_OK)) {
+        /* The opponent quit on its own (not a synced pick). */
+        int mine = am_pick[me];
+        pc_log_line("after match: opponent left (our pick %d)", mine);
+        afterMatchEndSession();
+        if (mine >= 0) {
+            afterMatchFollow(mine);
+            return;
+        }
+        am_cursor[me] = AM_SAME_SEARCH;
+    }
+
+    if (!am_live) {
+        /* Only this side is left: the two matchmake options, or B. */
+        u64 rep = gm_801A36C0(PAD_MAX_CONTROLLERS);
+        u64 trg = gm_GetButtonsTriggered(PAD_MAX_CONTROLLERS);
+        view->menu_tag[AM_SAME_REMATCH] = view->menu_tag[AM_CHANGE_REMATCH] = "-";
+        view->menu_cursor = am_cursor[me];
+        view->phase = LOBBY_PHASE_ERROR;
+        snprintf(view->message, sizeof view->message, "Opponent left - no rematch");
+        view->hint = "D-PAD: choose    A: confirm    B: menu";
+        if (rep & (PAD_ANY_UP | PAD_ANY_DOWN)) {
+            am_cursor[me] = am_cursor[me] == AM_SAME_SEARCH ? AM_CHANGE_SEARCH : AM_SAME_SEARCH;
+            sfxMove();
+        } else if (trg & HSD_PAD_A) {
+            sfxForward();
+            afterMatchFollow(am_cursor[me]);
+        } else if (trg & HSD_PAD_B) {
+            sfxBack();
+            afterMatchFollow(AM_MENU);
+        }
+        return;
+    }
+
+    /* Both players' picks from the synced pads: same on both machines. */
+    for (int m = 0; m < 2; m++) {
+        u8 port = (u8) pc_net_game_port(m, 0);
+        u64 rep = gm_801A36C0(port);
+        u64 trg = gm_GetButtonsTriggered(port);
+        int before = am_pick[m];
+        if (am_pick[m] < 0) {
+            if (rep & PAD_ANY_UP) {
+                am_cursor[m] = (am_cursor[m] + 3) % 4;
+                if (m == me) sfxMove();
+            } else if (rep & PAD_ANY_DOWN) {
+                am_cursor[m] = (am_cursor[m] + 1) % 4;
+                if (m == me) sfxMove();
+            } else if (trg & HSD_PAD_A) {
+                am_pick[m] = am_cursor[m];
+            } else if (trg & HSD_PAD_B) {
+                am_pick[m] = AM_MENU;
+            }
+        } else if (trg & HSD_PAD_B) {
+            am_pick[m] = -1;
+        }
+        if (am_pick[m] != before) {
+            pc_log_line("after match: %s picks %d", m == 0 ? "host" : "guest", am_pick[m]);
+            if (m == me) {
+                if (am_pick[m] >= 0 && am_pick[m] != AM_MENU) sfxForward();
+                else sfxBack();
+            }
+        }
+    }
+
+    for (int i = 0; i < 4; i++) {
+        bool mine = am_pick[me] == i, theirs = am_pick[them] == i;
+        view->menu_tag[i] = mine && theirs ? "BOTH" : mine ? "YOU" : theirs ? "OPPONENT" : "";
+    }
+    view->menu_cursor = am_pick[me] >= 0 ? am_pick[me] : am_cursor[me];
+    snprintf(view->message, sizeof view->message, "%s",
+             am_pick[me] < 0 ? "Rematch only if both players pick a rematch" :
+             am_pick[them] < 0 ? "Waiting for your opponent..." : "");
+    view->hint = am_pick[me] < 0 ? "D-PAD: choose    A: confirm    B: menu" :
+                                   "B: change your pick";
+
+    int a = am_pick[0], b = am_pick[1];
+    if (a >= AM_SAME_SEARCH || b >= AM_SAME_SEARCH) {
+        /* Someone leaves: no rematch. Both sides end the session on this
+         * frame; each goes on with its own pick. */
+        pc_log_line("after match: no rematch (host %d, guest %d)", a, b);
+        am_outcome = AM_OUT_LEAVE;
+        am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
+        return;
+    }
+    if (a < 0 || b < 0) {
+        return;
+    }
+    if (a == AM_SAME_REMATCH && b == AM_SAME_REMATCH) {
+        /* Same teams, same session: straight back in on a new stage. */
+        u32 seed = pc_net_match_seed() + ++am_game * 0x9E3779B9u;
+        pc_log_line("after match: rematch %u in session, seed %u", am_game, seed);
+        after_match = false;
+        *HSD_RandSeedPtr = seed;
+        matchmadeBuild(seed);
+        gm_SetNextGameModeStateId(state_vs);
+        gm_801A4B60();
+        return;
+    }
+    /* A team changes: end the session, change it offline, reconnect. */
+    rematch_host = me == 0;
+    snprintf(rematch_code, sizeof rematch_code, "%s",
+             rematch_host ? pc_net_match_local_code() : pc_net_match_opponent_code());
+    pc_log_line("after match: rematch with a team change (host %d, guest %d)", a, b);
+    am_outcome = AM_OUT_TEAM_REMATCH;
+    am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
+}
+
 static void directEntryBegin(void)
 {
     snprintf(direct_entry, sizeof direct_entry, "%s", pc_get_net_target());
@@ -752,10 +1023,16 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
         /* offline: the first frame goes straight on to the CSS */
     } else if (online_kind == ONLINE_KIND_PROFILE) {
         profileRefresh();
+    } else if (after_match) {
+        /* the after-match choice runs in OnFrame */
     } else if (internetLobby() && online_kind == ONLINE_KIND_DIRECT) {
         /* Ask for the code first: starting on a stale launcher pref is how
          * two players both ended up hosting their own codes forever. */
-        directEntryBegin();
+        if (rematch_direct) {
+            startRematch();
+        } else {
+            directEntryBegin();
+        }
     } else if (internetLobby() && !awaiting_rank_result &&
                (online_kind != ONLINE_KIND_RANKED ||
                                   pc_net_match_publication(NULL) == 0)) {
@@ -903,11 +1180,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
         return;
     }
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {
+        bool choosing = after_match;
         memset(&view, 0, sizeof view);
         view.title = online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
                      online_kind == ONLINE_KIND_UNRANKED ?
                          (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
-                     online_kind == ONLINE_KIND_RANKED ? "RANKED" : "DIRECT CONNECT";
+                     online_kind == ONLINE_KIND_RANKED ? "RANKED" :
+                     rematch_direct ? "REMATCH" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
         view.players[0].ping_ms = -1;
@@ -915,6 +1194,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
         if (online_kind == ONLINE_KIND_PROFILE) {
             view.phase = LOBBY_PHASE_FOUND;
             snprintf(view.message, sizeof view.message, "%s", profile_message);
+        } else if (choosing) {
+            afterMatchFrame(&view);
         } else if (direct_editing) {
             u64 repeat = gm_801A36C0(PAD_MAX_CONTROLLERS);
             /* Bootstrap while the code is being typed, not after START, and
@@ -1011,6 +1292,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                          state == PC_MATCH_CONNECT ? LOBBY_PHASE_CONNECTING : LOBBY_PHASE_SEARCHING;
             if (reason != PC_NET_PEER_OK && reason < (int) ARRAY_SIZE(peer_word)) {
                 snprintf(view.message, sizeof view.message, "%s - START: search", peer_word[reason]);
+            } else if (rematch_direct && state == PC_MATCH_SEARCH) {
+                /* The same opponent is coming back, perhaps via TEAM SELECT. */
+                snprintf(view.message, sizeof view.message, "Waiting for opponent...");
             } else {
                 snprintf(view.message, sizeof view.message, "%s", why ? why : "Searching for an opponent...");
             }
@@ -1024,7 +1308,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 *HSD_RandSeedPtr = pc_net_match_seed();
                 if (pc_net_matchmade()) {
                     /* Matchmaking: no CSS/SSS, straight into the match. */
-                    matchmadeBuild();
+                    matchmadeBuild(pc_net_match_seed());
+                    am_game = 0;
+                    rematch_direct = false;
                     gm_SetNextGameModeStateId(state_vs);
                     pc_log_line("lobby: entering matchmade VS at frame %d, seed %u", pc_net_frame(),
                                 pc_net_match_seed());
@@ -1038,7 +1324,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 pc_net_peer_status_clear();
                 /* Retry the mode we are actually in: a direct session used to
                  * restart as public matchmaking, dropping the friend's code. */
-                if (online_kind == ONLINE_KIND_DIRECT) {
+                if (online_kind == ONLINE_KIND_DIRECT && rematch_direct) {
+                    startRematch();
+                } else if (online_kind == ONLINE_KIND_DIRECT) {
                     directEntryBegin();
                 } else {
                     startMatch(online_kind == ONLINE_KIND_RANKED ? PC_MATCH_RANKED :
@@ -1047,8 +1335,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
         }
         mnOnlineLobby_Update(&view);
-        if (input & (HSD_PAD_B | PAD_CANCEL)) {
+        if (!choosing && (input & (HSD_PAD_B | PAD_CANCEL))) {
             sfxBack();
+            rematch_direct = false;
             pc_net_peer_status_clear();
             pc_net_match_stop();
             gm_ChangeGameModeAfterCurrentScene(GM_MENU);

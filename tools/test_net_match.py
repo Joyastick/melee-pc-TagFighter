@@ -58,6 +58,8 @@ def run():
             rows = [item[0].strip().split() for item in output]
             assert {row[1] for row in rows} == {"0", "1"}, output
             assert len({row[2] for row in rows}) == 1, output
+            # Same X25519 session secret on both sides (a fingerprint of it).
+            assert len({row[3] for row in rows}) == 1, output
         profile = Path(work) / "cancel"
         profile.mkdir()
         subprocess.run([executable, "cancel"], check=True, timeout=20,
@@ -72,7 +74,8 @@ def run():
     elif os.getenv("MATCH_RANKED"):
         detail = "BEP44 genesis proofs, signed ranked session and READY barrier"
     else:
-        detail = "signed pairing, socket handoff, role election and READY barrier"
+        detail = ("signed pairing, X25519 session secret, socket handoff, role election "
+                  "and READY barrier")
     print(f"PASS: {detail}; cancellation and same-key name refresh")
 
 

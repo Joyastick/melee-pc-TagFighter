@@ -216,6 +216,13 @@ bool pc_net_connect_socket(intptr_t f, const char* ip, uint16_t p, int pl, uint3
 bool pc_net_active(void) {
     return game_fd >= 0;
 }
+static uint8_t session_key_out[32]; /* what pairing handed the session */
+void pc_net_set_session_secret(const uint8_t* k) {
+    if (k)
+        memcpy(session_key_out, k, 32);
+    else
+        memset(session_key_out, 0, 32);
+}
 void pc_net_set_datagram_handler(PcNetDatagramHandler f) {
     game_cb = f;
 }
@@ -384,7 +391,11 @@ int main(int argc, char** argv) {
             assert(pc_net_match_publication(NULL) == 0);
             assert(pc_rank_session_state(NULL) == PC_RANK_SESSION_OFF);
         }
-        printf("ready %d %u\n", pc_net_match_is_host(), pc_net_match_seed());
+        /* Both processes must agree on the X25519 session secret. */
+        uint8_t fp[32];
+        crypto_blake2b(fp, sizeof fp, session_key_out, sizeof session_key_out);
+        printf("ready %d %u %02x%02x%02x%02x%02x%02x%02x%02x\n", pc_net_match_is_host(),
+            pc_net_match_seed(), fp[0], fp[1], fp[2], fp[3], fp[4], fp[5], fp[6], fp[7]);
         return 0;
     }
     char path[] = "/tmp/melee-match-XXXXXX";

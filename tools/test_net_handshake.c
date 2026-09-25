@@ -398,6 +398,24 @@ int main(void) {
         net_key_clear();
         net_key_session(host_nonce, guest_nonce);
         assert(memcmp(s_key, key_guest, sizeof key_guest) == 0);
+        /* With pairing's secret mixed in, the same public values give a key
+         * an onlooker cannot compute, and a different secret another key. */
+        uint8_t secret[32], key_secret[32];
+        memset(secret, 0x42, sizeof secret);
+        pc_net_set_session_secret(secret);
+        net_key_clear();
+        net_key_session(host_nonce, guest_nonce);
+        memcpy(key_secret, s_key, sizeof key_secret);
+        assert(memcmp(key_secret, key_guest, sizeof key_guest) != 0 && !net_mac_ok(dg, 40));
+        secret[0] ^= 1;
+        pc_net_set_session_secret(secret);
+        net_key_clear();
+        net_key_session(host_nonce, guest_nonce);
+        assert(memcmp(s_key, key_secret, sizeof key_secret) != 0);
+        pc_net_set_session_secret(NULL);
+        net_key_clear();
+        net_key_session(host_nonce, guest_nonce);
+        assert(memcmp(s_key, key_guest, sizeof key_guest) == 0);
     }
     side_save(&host);
     printf("ok 1: exchange completes, host %016llx / guest %016llx bound both ways\n",
