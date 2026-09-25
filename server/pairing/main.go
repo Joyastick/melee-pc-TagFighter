@@ -7,7 +7,7 @@
 //	pairing -genkey server.key       write a new signing key, print its public half
 //	pairing -key server.key -pubkey  print the public half of an existing key
 //	pairing -check 127.0.0.1:27720   exit 0 if a server answers there (health check)
-//	pairing -key server.key [-listen :27720]
+//	pairing -key server.key [-listen :27720] [-listen2 :27721]
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -80,6 +81,7 @@ func check(addr string) error {
 
 func main() {
 	listen := flag.String("listen", ":27720", "UDP address to listen on")
+	listen2 := flag.String("listen2", ":27721", "second UDP address for NAT checks (empty: none)")
 	keyPath := flag.String("key", "", "file with the server's Ed25519 seed (hex)")
 	gen := flag.String("genkey", "", "write a new key to this file, print the public key, and exit")
 	pubkey := flag.Bool("pubkey", false, "print the public key of -key and exit")
@@ -108,40 +110,64 @@ func main() {
 		fmt.Println(hex.EncodeToString(key.Public().(ed25519.PublicKey)))
 		return
 	}
-	addr, err := net.ResolveUDPAddr("udp4", *listen)
-	if err != nil {
-		log.Fatal(err)
+	// The second port answers the same packets. A client that sees two
+	// different public ports for itself toward the two is behind a router
+	// that changes ports per destination (a symmetric NAT), which no
+	// pairing can get through; it tells the player so.
+	var conns []*net.UDPConn
+	for _, a := range []string{*listen, *listen2} {
+		if a == "" {
+			continue
+		}
+		addr, err := net.ResolveUDPAddr("udp4", a)
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := net.ListenUDP("udp4", addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		conns = append(conns, conn)
+		log.Printf("pairing: listening on %s", conn.LocalAddr())
 	}
-	conn, err := net.ListenUDP("udp4", addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("pairing: listening on %s, public key %s", conn.LocalAddr(),
-		hex.EncodeToString(key.Public().(ed25519.PublicKey)))
+	log.Printf("pairing: public key %s", hex.EncodeToString(key.Public().(ed25519.PublicKey)))
 
-	s := NewServer(key)
-	buf := make([]byte, 1500)
-	lastSweep, lastLog := time.Now(), time.Now()
-	for {
-		// One goroutine does everything, so the queues need no locking;
-		// the deadline wakes the loop for sweeping when nothing arrives.
-		conn.SetReadDeadline(time.Now().Add(time.Second))
-		n, from, err := conn.ReadFromUDPAddrPort(buf)
-		now := time.Now()
-		if err == nil {
-			for _, o := range s.Handle(buf[:n], from, now) {
-				conn.WriteToUDPAddrPort(o.Data, o.To)
+	type datagram struct {
+		conn *net.UDPConn
+		from netip.AddrPort
+		data []byte
+	}
+	in := make(chan datagram, 256)
+	for _, c := range conns {
+		go func(c *net.UDPConn) {
+			for {
+				buf := make([]byte, 1500)
+				n, from, err := c.ReadFromUDPAddrPort(buf)
+				if err != nil {
+					log.Printf("pairing: read: %v", err)
+					continue
+				}
+				in <- datagram{c, from, buf[:n]}
 			}
-		} else if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
-			log.Printf("pairing: read: %v", err)
-		}
-		if now.Sub(lastSweep) >= time.Second {
+		}(c)
+	}
+
+	// Only this goroutine touches the queues, so they need no locking.
+	s := NewServer(key)
+	sweep := time.NewTicker(time.Second)
+	lastLog := time.Now()
+	for {
+		select {
+		case d := <-in:
+			for _, o := range s.Handle(d.data, d.from, time.Now()) {
+				d.conn.WriteToUDPAddrPort(o.Data, o.To)
+			}
+		case now := <-sweep.C:
 			s.Sweep(now)
-			lastSweep = now
-		}
-		if now.Sub(lastLog) >= 10*time.Minute {
-			log.Printf("pairing: %s", strings.TrimSpace(s.Stats()))
-			lastLog = now
+			if now.Sub(lastLog) >= 10*time.Minute {
+				log.Printf("pairing: %s", strings.TrimSpace(s.Stats()))
+				lastLog = now
+			}
 		}
 	}
 }

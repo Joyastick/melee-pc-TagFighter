@@ -43,10 +43,13 @@ install -m 0644 /tmp/pairing.service /tmp/pairing-health.service /tmp/pairing-he
 rm -f /tmp/pairing /tmp/pairing.service /tmp/pairing-health.service /tmp/pairing-health.timer
 
 # Oracle's Ubuntu images reject everything but SSH in the VM's own iptables,
-# on top of the cloud security list: open the pairing port and keep it open.
-if ! iptables -C INPUT -p udp --dport $port -j ACCEPT 2>/dev/null; then
-    iptables -I INPUT -p udp --dport $port -j ACCEPT
-fi
+# on top of the cloud security list: open the pairing port and the NAT
+# check's port + 1, and keep them open.
+for p in $port $((port + 1)); do
+    if ! iptables -C INPUT -p udp --dport \$p -j ACCEPT 2>/dev/null; then
+        iptables -I INPUT -p udp --dport \$p -j ACCEPT
+    fi
+done
 if command -v netfilter-persistent >/dev/null; then
     netfilter-persistent save >/dev/null
 fi

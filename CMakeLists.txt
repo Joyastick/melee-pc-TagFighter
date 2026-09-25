@@ -260,10 +260,14 @@ else ()
 endif ()
 
 target_include_directories(melee PRIVATE extern/monocypher)
-# Built-in pairing server (server/pairing). Empty: none, Matchmaking uses the
-# DHT alone unless MELEE_PAIRING_SERVER / MELEE_PAIRING_KEY are set at run time.
-set(MELEE_PAIRING_SERVER "" CACHE STRING "Built-in pairing server, host:port")
-set(MELEE_PAIRING_KEY "" CACHE STRING "Built-in pairing server public key (64 hex digits)")
+# Built-in pairing server (server/pairing, deployed at pairing.joyastick.com;
+# its signing key never leaves that machine, this is the public half). Set
+# either to "" for a DHT-only build; at run time MELEE_PAIRING_SERVER /
+# MELEE_PAIRING_KEY override them and MELEE_PAIRING_SERVER=off turns it off.
+set(MELEE_PAIRING_SERVER "pairing.joyastick.com:27720" CACHE STRING
+    "Built-in pairing server, host:port")
+set(MELEE_PAIRING_KEY "b93004b277b9c1fbb2408c28367152d71f740eae6ec3c5760f41a31982b99a56"
+    CACHE STRING "Built-in pairing server public key (64 hex digits)")
 if (MELEE_PAIRING_SERVER AND MELEE_PAIRING_KEY)
     set_source_files_properties(src/pc/net_rendezvous.c PROPERTIES COMPILE_DEFINITIONS
         "PC_PAIRING_SERVER=\"${MELEE_PAIRING_SERVER}\";PC_PAIRING_KEY=\"${MELEE_PAIRING_KEY}\"")

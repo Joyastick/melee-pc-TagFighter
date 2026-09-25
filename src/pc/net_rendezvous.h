@@ -30,7 +30,8 @@ extern "C" {
 typedef bool (*PcRdvSend)(const void* data, size_t size, const struct pc_dht_endpoint* to);
 /* Queue for topic, sending through send (the DHT socket, so the server sees
  * the NAT mapping the peer will reach). No-op when no server is configured:
- * MELEE_PAIRING_SERVER=host:port and MELEE_PAIRING_KEY=<64 hex digits>. */
+ * MELEE_PAIRING_SERVER=host:port and MELEE_PAIRING_KEY=<64 hex digits>
+ * override the built-in server; MELEE_PAIRING_SERVER=off turns it off. */
 void pc_rdv_start(const uint8_t topic[20], uint32_t lan_ip, uint16_t lan_port, PcRdvSend send);
 /* Leave the queue (if in it) and go idle. */
 void pc_rdv_stop(void);
@@ -41,6 +42,12 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
 bool pc_rdv_take_match(struct pc_dht_endpoint* peer, struct pc_dht_endpoint* peer_lan);
 /* Our public IP as the server saw it (network order), 0 while unknown. */
 uint32_t pc_rdv_public_ip(void);
+/* Whether our router keeps one public port for every destination (OK) or
+ * gives each its own (STRICT, a symmetric NAT: opponents cannot reach the
+ * port we advertise). The server also answers HELLO on its port + 1, and
+ * the two observed ports are compared. UNKNOWN until both have answered. */
+enum { PC_RDV_NAT_UNKNOWN, PC_RDV_NAT_OK, PC_RDV_NAT_STRICT };
+int pc_rdv_nat(void);
 /* The attempt with peer failed: queue again at once, not to be paired with
  * it straight back. */
 void pc_rdv_retry_avoiding(const struct pc_dht_endpoint* peer);

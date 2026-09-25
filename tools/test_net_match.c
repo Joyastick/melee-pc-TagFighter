@@ -327,6 +327,9 @@ int main(int argc, char** argv) {
             return 0;
         }
         assert(pc_net_match_state(NULL) == PC_MATCH_READY);
+        /* Loopback keeps one port for both server ports: a normal NAT. */
+        if (getenv("MATCH_NO_CANDIDATE"))
+            assert(pc_rdv_nat() == PC_RDV_NAT_OK);
         if (getenv("MATCH_COMPLETE")) {
             for (int game = 0; game < 2; game++) {
                 pc_rank_session_stage_begin();

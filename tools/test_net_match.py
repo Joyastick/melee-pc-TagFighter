@@ -28,10 +28,18 @@ def start_pairing_server(work):
     key = work / "server.key"
     public = subprocess.run([str(binary), "-genkey", str(key)], check=True,
                             capture_output=True, text=True).stdout.strip()
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    server = subprocess.Popen([str(binary), "-key", str(key), "-listen", f"127.0.0.1:{port}"],
+    # The NAT check answers on port + 1, so find two free ports in a row.
+    for _ in range(50):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as a,                 socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as b:
+            a.bind(("127.0.0.1", 0))
+            port = a.getsockname()[1]
+            try:
+                b.bind(("127.0.0.1", port + 1))
+                break
+            except OSError:
+                continue
+    server = subprocess.Popen([str(binary), "-key", str(key), "-listen", f"127.0.0.1:{port}",
+                               "-listen2", f"127.0.0.1:{port + 1}"],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     # Wait until it answers STATS.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:

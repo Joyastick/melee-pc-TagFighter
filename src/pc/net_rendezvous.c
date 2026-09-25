@@ -63,6 +63,12 @@ static uint8_t server_key[32];
 static struct pc_dht_endpoint server;
 static bool server_known;
 static uint32_t public_ip;
+/* NAT check: the server also answers HELLO on its port + 1. A router that
+ * shows the two a different public port for us changes ports per
+ * destination (a symmetric NAT); a peer can then never reach the port we
+ * advertise. Checked once per process. */
+static uint16_t nat_port[2];
+static int nat_state = PC_RDV_NAT_UNKNOWN;
 static uint64_t resolve_failed_at;
 static bool resolve_failed;
 
@@ -89,6 +95,10 @@ static void load_config(void) {
     if (!key || !*key)
         key = PC_PAIRING_KEY;
     const char* colon = strrchr(where, ':');
+    if (!strcmp(where, "off")) {
+        pc_log_line("pairing: server turned off (MELEE_PAIRING_SERVER=off), DHT only");
+        return;
+    }
     if (!*where || !colon || colon == where || (size_t)(colon - where) >= sizeof server_host ||
         strlen(colon + 1) >= sizeof server_port || !hex32(key, server_key))
     {
@@ -196,6 +206,23 @@ static void send_hello(void) {
     header(p, 'H');
     memcpy(p + HDR, rdv.nonce, 8);
     rdv.send(p, sizeof p, &server);
+    if (nat_state == PC_RDV_NAT_UNKNOWN) {
+        struct pc_dht_endpoint second = {server.address, (uint16_t)(server.port + 1)};
+        rdv.send(p, sizeof p, &second);
+    }
+}
+
+static void nat_observe(int which, uint16_t port) {
+    nat_port[which] = port;
+    if (nat_state != PC_RDV_NAT_UNKNOWN || !nat_port[0] || !nat_port[1])
+        return;
+    nat_state = nat_port[0] == nat_port[1] ? PC_RDV_NAT_OK : PC_RDV_NAT_STRICT;
+    if (nat_state == PC_RDV_NAT_OK)
+        pc_log_line("pairing: NAT ok (public port %u toward both server ports)", nat_port[0]);
+    else
+        pc_log_line("pairing: strict NAT: the router gives each destination its own public "
+                    "port (%u and %u), so opponents may not be able to reach this machine",
+            nat_port[0], nat_port[1]);
 }
 
 static void send_join(void) {
@@ -304,8 +331,17 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
     const uint8_t* p = data;
     if (size < HDR || memcmp(p, "MPS1", 4))
         return false;
-    if (!server_known || from->address != server.address || from->port != server.port ||
-        p[4] != 1 || rdv.state == RDV_OFF || memcmp(p + HDR, rdv.nonce, 8))
+    if (!server_known || from->address != server.address || p[4] != 1 || rdv.state == RDV_OFF ||
+        memcmp(p + HDR, rdv.nonce, 8))
+        return true;
+    if (from->port == (uint16_t)(server.port + 1)) {
+        /* The NAT check's second port only ever answers our HELLO. */
+        if (p[5] == 'C' && size == COOKIE_SIZE &&
+            pc_identity_verify(server_key, p + size - SIG, p, size - SIG))
+            nat_observe(1, get_endpoint(p + HDR + 24).port);
+        return true;
+    }
+    if (from->port != server.port)
         return true;
     uint64_t now = SDL_GetTicks();
     switch (p[5]) {
@@ -318,6 +354,7 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
             struct pc_dht_endpoint self = get_endpoint(p + HDR + 24);
             public_ip = self.address;
             log_ip("server cookie, we are", &self, now - rdv.started);
+            nat_observe(0, self.port);
         }
         rdv.state = RDV_QUEUE;
         rdv.unanswered = 0;
@@ -363,6 +400,10 @@ bool pc_rdv_take_match(struct pc_dht_endpoint* peer, struct pc_dht_endpoint* pee
 
 uint32_t pc_rdv_public_ip(void) {
     return public_ip;
+}
+
+int pc_rdv_nat(void) {
+    return nat_state;
 }
 
 void pc_rdv_retry_avoiding(const struct pc_dht_endpoint* peer) {
