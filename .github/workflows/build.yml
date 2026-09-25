@@ -60,6 +60,14 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libgbm-dev \
             libusb-1.0-0-dev
 
+      - name: Set up Go
+        # For the pairing server's tests (server/pairing); CMake only adds
+        # them when it finds go, so this comes before Configure.
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/pairing/go.mod
+          cache: false
+
       - name: Configure
         # Same dependency providers as tools/package_linux.sh: prebuilt Dawn
         # and nod keep this job from building Rust/Dawn from source just to

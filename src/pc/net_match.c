@@ -5,6 +5,7 @@
 #include "net.h"
 #include "net_lan.h"
 #include "net_rank_session.h"
+#include "net_rendezvous.h"
 #include "pc.h"
 #include "monocypher.h"
 #include <SDL3/SDL_filesystem.h>
@@ -336,6 +337,7 @@ static void fail(const char* why) {
     state = PC_MATCH_FAIL;
     failure = why;
     /* Keep the node warm for the retry; only the search stops. */
+    pc_rdv_stop();
     pc_dht_idle();
     if (pc_net_active())
         pc_net_disconnect();
@@ -690,6 +692,7 @@ static bool accept_ack(const MatchAck* a) {
     ack_received = true;
     if (mode == PC_MATCH_RANKED && !proofs_ready)
         return true;
+    pc_rdv_stop();
     intptr_t fd = pc_dht_take_socket();
     char ip[INET_ADDRSTRLEN];
     /* peer.address is already in network byte order, so hand it to inet_ntop
@@ -759,7 +762,7 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
 static void hello_refresh_from(void) {
     static uint32_t lan, known_public;
     struct pc_dht_endpoint self;
-    uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : 0;
+    uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : pc_rdv_public_ip();
     /* A reopened DHT node relearns our public IP over a few seconds, while a
      * rematch Hellos the last peer at once: keep signing the IP this process
      * already learned rather than 0, which the peer only accepts from a LAN
@@ -778,6 +781,8 @@ static void hello_refresh_from(void) {
 }
 static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused) {
     (void)unused;
+    if (pc_rdv_receive(data, n, ep))
+        return;
     if (n == sizeof(MatchHello)) {
         const MatchHello* h = data;
         const char* terminator = memchr(h->code, '\0', sizeof h->code);
@@ -899,6 +904,7 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         for (int p = 0; p < 3; p++) {
             send_packet(&ack, sizeof ack, ep);
         }
+        pc_rdv_stop();
         intptr_t fd = pc_dht_take_socket();
         char ip[INET_ADDRSTRLEN];
         /* Network byte order already: see the host path above (#87). */
@@ -1006,6 +1012,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     memcpy(hello.kx, kx_public, sizeof hello.kx);
     sign_packet(&hello, sizeof hello);
     hello_refresh_from();
+    pc_rdv_start(topic, hello.from_lan, pc_dht_port(), send_packet);
     pc_dht_set_datagram_callback(receive, NULL);
     state = PC_MATCH_SEARCH;
     deadline = 0;
@@ -1037,7 +1044,18 @@ void pc_net_match_poll(void) {
             }
         }
         direct_poll(now);
+        pc_rdv_poll(now);
         hello_refresh_from();
+        struct pc_dht_endpoint rdv_peer, rdv_lan;
+        if (pc_rdv_take_match(&rdv_peer, &rdv_lan) && !have_peer) {
+            /* Both sides get their MATCH together and Hello each other at
+             * once, which is what opens both NATs. Same public IP: the peer
+             * is behind our router, so its LAN address is the way in. */
+            add_hello_target(rdv_peer);
+            if (rdv_lan.address && rdv_peer.address == pc_rdv_public_ip())
+                add_hello_target(rdv_lan);
+            next_target_hello = now;
+        }
         struct pc_dht_endpoint ep;
         while (pc_dht_next_candidate(&ep)) {
             /* Paired already: a Hello now would lock that player onto us while
@@ -1085,6 +1103,7 @@ void pc_net_match_poll(void) {
                 fail("rank proof pairing timed out");
                 return;
             }
+            pc_rdv_retry_avoiding(&peer);
             have_peer = false;
             peer_nonce = 0;
             memset(peer_key, 0, sizeof peer_key);
@@ -1156,6 +1175,7 @@ void pc_net_match_poll(void) {
 /* Warm DHT between searches: after a failure the node stays open (idle) so a
  * retry skips bootstrap; it still needs polling to keep its table fresh. */
 static void reset(bool keep_node) {
+    pc_rdv_stop();
     if (pc_net_active())
         pc_log_line("match: reset (keep node %d) drops the active session, state was %d",
             (int)keep_node, (int)state);

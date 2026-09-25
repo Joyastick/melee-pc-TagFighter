@@ -221,6 +221,7 @@ set(PC_SOURCES
         src/pc/net_rank.c
         src/pc/net_rank_store.c
         src/pc/net_rank_session.c
+        src/pc/net_rendezvous.c
         src/pc/libm/pc_rank_exp.c
         src/pc/libm/pc_rank_sqrt.c
         extern/dht/dht.c
@@ -544,6 +545,18 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             add_test(NAME ${case} COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_${case}.py)
             set_tests_properties(${case} PROPERTIES LABELS melee TIMEOUT 60)
         endforeach()
+        # Pairing server (server/pairing, Go): its own tests, and two clients
+        # pairing through it with no DHT candidates. Skipped without Go.
+        add_test(NAME net_match_pairing_server COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_pairing_server PROPERTIES LABELS melee TIMEOUT 180
+            ENVIRONMENT "MATCH_PAIRING_SERVER=1" SKIP_RETURN_CODE 77)
+        find_program(GO_EXECUTABLE go)
+        if (GO_EXECUTABLE)
+            add_test(NAME pairing_server_go COMMAND ${GO_EXECUTABLE} test ./...
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/server/pairing)
+            set_tests_properties(pairing_server_go PROPERTIES LABELS melee TIMEOUT 180)
+        endif()
         foreach(mode IN ITEMS ranked proof_timeout proof_mismatch complete recover)
             add_test(NAME net_match_${mode} COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
