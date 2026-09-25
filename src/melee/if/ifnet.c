@@ -27,14 +27,17 @@
 #define IFNET_X -29 /* 30 px in from the 4:3 left edge */
 #define IFNET_Y -51 /* cell bottom at -19: 50 px down from the top edge */
 #define IFNET_SCALE 0.04f /* 32-unit glyphs -> 12.8 px */
+#define IFNET_PAUSE_X -24 /* the local pause line, roughly centred */
+#define IFNET_PAUSE_Y -10
 
 static struct {
     HSD_GObj* gobj;
     HSD_Text* text;
     int entry;
     int chat_entry;
+    int pause_entry;
     bool debug;
-    char line[160], chat[80];
+    char line[160], chat[80], pause[80];
 } ifNet;
 
 /* pc_net_quality() 0/1/2 -> nothing / "!" / "!!". The SIS ASCII encoder
@@ -72,6 +75,21 @@ static void ifNet_Think(HSD_GObj* gobj)
         HSD_SisLib_803A70A0(ifNet.text, ifNet.chat_entry, "%s", chat);
         snprintf(ifNet.chat, sizeof ifNet.chat, "%s", chat);
     }
+    int hold, need;
+    char pause[80] = " ";
+    if (pc_net_local_pause(&hold, &need)) {
+        if (hold > 0) {
+            snprintf(pause, sizeof pause, "PAUSED (only you)   Leaving... %d%%",
+                     hold * 100 / need);
+        } else {
+            snprintf(pause, sizeof pause,
+                     "PAUSED (only you)   START: resume   Hold L+R+A+START: leave");
+        }
+    }
+    if (strcmp(pause, ifNet.pause)) {
+        HSD_SisLib_803A70A0(ifNet.text, ifNet.pause_entry, "%s", pause);
+        snprintf(ifNet.pause, sizeof ifNet.pause, "%s", pause);
+    }
 }
 
 void ifNet_Create(void)
@@ -83,7 +101,7 @@ void ifNet_Create(void)
     if (!pc_net_stats(&ping, &delay, &rollbacks)) return;
     const char* debug = getenv("MELEE_NET_DEBUG");
     ifNet.debug = debug && debug[0] && strcmp(debug, "0");
-    ifNet.line[0] = ifNet.chat[0] = 0;
+    ifNet.line[0] = ifNet.chat[0] = ifNet.pause[0] = 0;
     int canvas = HSD_SisLib_803A611C(2, ifAll_GetHUDGObj(), HSD_GOBJ_CLASS_UI, 15,
                                   0, 11, 0, 19);
     ifNet.text = HSD_SisLib_803A6754(2, canvas);
@@ -94,6 +112,8 @@ void ifNet_Create(void)
         pc_widescreen_hud_player_x(0, 2, IFNET_X), IFNET_Y + 1.6f, " ");
     HSD_SisLib_803A7548(ifNet.text, ifNet.entry, IFNET_SCALE, IFNET_SCALE);
     HSD_SisLib_803A7548(ifNet.text, ifNet.chat_entry, IFNET_SCALE, IFNET_SCALE);
+    ifNet.pause_entry = HSD_SisLib_803A6B98(ifNet.text, IFNET_PAUSE_X, IFNET_PAUSE_Y, " ");
+    HSD_SisLib_803A7548(ifNet.text, ifNet.pause_entry, IFNET_SCALE, IFNET_SCALE);
     ifNet_Think(NULL);
     ifNet.gobj = GObj_Create(HSD_GOBJ_CLASS_UI, 15, 0);
     HSD_GObj_SetupProc(ifNet.gobj, ifNet_Think, 17);

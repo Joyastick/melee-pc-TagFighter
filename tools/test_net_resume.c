@@ -231,6 +231,9 @@ int pc_net_remote_partner_bind(void) {
 int pc_net_game_port(int machine, int slot) {
     return machine + 2 * slot;
 }
+bool pc_net_matchmade(void) {
+    return false;
+}
 void adv_note(int remote_adv, int local_adv) {
     (void)remote_adv;
     (void)local_adv;

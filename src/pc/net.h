@@ -56,6 +56,10 @@ int32_t pc_net_frame(void);
 int32_t pc_net_start_frame(void);
 /* Service transport without advancing simulation (lobby start fence). */
 void pc_net_poll(void);
+/* Matchmaking's local pause (net.c): true while this machine shows it.
+ * leave_hold counts frames L+R+A+START has been held, out of leave_needed.
+ * Either pointer may be NULL. */
+bool pc_net_local_pause(int* leave_hold, int* leave_needed);
 /* Internet rendezvous transfers its already-bound IPv4 socket. Ownership
  * transfers on success only; no new NAT mapping is created. */
 bool pc_net_connect_socket(
