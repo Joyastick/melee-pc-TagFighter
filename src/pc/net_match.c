@@ -56,7 +56,7 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #define ACCEPT_MS 10000     /* no answer by then counts as a decline */
 #define PING_MS 250         /* MatchPing interval while a peer is locked */
 #define PEER_SILENT_MS 3000 /* no MatchPing for that long: the peer is gone */
-#define AVOID_MS 120000     /* a declined player is not offered again for this long */
+#define AVOID_MS 20000      /* a declined player is not offered again for this long */
 /* Direct connect rendezvous record (BEP44 mutable item). The slot key is
  * derived from the host's connect code, so a dialer can address it knowing
  * only the code; the value inside is signed by the host's real identity key,
