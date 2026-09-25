@@ -1,0 +1,30 @@
+# MeleeVS pairing server. Installed by deploy.sh.
+[Unit]
+Description=MeleeVS pairing server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The signing key lives only on this machine, in the service's own state
+# directory, and is made on first start; -genkey never overwrites it.
+StateDirectory=pairing
+ExecStartPre=/bin/sh -c 'test -s "$STATE_DIRECTORY/server.key" || /usr/local/bin/pairing -genkey "$STATE_DIRECTORY/server.key"'
+ExecStart=/usr/local/bin/pairing -key ${STATE_DIRECTORY}/server.key -listen :27720
+Restart=always
+RestartSec=2
+
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

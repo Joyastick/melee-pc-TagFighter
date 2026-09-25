@@ -1,0 +1,8 @@
+# Restarts the pairing server if it stops answering on loopback.
+[Unit]
+Description=MeleeVS pairing server health check
+After=pairing.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/local/bin/pairing -check 127.0.0.1:27720 >/dev/null || systemctl restart pairing.service'

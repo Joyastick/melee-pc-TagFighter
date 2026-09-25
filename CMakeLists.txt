@@ -221,6 +221,7 @@ set(PC_SOURCES
         src/pc/net_rank.c
         src/pc/net_rank_store.c
         src/pc/net_rank_session.c
+        src/pc/net_rendezvous.c
         src/pc/libm/pc_rank_exp.c
         src/pc/libm/pc_rank_sqrt.c
         extern/dht/dht.c
@@ -259,6 +260,18 @@ else ()
 endif ()
 
 target_include_directories(melee PRIVATE extern/monocypher)
+# Built-in pairing server (server/pairing, deployed at pairing.joyastick.com;
+# its signing key never leaves that machine, this is the public half). Set
+# either to "" for a DHT-only build; at run time MELEE_PAIRING_SERVER /
+# MELEE_PAIRING_KEY override them and MELEE_PAIRING_SERVER=off turns it off.
+set(MELEE_PAIRING_SERVER "pairing.joyastick.com:27720" CACHE STRING
+    "Built-in pairing server, host:port")
+set(MELEE_PAIRING_KEY "b93004b277b9c1fbb2408c28367152d71f740eae6ec3c5760f41a31982b99a56"
+    CACHE STRING "Built-in pairing server public key (64 hex digits)")
+if (MELEE_PAIRING_SERVER AND MELEE_PAIRING_KEY)
+    set_source_files_properties(src/pc/net_rendezvous.c PROPERTIES COMPILE_DEFINITIONS
+        "PC_PAIRING_SERVER=\"${MELEE_PAIRING_SERVER}\";PC_PAIRING_KEY=\"${MELEE_PAIRING_KEY}\"")
+endif()
 
 target_compile_options(melee PRIVATE
         ${MELEE_FP_FLAGS}
@@ -544,6 +557,18 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             add_test(NAME ${case} COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_${case}.py)
             set_tests_properties(${case} PROPERTIES LABELS melee TIMEOUT 60)
         endforeach()
+        # Pairing server (server/pairing, Go): its own tests, and two clients
+        # pairing through it with no DHT candidates. Skipped without Go.
+        add_test(NAME net_match_pairing_server COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_pairing_server PROPERTIES LABELS melee TIMEOUT 180
+            ENVIRONMENT "MATCH_PAIRING_SERVER=1" SKIP_RETURN_CODE 77)
+        find_program(GO_EXECUTABLE go)
+        if (GO_EXECUTABLE)
+            add_test(NAME pairing_server_go COMMAND ${GO_EXECUTABLE} test ./...
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/server/pairing)
+            set_tests_properties(pairing_server_go PROPERTIES LABELS melee TIMEOUT 180)
+        endif()
         foreach(mode IN ITEMS ranked proof_timeout proof_mismatch complete recover)
             add_test(NAME net_match_${mode} COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)

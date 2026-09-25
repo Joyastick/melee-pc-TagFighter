@@ -308,6 +308,10 @@ int main(int argc, char** argv) {
     if (argc == 3) {
         local_port = atoi(argv[1]);
         peer_port = atoi(argv[2]);
+        /* Pairing-server run: the stub DHT finds nobody, so only the
+         * server's MATCH can bring the two processes together. */
+        if (getenv("MATCH_NO_CANDIDATE"))
+            candidate = 0;
         assert(
             pc_net_match_start(getenv("MATCH_RANKED") ? PC_MATCH_RANKED : PC_MATCH_UNRANKED, ""));
         for (int i = 0; i < 400 && pc_net_match_state(NULL) != PC_MATCH_READY; i++) {
@@ -323,6 +327,9 @@ int main(int argc, char** argv) {
             return 0;
         }
         assert(pc_net_match_state(NULL) == PC_MATCH_READY);
+        /* Loopback keeps one port for both server ports: a normal NAT. */
+        if (getenv("MATCH_NO_CANDIDATE"))
+            assert(pc_rdv_nat() == PC_RDV_NAT_OK);
         if (getenv("MATCH_COMPLETE")) {
             for (int game = 0; game < 2; game++) {
                 pc_rank_session_stage_begin();
