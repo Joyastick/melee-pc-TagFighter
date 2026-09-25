@@ -112,6 +112,17 @@ int main(int argc, char** argv) {
     assert(std::abs(loaded.music_volume - 0.75f) < 0.001f);
     assert(std::abs(loaded.sfx_volume - 0.5f) < 0.001f);
     assert(save_preferences(config, loaded, error) && !load_preferences(config).reverb);
+    // The MeleeVS Matchmaking team round-trips; a malformed one is dropped
+    // and never written back.
+    assert(loaded.meleevs_team.empty());
+    loaded.meleevs_team = "0a00000014000109ff";
+    assert(save_preferences(config, loaded, error) &&
+           load_preferences(config).meleevs_team == "0a00000014000109ff");
+    {
+        std::ofstream f(config);
+        f << "meleevs_team 0A00\n";
+    }
+    assert(load_preferences(config).meleevs_team.empty());
     // msaa 8 is the dangerous one: Dawn aborts device creation on it.
     {
         std::ofstream f(config);

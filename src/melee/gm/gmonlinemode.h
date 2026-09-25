@@ -16,10 +16,22 @@ typedef enum OnlineKind {
     ONLINE_KIND_UNRANKED = 2,
     ONLINE_KIND_RANKED = 3,
     ONLINE_KIND_PROFILE = 4,
+    /* MeleeVS TEAM SELECT: an offline two-port CSS inside GM_ONLINE that
+     * saves the Matchmaking team, no network. */
+    ONLINE_KIND_TEAM_SELECT = 5,
 } OnlineKind;
 
 void gmOnline_SetKind(OnlineKind kind);
 OnlineKind gmOnline_GetKind(void);
+
+/* True while the TEAM SELECT CSS is up (mncharsel.c restricts it to the
+ * two local ports, one team, no costume or team changes). */
+bool gmOnline_IsTeamSelect(void);
+/* A Matchmaking team has been saved by TEAM SELECT. */
+bool gmOnline_HasSavedTeam(void);
+/* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
+ * to the menu (set when MATCHMAKING had no saved team to queue with). */
+void gmOnline_SetTeamSelectThenSearch(bool value);
 
 void gm_Scene_OnlineLobby_OnFrame(void);
 void gm_Scene_OnlineLobby_OnEnter(void*);

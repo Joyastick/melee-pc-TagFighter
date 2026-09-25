@@ -9,6 +9,7 @@
 #include <melee/ty/toy.h>
 #ifdef TARGET_PC
 #include "gmonlinemode.h"
+#include <melee/mod/tag_assist.h>
 #include <stdlib.h>
 #include <string.h>
 #endif
@@ -37,7 +38,7 @@ static struct loadData load_data;
 static struct leaveData leave_data;
 
 #ifdef TARGET_PC
-/* MELEE_BOOT_SCENE=<title|vs|classic|training|unranked|direct|ranked>: skip the whole menu walk and
+/* MELEE_BOOT_SCENE=<title|vs|classic|training|unranked|direct|ranked|teamselect|meleevs>: skip the whole menu walk and
  * boot into one scene with a fixed setup. Menu navigation here can only be
  * driven by synthetic input, which misses keypresses often enough that an
  * automated run cannot rely on it (see tools/smoke_test.py).
@@ -73,9 +74,20 @@ u8 pc_boot_scene(void)
         } else if (strcmp(want, "ranked") == 0) {
             scene = GM_ONLINE;
             gmOnline_SetKind(ONLINE_KIND_RANKED);
+        } else if (strcmp(want, "meleevs") == 0) {
+            /* What the MELEE VS menu's LOCAL row does. */
+            scene = GM_VS;
+            TagAssist_EnterForcedOn();
+            TagAssist_ApplyDefaultRules();
+        } else if (strcmp(want, "teamselect") == 0) {
+            /* What the MELEE VS menu's TEAM SELECT row does. */
+            scene = GM_ONLINE;
+            TagAssist_EnterForcedOn();
+            TagAssist_ApplyDefaultRules();
+            gmOnline_SetKind(ONLINE_KIND_TEAM_SELECT);
         } else {
             OSReport("MELEE_BOOT_SCENE: unknown scene '%s'; valid values are "
-                     "title, vs, classic, training, unranked, direct, ranked\n",
+                     "title, vs, classic, training, unranked, direct, ranked, teamselect\n",
                      want);
         }
     }

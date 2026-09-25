@@ -38,7 +38,7 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #endif
 
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
-#define MATCH_VERSION 3         /* v3: hello.code grew 14 -> 18 (40-bit key suffix) */
+#define MATCH_VERSION 4         /* v4: hello signs its sender's own public and LAN address */
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
@@ -49,6 +49,9 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
  * only the code; the value inside is signed by the host's real identity key,
  * which the dialer checks against the code the same way a Hello is. */
 #define DIRECT_SALT "meleepc/direct/v1"
+/* Dial-back: the dialer's own endpoint, under a slot derived from the host's
+ * code, so the host can send toward the dialer and open its own NAT side. */
+#define DIAL_SALT "meleepc/dial/v1"
 /* magic 4, key 32, public ip 4 + port 2, time 8, LAN ip 4 + port 2, sig 64 */
 #define DIRECT_RECORD_BYTES 120
 #define DIRECT_SIGNED_BYTES 56
@@ -67,6 +70,10 @@ typedef struct MatchHello {
     uint64_t nonce;
     uint8_t public_key[32], compatibility[20], topic[20];
     char code[18];
+    /* Where this Hello may come from (network order, 0 = not known yet):
+     * the sender's NAT-observed public IP and its LAN IP. Signed, so a
+     * relay that forwards the Hello cannot swap in its own address. */
+    uint32_t from_public, from_lan;
     uint8_t signature[64];
 } MatchHello;
 typedef struct MatchOffer {
@@ -116,6 +123,8 @@ static const char* publication_reason;
 static bool publication_record;
 static uint8_t publication_wire[PC_RANK_RECORD_BYTES];
 static PcNetIdentity direct_slot;
+static PcNetIdentity dial_slot;
+static uint64_t dial_next; /* dialer: next dial-back publish; host: next lookup */
 static bool direct_pending;
 static bool direct_put_inflight; /* direct_pending is a publish, not a lookup */
 static bool direct_get_logged;
@@ -359,6 +368,8 @@ static void direct_slot_for(const char* code) {
     char material[64];
     int n = snprintf(material, sizeof material, "%s/%s", DIRECT_SALT, code);
     pc_identity_derive(&direct_slot, material, n > 0 ? (size_t)n : 0);
+    n = snprintf(material, sizeof material, "%s/%s", DIAL_SALT, code);
+    pc_identity_derive(&dial_slot, material, n > 0 ? (size_t)n : 0);
 }
 static void put_be(uint8_t* p, uint64_t v, int bytes) {
     for (int i = bytes - 1; i >= 0; i--, v >>= 8)
@@ -463,6 +474,81 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
         pc_log_line("match: no direct record for %s yet (status=%d)", target, (int)r->status);
         direct_next = SDL_GetTicks() + 2000;
     }
+    if (dial_next == UINT64_MAX)
+        dial_next = 0; /* first lookup done: now tell the host where we are */
+}
+/* Dial-back record: "MPB1", the dialer's identity key, public endpoint,
+ * timestamp and LAN endpoint (the direct record's layout), signed by the
+ * dialer. Any dialer may write it, so the host believes only the signature
+ * and freshness, and only uses it as a Hello destination. */
+static bool dial_record_read(
+    const uint8_t* v, size_t n, struct pc_dht_endpoint* out, struct pc_dht_endpoint* lan) {
+    if (n != DIRECT_RECORD_BYTES || memcmp(v, "MPB1", 4) ||
+        !memcmp(v + 4, identity.public_key, 32) ||
+        !pc_identity_verify(v + 4, v + DIRECT_SIGNED_BYTES, v, DIRECT_SIGNED_BYTES))
+        return false;
+    int64_t when = 0;
+    for (int i = 0; i < 8; i++)
+        when = (int64_t)((uint64_t)when << 8 | v[42 + i]);
+    int64_t now = (int64_t)time(NULL);
+    if (when < now - DIRECT_MAX_AGE || when > now + DIRECT_MAX_AGE)
+        return false;
+    memcpy(&out->address, v + 36, 4);
+    out->port = (uint16_t)(v[40] << 8 | v[41]);
+    memcpy(&lan->address, v + 50, 4);
+    lan->port = (uint16_t)(v[54] << 8 | v[55]);
+    return out->address && out->port;
+}
+static void dial_put_result(const PcDhtItemResult* r, void* context) {
+    (void)context;
+    direct_pending = false;
+    if (r->status == PC_DHT_ITEM_CANCELLED)
+        return;
+    bool ok = r->status == PC_DHT_ITEM_OK && r->acknowledgements;
+    pc_log_line("match: dial-back record %s for %s (status=%d acks=%u)",
+        ok ? "published" : "not published", target, (int)r->status, r->acknowledgements);
+    dial_next = SDL_GetTicks() + (ok ? DIRECT_REPUBLISH_MS : 10000);
+}
+static void dial_get_result(const PcDhtItemResult* r, void* context) {
+    (void)context;
+    direct_pending = false;
+    if (r->status == PC_DHT_ITEM_CANCELLED)
+        return;
+    struct pc_dht_endpoint ep, lan;
+    if (r->status == PC_DHT_ITEM_OK && dial_record_read(r->value, r->value_length, &ep, &lan)) {
+        bool local = lan.address && lan.port && same_public_ip(ep.address);
+        bool added = add_hello_target(ep);
+        if (local)
+            added |= add_hello_target(lan);
+        if (added) {
+            uint32_t ip = ntohl(ep.address);
+            pc_log_line("match: dial-back from %u.%u.%u.%u:%u%s", ip >> 24, (ip >> 16) & 0xFF,
+                (ip >> 8) & 0xFF, ip & 0xFF, ep.port,
+                local ? " (same network, also its LAN address)" : "");
+        }
+    }
+    dial_next = SDL_GetTicks() + DIRECT_REPOLL_MS;
+}
+static bool dial_publish(void) {
+    struct pc_dht_endpoint ep;
+    if (!pc_dht_external_endpoint(&ep))
+        return false;
+    uint8_t record[DIRECT_RECORD_BYTES];
+    int64_t when = (int64_t)time(NULL);
+    memcpy(record, "MPB1", 4);
+    memcpy(record + 4, identity.public_key, 32);
+    memcpy(record + 36, &ep.address, 4);
+    put_be(record + 40, ep.port, 2);
+    put_be(record + 42, (uint64_t)when, 8);
+    uint32_t lan = lan_address();
+    memcpy(record + 50, &lan, 4);
+    put_be(record + 54, pc_dht_port(), 2);
+    pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
+    direct_pending = pc_dht_item_put(&dial_slot, DIAL_SALT, strlen(DIAL_SALT), when, record,
+        sizeof record, dial_put_result, NULL);
+    if (direct_pending)
+        pc_log_line("match: publishing dial-back record for %s", target);
+    return direct_pending;
 }
 /* Direct connect fast path, alongside (not instead of) the announce search:
  * the host publishes its NAT-observed endpoint, the dialer fetches it and
@@ -498,20 +584,36 @@ static bool direct_publish(void) {
 static void direct_poll(uint64_t now) {
     if (mode != PC_MATCH_DIRECT || have_peer)
         return;
-    if (direct_pending || now < direct_next || !pc_dht_ready() || pc_dht_item_busy())
+    /* One DHT item operation at a time; the dial-back ops take turns with
+     * the direct record's. */
+    if (direct_pending || !pc_dht_ready() || pc_dht_item_busy())
         return;
     if (target[0]) {
+        if (now >= dial_next && dial_publish())
+            return;
+        if (now < direct_next)
+            return;
         direct_pending = pc_dht_item_get_first(direct_slot.public_key, DIRECT_SALT,
             strlen(DIRECT_SALT), (int64_t)time(NULL) - DIRECT_MAX_AGE, direct_get_result, NULL);
         if (direct_pending && !direct_get_logged) {
             direct_get_logged = true;
             pc_log_line("match: direct record lookup started for %s", target);
         }
+        if (!direct_pending)
+            direct_next = now + 2000;
     } else {
-        direct_publish();
+        if (now >= direct_next) {
+            if (direct_publish())
+                return;
+            direct_next = now + 2000;
+        }
+        if (now >= dial_next) {
+            direct_pending = pc_dht_item_get_first(dial_slot.public_key, DIAL_SALT,
+                strlen(DIAL_SALT), (int64_t)time(NULL) - DIRECT_MAX_AGE, dial_get_result, NULL);
+            if (!direct_pending)
+                dial_next = now + 2000;
+        }
     }
-    if (!direct_pending)
-        direct_next = now + 2000;
 }
 /* Direct Connect code entry: the host code is fixed per identity, so start
  * publishing the record while the player is still on the entry screen. The
@@ -582,6 +684,36 @@ static bool after_handoff(const void* data, size_t n, uint32_t address, uint16_t
     }
     return false;
 }
+static bool private_ip(uint32_t address) {
+    uint32_t ip = ntohl(address);
+    return (ip >> 24) == 10 || (ip >> 24) == 127 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 ||
+           (ip >> 16) == 0xA9FE || (ip >> 22) == (0x64400000u >> 22);
+}
+/* Relay defence: a Hello is only good from an address its sender signed.
+ * IP only, not port: a NAT with per-destination port mapping shows each
+ * peer a different port than the one the DHT nodes saw. A sender that does
+ * not know its public IP yet is only believed from a private address (same
+ * LAN); its retries carry the IP once the DHT's NAT consensus has it. */
+static bool hello_source_ok(const MatchHello* h, uint32_t source) {
+    if (h->from_public && source == h->from_public)
+        return true;
+    if (h->from_lan && source == h->from_lan)
+        return true;
+    return !h->from_public && private_ip(source);
+}
+/* Fill in (and re-sign for) our own addresses once they are known. */
+static void hello_refresh_from(void) {
+    static uint32_t lan;
+    struct pc_dht_endpoint self;
+    uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : 0;
+    if (!lan)
+        lan = lan_address();
+    if (pub == hello.from_public && lan == hello.from_lan)
+        return;
+    hello.from_public = pub;
+    hello.from_lan = lan;
+    sign_packet(&hello, sizeof hello);
+}
 static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused) {
     (void)unused;
     if (n == sizeof(MatchHello)) {
@@ -600,6 +732,18 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         if (memcmp(h->compatibility, compatibility, 20)) {
             if (!failure)
                 fail("Peer is on a different build, disc or game mode");
+            return;
+        }
+        if (!hello_source_ok(h, ep->address)) {
+            static uint32_t logged;
+            if (logged != ep->address) {
+                uint32_t sip = ntohl(ep->address), cip = ntohl(h->from_public);
+                logged = ep->address;
+                pc_log_line("match: dropped %s's Hello relayed via %u.%u.%u.%u (it signed "
+                            "%u.%u.%u.%u)",
+                    h->code, sip >> 24, (sip >> 16) & 0xFF, (sip >> 8) & 0xFF, sip & 0xFF,
+                    cip >> 24, (cip >> 16) & 0xFF, (cip >> 8) & 0xFF, cip & 0xFF);
+            }
             return;
         }
         bool fresh = !have_peer;
@@ -747,6 +891,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     pairing_topic(m, direct, topic);
     direct_get_logged = false;
     direct_next = 0;
+    dial_next = m == PC_MATCH_DIRECT && target[0] ? UINT64_MAX : 0;
     hello_target_count = hello_target_cursor = 0;
     next_target_hello = 0;
     if (m == PC_MATCH_DIRECT)
@@ -776,6 +921,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     memcpy(hello.topic, topic, 20);
     memcpy(hello.code, identity.code, sizeof hello.code);
     sign_packet(&hello, sizeof hello);
+    hello_refresh_from();
     pc_dht_set_datagram_callback(receive, NULL);
     state = PC_MATCH_SEARCH;
     deadline = 0;
@@ -807,6 +953,7 @@ void pc_net_match_poll(void) {
             }
         }
         direct_poll(now);
+        hello_refresh_from();
         struct pc_dht_endpoint ep;
         while (pc_dht_next_candidate(&ep)) {
             /* Paired already: a Hello now would lock that player onto us while

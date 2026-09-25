@@ -193,7 +193,8 @@ typedef enum TagBattleMenuSelection {
     SEL_TAG_LOCAL = 0,
     SEL_TAG_LAN = 1,
     SEL_TAG_DIRECT = 2,
-    SEL_TAG_UNRANKED = 3,
+    SEL_TAG_TEAM_SELECT = 3,
+    SEL_TAG_UNRANKED = 4,
 } TagBattleMenuSelection;
 #endif
 
