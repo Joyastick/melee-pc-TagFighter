@@ -1252,7 +1252,9 @@ void pc_net_match_poll(void) {
                     true);
             } else if (peer_choice == PC_MATCH_CHOICE_DECLINE) {
                 drop_peer("Opponent declined. Searching again...", true);
-            } else if (now - last_peer_ping >= PEER_SILENT_MS) {
+            } else if (now > last_peer_ping && now - last_peer_ping >= PEER_SILENT_MS) {
+                /* now was read before this poll's datagrams, which may have
+                 * set last_peer_ping later: unsigned now - later wraps. */
                 drop_peer("Could not connect to opponent. Searching again...", false);
             } else if (local_choice == PC_MATCH_CHOICE_ACCEPT &&
                        peer_choice == PC_MATCH_CHOICE_ACCEPT)

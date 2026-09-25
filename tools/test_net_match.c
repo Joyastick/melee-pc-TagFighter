@@ -332,7 +332,9 @@ int main(int argc, char** argv) {
             pc_net_match_poll();
             if (pc_net_match_pending(&ping, NULL, &choice) && choice == PC_MATCH_CHOICE_NONE) {
                 prompted++;
-                if (ping >= 0 || prompted > 200) /* once the ping is measured */
+                /* Once the ping is measured; the clock runs 20x, so the
+                 * 10 s answer window is only ~100 polls. */
+                if (ping >= 0 || prompted > 40)
                     pc_net_match_decide(!declines);
             }
             if (decline && prompted && !have_peer)
