@@ -186,10 +186,10 @@ void pc_frame_boundary(void) {
                 event->sdl.key.scancode == SDL_SCANCODE_F1 && !event->sdl.key.repeat)
             {
                 /* The overlay freezes this machine's simulation, which stalls
-                 * the opponent too; a matchmade session plays with no pausing
-                 * of any kind. Closing an already open menu still works. */
-                if (pc_net_matchmade() && !pc_menu_is_open())
-                    pc_log_line("menu: F1 is off during a Matchmaking session");
+                 * the opponent too, so it stays shut for the whole of any
+                 * online session. Closing an already open menu still works. */
+                if (pc_net_active() && !pc_menu_is_open())
+                    pc_log_line("menu: F1 is off during an online session");
                 else
                     pc_menu_toggle();
             }
