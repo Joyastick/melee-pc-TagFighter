@@ -26,8 +26,11 @@ extern "C" {
  * peer that does not authenticate what it sends cannot be talked to at all
  * once the session key exists (src/pc/net_wire.c).
  * Version 9 adds Rules.game_mode (Tag Battle vs plain VS) and
- * Rules.tag_bind / Ready.tag_bind (each peer's own MeleeVS: Tag Bind). */
-#define PC_NET_PROTO_VERSION 9
+ * Rules.tag_bind / Ready.tag_bind (each peer's own MeleeVS: Tag Bind).
+ * Version 10 sends two pads per frame (each machine's player and its couch
+ * partner, WireFrame) and adds Rules/Ready.partner_bind, so a MeleeVS duo
+ * can share one machine (ports 3 and 4 follow ports 1 and 2's machines). */
+#define PC_NET_PROTO_VERSION 10
 void pc_net_init(void);
 void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
@@ -95,6 +98,18 @@ int pc_net_remote_tag_bind(void);
  * it cached at handshake time). Falls back to a live read before a session
  * exists. */
 int pc_net_local_tag_bind(void);
+
+/* MeleeVS couch duo: the Tag Bind of this machine's / the peer's couch
+ * partner (a second controller on the same machine, driving game port
+ * net.local + 2 / net.remote + 2), or -1 when that machine has none. Pinned
+ * at handshake time like the player's own bind, only ever set in a Tag
+ * Battle session, and -1 while no session is in force. */
+int pc_net_local_partner_bind(void);
+int pc_net_remote_partner_bind(void);
+/* Whether game port 0-3 is a human in this session: ports 0/1 always, 2/3
+ * only for a machine that announced a couch partner. The CSS uses it to
+ * open those doors as Human instead of CPU. */
+bool pc_net_port_human(int port);
 
 /* Called once per simulation tick before the pad queue head is consumed.
  * Replaces the head sample's four ports with the synced inputs for this

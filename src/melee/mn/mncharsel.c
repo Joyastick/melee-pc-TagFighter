@@ -5607,9 +5607,11 @@ s32 mnCharSel_802640A0(void)
              * otherwise. */
             if (sTagAutoPopulate) {
                 if (pc_net_active()) {
-                    /* Online: net.c only ever drives ports 0/1 (the two
-                     * real network players); ports 2/3 have no real player
-                     * online, ever. Never read this machine's own local
+                    /* Online: net.c drives ports 0/1 (the two machines'
+                     * players) and ports 2/3 only for a machine whose
+                     * handshake announced a couch partner (MeleeVS duo,
+                     * pc_net_port_human); otherwise they are CPU assists.
+                     * Never read this machine's own local
                      * HSD_PadMasterStatus for that decision here -- it is
                      * per-machine hardware state that the two peers are not
                      * guaranteed to agree on, which would leak host-local
@@ -5620,7 +5622,7 @@ s32 mnCharSel_802640A0(void)
                      * both peers by construction once connected, not
                      * per-machine hardware state. */
                     mnCharSel_803F0DFC.doors[i].p_kind =
-                        i < 2 ? Gm_PKind_Human : Gm_PKind_Cpu;
+                        pc_net_port_human(i) ? Gm_PKind_Human : Gm_PKind_Cpu;
                 } else {
                     mnCharSel_803F0DFC.doors[i].p_kind =
                         HSD_PadMasterStatus[i].err == 0 ? Gm_PKind_Human

@@ -160,6 +160,16 @@ typedef struct WirePad {
     uint8_t triggerLeft, triggerRight;
 } WirePad;
 
+/* Pads per machine per frame: [0] the machine's own player (physical port
+ * 0, game port net.local) and [1] a couch partner on the same machine
+ * (physical port 1, game port net.local + 2, the same MeleeVS team). The
+ * partner pad is sent every frame, zeroed when there is no partner; only a
+ * session whose handshake announced one feeds it to the game (write_head). */
+#define NET_LOCAL_PADS 2
+typedef struct WireFrame {
+    WirePad pad[NET_LOCAL_PADS];
+} WireFrame;
+
 /* Every datagram starts with this; one from another version, session or
  * address is dropped before its body is looked at. */
 typedef struct Hdr {
@@ -184,7 +194,7 @@ typedef struct Packet {
      * assumption in it (net_sync.c time_sync). Clamped to a byte; the window
      * it can legitimately reach is WINDOW + delay. */
     int8_t adv;
-    WirePad pads[REDUNDANCY];
+    WireFrame pads[REDUNDANCY];
 } __attribute__((packed)) Packet;
 
 typedef struct Ack {
@@ -236,11 +246,16 @@ typedef struct Rules {
      * Ready.tag_bind field below; each side is per-player, never agreed to
      * a single shared value like game_mode is. */
     uint8_t tag_bind;
+    /* The host machine's couch partner (game port 3): NET_NO_PARTNER, or that
+     * player's own Tag Bind (pc_get_tag_bind(1), physical port 1). Only ever
+     * set in a Tag Battle session. The guest's is Ready.partner_bind. */
+    uint8_t partner_bind;
     uint32_t unlock_hash; /* unlock_hash_now() after the sender forced its masks */
     uint32_t hash;        /* rules_hash() of the wire image above; the guest recomputes it */
 } __attribute__((packed)) Rules;
 
 enum { GAME_MODE_VS, GAME_MODE_TAG_BATTLE };
+#define NET_NO_PARTNER 0xFF
 
 /* Payload of the READY reply (net_handshake.c): the guest's own nonce and
  * the host's echoed back, so the host can tell its live peer from a replay
@@ -251,6 +266,7 @@ typedef struct Ready {
     uint64_t echo;        /* Rules.nonce as the guest received it */
     uint32_t unlock_hash; /* the guest's forced unlock state */
     uint8_t tag_bind;     /* the guest's own MeleeVS: Tag Bind index, see Rules.tag_bind */
+    uint8_t partner_bind; /* the guest machine's couch partner (port 4), see Rules */
     uint32_t hash;        /* ready_hash() of the wire image above */
 } __attribute__((packed)) Ready;
 
@@ -284,12 +300,13 @@ typedef struct SceneMsg {
 
 _Static_assert(sizeof(WirePad) == 8, "wire layout");
 _Static_assert(sizeof(Hdr) == 7, "wire layout");
-_Static_assert(sizeof(Packet) == 27 + REDUNDANCY * 8, "wire layout");
+_Static_assert(sizeof(WireFrame) == 16, "wire layout");
+_Static_assert(sizeof(Packet) == 27 + REDUNDANCY * 16, "wire layout");
 _Static_assert(sizeof(Ack) == 13, "wire layout");
 _Static_assert(sizeof(Rel) == 11 + REL_MAX, "wire layout");
 _Static_assert(sizeof(RelAck) == 8 && sizeof(Bye) == 8, "wire layout");
-_Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 24, "wire layout");
-_Static_assert(sizeof(Ready) == 25, "wire layout");
+_Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 25, "wire layout");
+_Static_assert(sizeof(Ready) == 26, "wire layout");
 _Static_assert(sizeof(Resume) == 20 && sizeof(Resume) % 4 == 0, "wire layout");
 _Static_assert(sizeof(DelayMsg) == 8, "wire layout");
 _Static_assert(sizeof(SceneMsg) == 8, "wire layout");
@@ -529,7 +546,8 @@ void replay_feed(PADStatus* head);
 void record_frame(const PADStatus* head, uint32_t ck, int32_t f);
 void record_confirm(int32_t upto);            /* write settled frames out in order */
 bool record_replay_scene_hold(int32_t frame); /* replay: hold to the recorded exit */
-bool net_local_idle(void); /* net.c; newest local sample has no stick or button */
+bool net_local_idle(void);            /* net.c; newest local sample has no stick or button */
+bool net_local_partner_present(void); /* net.c; a controller in physical port 1 */
 void synctest_before_tick(void);
 bool synctest_after_tick(void);
 

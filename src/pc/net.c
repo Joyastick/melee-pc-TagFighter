@@ -54,12 +54,12 @@
 struct NetSession net = {
     .sock = SOCK_INVALID, .tick_frame = -1, .rb_barrier = -1, .start_frame = -1};
 
-static WirePad s_local_ring[RING];   /* indexed by frame & (RING-1) */
-static WirePad s_remote_ring[RING];  /* real input, or the prediction in use */
-static int32_t s_remote_have = -1;   /* newest contiguous real remote frame */
-static int32_t s_remote_newest = -1; /* newest frame the peer reported holding */
-static int32_t s_last_acked = -1;    /* newest local frame the peer holds */
-static int32_t s_rb_frame = -1;      /* oldest mispredicted frame not rolled back yet */
+static WireFrame s_local_ring[RING];  /* indexed by frame & (RING-1) */
+static WireFrame s_remote_ring[RING]; /* real input, or the prediction in use */
+static int32_t s_remote_have = -1;    /* newest contiguous real remote frame */
+static int32_t s_remote_newest = -1;  /* newest frame the peer reported holding */
+static int32_t s_last_acked = -1;     /* newest local frame the peer holds */
+static int32_t s_rb_frame = -1;       /* oldest mispredicted frame not rolled back yet */
 static int32_t s_remote_ck_frame = -1;
 static uint32_t s_remote_ck;
 static uint32_t s_ck_ring[RING]; /* our checksum entering each frame */
@@ -74,10 +74,11 @@ static bool s_no_progress; /* the wait ended on a talking peer that never advanc
 /* Session-local seed history must not survive a reconnect. */
 static uint32_t s_seed_after_tick;
 static bool s_seed_have;
-static bool s_lockstep;      /* snapshot failure: stop predicting, retain older corrections */
-static PADStatus s_raw_last; /* newest physical sample (port 0) */
-static int s_status;         /* pc_net_peer_status(); kept until the next connect */
-static bool s_peer_left;     /* BYE received or version mismatch: stop waiting */
+static bool s_lockstep;         /* snapshot failure: stop predicting, retain older corrections */
+static PADStatus s_raw_last;    /* newest physical sample (port 0) */
+static PADStatus s_raw_partner; /* newest physical sample (port 1): the couch partner */
+static int s_status;            /* pc_net_peer_status(); kept until the next connect */
+static bool s_peer_left;        /* BYE received or version mismatch: stop waiting */
 static bool s_warn_src, s_warn_sess, s_warn_bad, s_warn_mac; /* one reject line each per session */
 /* One authenticated datagram has arrived, so the peer holds the session key
  * and nothing unauthenticated is accepted from here on (recv_inputs). Until
@@ -252,7 +253,7 @@ static int32_t confirmed_frame(void) {
 /* ---- transmit --------------------------------------------------------- */
 
 static size_t packet_len(const Packet* pk) {
-    return offsetof(Packet, pads) + pk->count * sizeof(WirePad);
+    return offsetof(Packet, pads) + pk->count * sizeof(WireFrame);
 }
 
 #if defined(_WIN32)
@@ -623,8 +624,8 @@ static void on_inputs(const Packet* pk) {
     {
         int32_t upto = simulated_upto();
         for (int32_t f = s_remote_have + 1; f <= last; f++) {
-            WirePad pad = pk->pads[f - pk->first];
-            WirePad* slot = &s_remote_ring[f & (RING - 1)];
+            WireFrame pad = pk->pads[f - pk->first];
+            WireFrame* slot = &s_remote_ring[f & (RING - 1)];
             /* A frame already simulated holds the prediction it ran on. */
             if (f <= upto && memcmp(slot, &pad, sizeof pad) != 0 &&
                 (s_rb_frame < 0 || f < s_rb_frame))
@@ -788,7 +789,7 @@ static bool packet_shape(const void* buf, int n) {
     case 'M': {
         const Packet* p = buf;
         return n >= (int)offsetof(Packet, pads) && p->count <= REDUNDANCY &&
-               n == (int)(offsetof(Packet, pads) + p->count * sizeof(WirePad));
+               n == (int)(offsetof(Packet, pads) + p->count * sizeof(WireFrame));
     }
     case 'A':
         return n == (int)sizeof(Ack);
@@ -1153,8 +1154,8 @@ static void dump_rings_around(int32_t f) {
         if (i < 0 || i > net.frame || i <= net.frame - RING) {
             continue;
         }
-        const WirePad* m = &s_local_ring[i & (RING - 1)];
-        const WirePad* t = &s_remote_ring[i & (RING - 1)];
+        const WirePad* m = &s_local_ring[i & (RING - 1)].pad[0];
+        const WirePad* t = &s_remote_ring[i & (RING - 1)].pad[0];
         pc_log_line("net: ring f%d p%d %04x/%d,%d p%d %04x/%d,%d ck %08x x%u%s", i, net.local + 1,
             m->button, m->stickX, m->stickY, net.remote + 1, t->button, t->stickX, t->stickY,
             s_ck_ring[i & (RING - 1)], s_sim_n[i & (RING - 1)],
@@ -1661,9 +1662,14 @@ bool net_local_idle(void) {
     if (s_wrote < 0) {
         return true;
     }
-    const WirePad* p = &s_local_ring[s_wrote & (RING - 1)];
-    return p->button == 0 && p->stickX == 0 && p->stickY == 0 && p->substickX == 0 &&
-           p->substickY == 0 && p->triggerLeft == 0 && p->triggerRight == 0;
+    /* Both local players: a correction mid-input costs the partner too. */
+    for (int i = 0; i < NET_LOCAL_PADS; i++) {
+        const WirePad* p = &s_local_ring[s_wrote & (RING - 1)].pad[i];
+        if (p->button != 0 || p->stickX != 0 || p->stickY != 0 || p->substickX != 0 ||
+            p->substickY != 0 || p->triggerLeft != 0 || p->triggerRight != 0)
+            return false;
+    }
+    return true;
 }
 
 static void audio_journal_reset(void);
@@ -2323,7 +2329,7 @@ static bool wait_input(int32_t need) {
  * since is ticked again from the input rings with the resim flag on. */
 
 static void predict(int32_t f) {
-    static const WirePad neutral;
+    static const WireFrame neutral;
     s_remote_ring[f & (RING - 1)] =
         s_remote_have >= 0 ? s_remote_ring[s_remote_have & (RING - 1)] : neutral;
 }
@@ -2484,12 +2490,18 @@ static void head_check(void) {
     s_head_frame = -1;
 }
 
-/* Ports 0-3 of the queue head become the synced inputs for frame f. */
+/* Ports 0-3 of the queue head become the synced inputs for frame f. Ports
+ * 0/1 are the two machines' players; ports 2/3 are each machine's couch
+ * partner when its handshake announced one (MeleeVS duo, same team as the
+ * machine's own port), and no controller otherwise. Both peers decide this
+ * from the same handshake values, so the sims agree. */
 static void write_head(PADStatus* head, int32_t f) {
-    static const WirePad neutral;
-    const WirePad* mine = f >= net.delay ? &s_local_ring[f & (RING - 1)] : &neutral;
+    static const WireFrame neutral;
+    const WireFrame* mine_frame = f >= net.delay ? &s_local_ring[f & (RING - 1)] : &neutral;
+    const WirePad* mine = &mine_frame->pad[0];
     from_wire(&head[net.local], mine);
-    const WirePad* theirs = &s_remote_ring[f & (RING - 1)];
+    const WireFrame* theirs_frame = &s_remote_ring[f & (RING - 1)];
+    const WirePad* theirs = &theirs_frame->pad[0];
     WirePad wrong;
     if (s_audit_poison) {
         wrong = *theirs;
@@ -2505,6 +2517,12 @@ static void write_head(PADStatus* head, int32_t f) {
     for (int i = 2; i < 4; i++) {
         memset(&head[i], 0, sizeof head[i]);
         head[i].err = PAD_ERR_NO_CONTROLLER;
+    }
+    if (pc_net_local_partner_bind() >= 0) {
+        from_wire(&head[net.local + 2], &mine_frame->pad[1]);
+    }
+    if (pc_net_remote_partner_bind() >= 0) {
+        from_wire(&head[net.remote + 2], &theirs_frame->pad[1]);
     }
     head_note(head, f);
 }
@@ -2791,7 +2809,22 @@ static void capture_local_sample(bool fresh) {
         PADStatus pads[4];
         PADRead(pads);
         s_raw_last = pads[0];
+        /* Physical port 1 is the couch partner. Sent whether or not the
+         * handshake announced one (write_head decides what reaches the game),
+         * zeroed while unplugged so an absent pad is a neutral one. */
+        s_raw_partner = pads[1];
+        if (s_raw_partner.err != PAD_ERR_NONE) {
+            memset(&s_raw_partner, 0, sizeof s_raw_partner);
+        }
     }
+}
+
+/* Whether a second controller (physical port 1) is plugged in right now:
+ * the handshake's one read of it, pinned for the session as partner_bind. */
+bool net_local_partner_present(void) {
+    PADStatus pads[4];
+    PADRead(pads);
+    return pads[1].err == PAD_ERR_NONE;
 }
 
 /* A fresh frame: capture the local sample, exchange inputs, predict or
@@ -2820,7 +2853,13 @@ static void fresh_tick(PADStatus* head, bool raw) {
          * with the same sample, or already-sent frames that must not move. */
         int64_t target_w = (int64_t)net.frame + net.delay;
         for (int32_t w = s_wrote + 1; (int64_t)w <= target_w; w++) {
-            to_wire(&s_local_ring[w & (RING - 1)], &s_raw_last);
+            to_wire(&s_local_ring[w & (RING - 1)].pad[0], &s_raw_last);
+            /* Zeros unless the handshake announced a partner: a controller
+             * plugged in mid-session would otherwise cost the peer rollbacks
+             * over a pad no port reads. */
+            static const PADStatus no_partner;
+            to_wire(&s_local_ring[w & (RING - 1)].pad[1],
+                pc_net_local_partner_bind() >= 0 ? &s_raw_partner : &no_partner);
             s_wrote = w;
         }
         send_inputs();
