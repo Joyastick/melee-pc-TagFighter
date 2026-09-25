@@ -77,6 +77,9 @@ typedef struct OnlineLobbyView {
     const char* menu_tag[4];
     int menu_cursor; /* -1: none */
     const char* hint;
+    /* Matchmaking: our team and, once matched, the opponent's, one line
+     * each above the status line ("" hides it). */
+    char team[2][ONLINE_LOBBY_MSG_LEN];
 } OnlineLobbyView;
 
 void mnOnlineLobby_Create(void);

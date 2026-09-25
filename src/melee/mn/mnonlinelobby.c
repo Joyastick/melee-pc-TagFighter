@@ -45,6 +45,8 @@ enum {
     line_status,
     line_hint,
     line_countdown,
+    line_team,     /* our team (Matchmaking) */
+    line_opponent, /* the opponent's, once matched */
     line_rows, /* 4 per player: YOU marker, name, host badge, ping */
     line_count = line_rows + ONLINE_LOBBY_MAX_PLAYERS * 4,
 };
@@ -169,6 +171,10 @@ void mnOnlineLobby_Create(void)
     }
     /* Top right, beside the title: eight rows fill the list area. */
     addLine(&lines[line_countdown], 360.0f, 56.0f, 0.7f, &col_you);
+    /* Below the rows Matchmaking uses (two players or the four-row
+     * after-match menu), above the status line. */
+    addLine(&lines[line_team], 48.0f, 312.0f, 0.45f, &col_dim);
+    addLine(&lines[line_opponent], 48.0f, 336.0f, 0.45f, &col_dim);
     addLine(&lines[line_status], 48.0f, 400.0f, 0.55f, &col_white);
     addLine(&lines[line_hint], 48.0f, 436.0f, 0.45f, &col_dim);
 }
@@ -229,6 +235,8 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
         buf[0] = '\0';
     }
     setLine(&lines[line_countdown], buf);
+    setLine(&lines[line_team], view->team[0]);
+    setLine(&lines[line_opponent], view->team[1]);
 
     setLine(&lines[line_status], view->message);
     error = view->phase == LOBBY_PHASE_ERROR;

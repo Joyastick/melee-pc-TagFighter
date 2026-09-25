@@ -697,6 +697,38 @@ static PcNetTeam matchmadeLocalTeam(void)
     return team;
 }
 
+/* Character names for the lobby's team lines, in CharacterKind order. */
+static const char* const ckind_name[CKind_Playable_Count] = {
+    "Captain Falcon", "Donkey Kong", "Fox",        "Mr. Game & Watch", "Kirby",
+    "Bowser",         "Link",        "Luigi",      "Mario",            "Marth",
+    "Mewtwo",         "Ness",        "Peach",      "Pikachu",          "Ice Climbers",
+    "Jigglypuff",     "Samus",       "Yoshi",      "Zelda",            "Sheik",
+    "Falco",          "Young Link",  "Dr. Mario",  "Roy",              "Pichu",
+    "Ganondorf",
+};
+
+/* "Your team: Fox (point) + Falco CPU": both fighters, which starts on
+ * point, and whether the partner is a CPU. */
+static void teamLine(char* out, size_t size, const char* label, const PcNetTeam* team)
+{
+    const char* name[2];
+    for (int i = 0; i < 2; i++) {
+        int ck = team->fighter[i].ckind;
+        name[i] = ck >= 0 && ck < CKind_Playable_Count ? ckind_name[ck] : NULL;
+    }
+    if (name[0] == NULL) {
+        out[0] = '\0';
+        return;
+    }
+    if (name[1] == NULL) {
+        snprintf(out, size, "%s: %s", label, name[0]);
+        return;
+    }
+    snprintf(out, size, "%s: %s%s + %s%s%s", label, name[0], team->point == 0 ? " (point)" : "",
+             name[1], team->point == 1 ? " (point)" : "",
+             team->fighter[1].human ? "" : " CPU");
+}
+
 /* Every search starts here, so the netcode always knows whether this side
  * is joining a Matchmaking game (and with which team) before it connects. */
 static void startMatch(enum PcNetMatchMode mode, const char* code)
@@ -1390,6 +1422,17 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     startMatch(online_kind == ONLINE_KIND_RANKED ? PC_MATCH_RANKED :
                                        PC_MATCH_UNRANKED, NULL);
                 }
+            }
+        }
+        if (matchmadeMode()) {
+            /* What this machine queues with (saved TEAM SELECT team, or
+             * the CSS fallback), and the opponent's once matched. */
+            PcNetTeam mine = matchmadeLocalTeam();
+            teamLine(view.team[0], sizeof view.team[0], "Your team", &mine);
+            const PcNetTeam* theirs =
+                pc_net_matchmade() ? pc_net_team(pc_net_match_is_host() ? 1 : 0) : NULL;
+            if (theirs != NULL) {
+                teamLine(view.team[1], sizeof view.team[1], "Opponent", theirs);
             }
         }
         mnOnlineLobby_Update(&view);
