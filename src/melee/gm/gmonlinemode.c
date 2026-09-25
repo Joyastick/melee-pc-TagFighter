@@ -31,6 +31,7 @@
 #include "pc/net_match.h"
 #include "pc/net_rank_session.h"
 #include "pc/net_rendezvous.h"
+#include "pc/net_upnp.h"
 extern const char* pc_get_net_target(void);
 extern void pc_set_net_target(const char* code);
 extern bool pc_get_meleevs_team(uint8_t out[9]);
@@ -1457,9 +1458,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 snprintf(view.message, sizeof view.message, "Waiting for opponent...");
             } else if (!why && state == PC_MATCH_SEARCH && pc_rdv_nat() == PC_RDV_NAT_STRICT) {
                 /* The pairing server saw this router change ports per
-                 * destination: say why no match may ever connect. */
-                snprintf(view.message, sizeof view.message,
-                         "Searching... Strict NAT: matches may fail");
+                 * destination: say why no match may ever connect, unless
+                 * the router forwards our port (net_upnp.c). */
+                snprintf(view.message, sizeof view.message, "%s",
+                         pc_upnp_mapped(NULL) ? "Searching... Strict NAT, port forwarded (UPnP)" :
+                                                "Searching... Strict NAT: matches may fail");
             } else {
                 snprintf(view.message, sizeof view.message, "%s", why ? why : "Searching for an opponent...");
             }

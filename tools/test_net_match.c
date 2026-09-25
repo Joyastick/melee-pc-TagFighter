@@ -144,6 +144,13 @@ bool pc_dht_external_endpoint(struct pc_dht_endpoint* out) {
     (void)out;
     return false;
 }
+void pc_upnp_want(uint16_t port) {
+    (void)port;
+}
+bool pc_upnp_mapped(struct pc_dht_endpoint* out) {
+    (void)out;
+    return false;
+}
 void pc_dht_set_datagram_callback(pc_dht_datagram_fn f, void* c) {
     dht_cb = f;
     dht_ctx = c;
