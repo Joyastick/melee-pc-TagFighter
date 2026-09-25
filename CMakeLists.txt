@@ -260,6 +260,14 @@ else ()
 endif ()
 
 target_include_directories(melee PRIVATE extern/monocypher)
+# Built-in pairing server (server/pairing). Empty: none, Matchmaking uses the
+# DHT alone unless MELEE_PAIRING_SERVER / MELEE_PAIRING_KEY are set at run time.
+set(MELEE_PAIRING_SERVER "" CACHE STRING "Built-in pairing server, host:port")
+set(MELEE_PAIRING_KEY "" CACHE STRING "Built-in pairing server public key (64 hex digits)")
+if (MELEE_PAIRING_SERVER AND MELEE_PAIRING_KEY)
+    set_source_files_properties(src/pc/net_rendezvous.c PROPERTIES COMPILE_DEFINITIONS
+        "PC_PAIRING_SERVER=\"${MELEE_PAIRING_SERVER}\";PC_PAIRING_KEY=\"${MELEE_PAIRING_KEY}\"")
+endif()
 
 target_compile_options(melee PRIVATE
         ${MELEE_FP_FLAGS}
