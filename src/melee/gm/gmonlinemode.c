@@ -182,6 +182,10 @@ static bool am_live;          /* false once the opponent is gone */
 static int am_cursor[2];      /* per machine, 0 = host */
 static int am_pick[2];        /* -1 while choosing */
 static unsigned am_game;      /* rematches played in this session */
+/* The last matchmade game's result for the after-match title: the host's
+ * team is team 0 (red), the guest's team 1 (blue), see matchmadeBuild. */
+enum { AM_RESULT_RED, AM_RESULT_BLUE, AM_RESULT_NONE };
+static int am_result = AM_RESULT_NONE;
 /* A decision that ends the session is carried out AM_HOLD_FRAMES later:
  * in lockstep that guarantees the other machine has also simulated the
  * decision frame, so its goodbye can never be mistaken for a quit. */
@@ -454,6 +458,10 @@ void onEnterVs(GameModeState* state)
 #endif
 }
 
+#ifdef TARGET_PC
+static void matchmadeFinish(MatchEnd* end);
+#endif
+
 void onExitVs(GameModeState* state)
 {
 #ifdef TARGET_PC
@@ -526,6 +534,13 @@ void onExitVs(GameModeState* state)
         }
     }
     TagAssist_OnReset();
+#ifdef TARGET_PC
+    /* Matchmaking skips RESULTS: the after-match lobby says who won and
+     * asks what next. A tie still goes through sudden death first. */
+    if (pc_net_matchmade() && !gm_MatchHasMultipleWinners(&mei->match_end)) {
+        matchmadeFinish(&mei->match_end);
+    }
+#endif
 }
 
 void onEnterSuddenDeath(GameModeState* state)
@@ -542,6 +557,11 @@ void onExitSuddenDeath(GameModeState* state)
     }
 #endif
     gmVsMelee_ExitSuddenDeath(state);
+#ifdef TARGET_PC
+    if (pc_net_matchmade()) {
+        matchmadeFinish(&gmVsMelee_VsExitInfo.match_end);
+    }
+#endif
 }
 
 void onEnterResults(GameModeState* state)
@@ -581,6 +601,35 @@ void onExitResults(GameModeState* state)
         gm_801623A4(&gmVsMelee_ResultsEnterData.match_end);
     }
 }
+
+#ifdef TARGET_PC
+/* What leaving RESULTS did for a matchmade game, done straight from VS (or
+ * sudden death): the records the results exit keeps, then the lobby. Both
+ * machines run it on the same synced frame, so they agree on the scene. */
+static void matchmadeFinish(MatchEnd* end)
+{
+    GameModeState* results = gm_Mode_Online_States;
+    while (results->id != state_results) {
+        results++;
+    }
+    /* The results entry is last in the table, which is what keeps
+     * gmVsMelee_ExitResults from starting a "new challenger" scene. */
+    gmVsMelee_ExitResults(results, &online_vs, state_css);
+    if (!gm_WasMatchCanceled(end->outcome)) {
+        gm_801623A4(end);
+    }
+    am_result = gm_WasMatchCanceled(end->outcome) || end->n_team_winners != 1 ?
+                    AM_RESULT_NONE :
+                end->team_winners[0] == 0 ? AM_RESULT_RED :
+                                            AM_RESULT_BLUE;
+    pc_log_line("online: matchmade game over at frame %d, %s", pc_net_frame(),
+                am_result == AM_RESULT_RED  ? "red team wins" :
+                am_result == AM_RESULT_BLUE ? "blue team wins" :
+                                              "no winner");
+    after_match = true;
+    gm_SetNextGameModeStateId(state_lobby);
+}
+#endif
 
 /* ---- lobby scene ------------------------------------------------------- */
 #ifdef TARGET_PC
@@ -843,7 +892,9 @@ static void afterMatchFrame(OnlineLobbyView* view)
     int me = pc_net_match_is_host() ? 0 : 1;
     int them = 1 - me;
 
-    view->title = "MATCH OVER";
+    view->title = am_result == AM_RESULT_RED  ? "RED TEAM WINS" :
+                  am_result == AM_RESULT_BLUE ? "BLUE TEAM WINS" :
+                                                "MATCH OVER";
     view->phase = LOBBY_PHASE_FOUND;
     view->menu_count = 4;
     for (int i = 0; i < 4; i++) {
