@@ -19,6 +19,8 @@ def start_pairing_server(work):
     there is no Go toolchain; CI's runners have one."""
     go = shutil.which("go")
     if not go:
+        # CI installs Go (actions/setup-go), so there a missing one is a bug.
+        assert not os.getenv("CI"), "no Go toolchain in CI"
         print("SKIP: no Go toolchain for the pairing server")
         sys.exit(77)
     binary = work / "pairing"
