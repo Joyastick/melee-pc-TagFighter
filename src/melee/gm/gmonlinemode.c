@@ -1472,6 +1472,28 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 lobbyCopyName(view.players[1].name, peer);
                 view.players[1].ping_ms = -1;
             }
+            int ping, left, choice;
+            if (pc_net_match_pending(&ping, &left, &choice)) {
+                /* Matchmaking found someone: show the ping to them and let
+                 * the player take or skip the match (net_match.c). */
+                view.phase = LOBBY_PHASE_FOUND;
+                view.players[1].ping_ms = ping;
+                if (choice == PC_MATCH_CHOICE_NONE) {
+                    snprintf(view.message, sizeof view.message, "Opponent found! Accept? (%d)", left);
+                    view.hint = "A: accept    B: decline";
+                    if (input & HSD_PAD_A) {
+                        sfxForward();
+                        pc_net_match_decide(true);
+                    } else if (input & (HSD_PAD_B | PAD_CANCEL)) {
+                        sfxBack();
+                        pc_net_match_decide(false);
+                    }
+                    keep_lobby = true; /* B declines this opponent, not the search */
+                } else {
+                    snprintf(view.message, sizeof view.message, "Accepted. Waiting for opponent... (%d)", left);
+                    view.hint = "B: back";
+                }
+            }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
                 *HSD_RandSeedPtr = pc_net_match_seed();
                 if (pc_net_matchmade()) {

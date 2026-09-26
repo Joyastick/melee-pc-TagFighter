@@ -558,6 +558,10 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             add_test(NAME ${case} COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_${case}.py)
             set_tests_properties(${case} PROPERTIES LABELS melee TIMEOUT 60)
         endforeach()
+        add_test(NAME net_match_decline COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_decline PROPERTIES LABELS melee TIMEOUT 60
+            ENVIRONMENT "MATCH_DECLINE=1")
         # Pairing server (server/pairing, Go): its own tests, and two clients
         # pairing through it with no DHT candidates. Skipped without Go.
         add_test(NAME net_match_pairing_server COMMAND ${Python3_EXECUTABLE}

@@ -110,7 +110,7 @@ def run():
                 server.wait()
 
         if not any(os.getenv(name) for name in (
-                "MATCH_PROOF_TIMEOUT", "MATCH_PROOF_MISMATCH", "MATCH_RECOVER")):
+                "MATCH_PROOF_TIMEOUT", "MATCH_PROOF_MISMATCH", "MATCH_RECOVER", "MATCH_DECLINE")):
             rows = [item[0].strip().split() for item in output]
             assert {row[1] for row in rows} == {"0", "1"}, output
             assert len({row[2] for row in rows}) == 1, output
@@ -121,7 +121,9 @@ def run():
         subprocess.run([executable, "cancel"], check=True, timeout=20,
                        env=os.environ | {"MATCH_NAME": "CANCEL", "MATCH_DIR": str(profile)})
 
-    if os.getenv("MATCH_RECOVER"):
+    if os.getenv("MATCH_DECLINE"):
+        detail = "a declined opponent is dropped on both sides with no Offer sent"
+    elif os.getenv("MATCH_RECOVER"):
         detail = "restart republishes durable immutable history and stale mutable state"
     elif os.getenv("MATCH_COMPLETE"):
         detail = "dual-signed durable set, immutable publication and mutable retry"

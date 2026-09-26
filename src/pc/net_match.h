@@ -27,6 +27,14 @@ void pc_net_match_rematch_hint(void);
 void pc_net_match_prepublish(void);
 void pc_net_match_poll(void);
 int pc_net_match_state(const char** why);
+/* Matchmaking found an opponent and waits for the player to Accept or
+ * Decline; the match only starts once both accept, and no answer within
+ * 10 s is a decline. ping_ms is the round trip to it (-1 while measuring),
+ * choice this side's PC_MATCH_CHOICE_*. False otherwise, including for
+ * Direct Connect, which accepts on its own. */
+enum { PC_MATCH_CHOICE_NONE, PC_MATCH_CHOICE_ACCEPT, PC_MATCH_CHOICE_DECLINE };
+bool pc_net_match_pending(int* ping_ms, int* seconds_left, int* choice);
+void pc_net_match_decide(bool accept);
 bool pc_net_match_is_host(void);
 int32_t pc_net_match_start_frame(void);
 uint32_t pc_net_match_seed(void);
