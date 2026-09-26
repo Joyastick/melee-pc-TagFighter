@@ -35,10 +35,11 @@
 </div>
 <div id="page-online" class="page">
 <div class="setting"><div class="description"><h3>Player name</h3><p>1–8 letters or digits. Changes apply to the next search.</p></div><input type="text" id="net-name" maxlength="8" value="PLAYER" /></div>
-<div class="setting"><div class="description"><h3>Your connect code</h3><p id="net-code"></p></div></div>
+<div class="setting"><div class="description"><h3>Your connect code</h3><p id="net-code"></p></div><button id="copy-code">Copy code</button></div>
 <div class="setting"><div class="description"><h3>Friend's connect code</h3><p>Leave blank to host your code. Open Online → Direct Connect in-game.</p></div><input type="text" id="net-target" maxlength="17" value="" /></div>
+<div class="setting"><div class="description"><h3>Paste friend's code</h3><p>Fills the field above from the clipboard.</p></div><button id="paste-code">Paste code</button></div>
 <div class="setting"><div class="description"><h3>Input delay</h3><p>Automatic adapts to your connection. Changes apply next match.</p></div><button id="net-delay">Auto</button></div>
-<div class="setting"><div class="description"><p>Internet discovery can take a few minutes. Some home networks cannot connect without a relay.</p></div></div>
+<div class="setting"><div class="description"><p>Matchmaking usually finds a match within seconds. Some home routers (strict NAT) cannot connect directly; the lobby says so while searching.</p></div></div>
 </div>
 <div id="page-controls" class="page">
 <div class="setting"><div class="description"><h3>Controller</h3><p id="pad-name">No controller connected.</p></div><button id="pad-port">Port 1</button></div>

@@ -697,6 +697,39 @@ static PcNetTeam matchmadeLocalTeam(void)
     return team;
 }
 
+/* Character names for the lobby's team lines, in CharacterKind order. */
+static const char* const ckind_name[CKind_Playable_Count] = {
+    "Captain Falcon", "Donkey Kong", "Fox",        "Mr. Game & Watch", "Kirby",
+    "Bowser",         "Link",        "Luigi",      "Mario",            "Marth",
+    "Mewtwo",         "Ness",        "Peach",      "Pikachu",          "Ice Climbers",
+    "Jigglypuff",     "Samus",       "Yoshi",      "Zelda",            "Sheik",
+    "Falco",          "Young Link",  "Dr. Mario",  "Roy",              "Pichu",
+    "Ganondorf",
+};
+
+/* "Your team: Fox (point) + Falco CPU": both fighters, which starts on
+ * point, and whether the partner is a CPU or a second player on the same
+ * machine ("(Couch)", a couch duo). */
+static void teamLine(char* out, size_t size, const char* label, const PcNetTeam* team)
+{
+    const char* name[2];
+    for (int i = 0; i < 2; i++) {
+        int ck = team->fighter[i].ckind;
+        name[i] = ck >= 0 && ck < CKind_Playable_Count ? ckind_name[ck] : NULL;
+    }
+    if (name[0] == NULL) {
+        out[0] = '\0';
+        return;
+    }
+    if (name[1] == NULL) {
+        snprintf(out, size, "%s: %s", label, name[0]);
+        return;
+    }
+    snprintf(out, size, "%s: %s%s + %s%s%s", label, name[0], team->point == 0 ? " (point)" : "",
+             name[1], team->point == 1 ? " (point)" : "",
+             team->fighter[1].human ? " (Couch)" : " CPU");
+}
+
 /* Every search starts here, so the netcode always knows whether this side
  * is joining a Matchmaking game (and with which team) before it connects. */
 static void startMatch(enum PcNetMatchMode mode, const char* code)
@@ -787,15 +820,19 @@ static void matchmadeBuild(u32 seed)
 
 /* Direct Connect code entry. The friend's code is the one piece of online
  * state the player has to type, and the F1 field is only editable before the
- * lobby consumes it, so the lobby edits it in place: stick or D-pad
- * left/right picks a slot, up/down cycles the character, Start connects. An
- * empty code hosts our own code, which is what a friend types.
+ * lobby consumes it, so the lobby edits it in place. The page opens on the
+ * saved code with START ready to connect; X starts editing, where stick or
+ * D-pad left/right picks a slot (it blinks), up/down cycles the character,
+ * and X or B finish. An empty code hosts our own code, which is what a
+ * friend types.
  * ponytail: 17 fixed slots instead of a keyboard; codes are 17 chars max. */
 #define DIRECT_CODE_SLOTS 17
 static const char direct_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
 static char direct_entry[DIRECT_CODE_SLOTS + 1];
 static int direct_cursor;
-static bool direct_editing;
+static bool direct_editing;   /* on the code page */
+static bool direct_code_edit; /* X pressed: the D-pad changes the code */
+static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
 
 /* Reconnect to the last opponent as a Matchmaking (fixed teams, random
@@ -893,10 +930,9 @@ static void afterMatchFrame(OnlineLobbyView* view)
     int me = pc_net_match_is_host() ? 0 : 1;
     int them = 1 - me;
 
-    /* Our team is the host's (red, team 0) or the guest's (blue, team 1).
-     * The text encoder has no ASCII '!', hence the Shift-JIS one. */
+    /* Our team is the host's (red, team 0) or the guest's (blue, team 1). */
     view->title = am_result == AM_RESULT_NONE ? "MATCH OVER" :
-                  am_result == me             ? "You won" "\x81\x49" :
+                  am_result == me             ? "You won!" :
                                                 "You lost.";
     view->phase = LOBBY_PHASE_FOUND;
     view->menu_count = 4;
@@ -1035,6 +1071,7 @@ static void directEntryBegin(void)
         direct_cursor = DIRECT_CODE_SLOTS - 1;
     }
     direct_editing = true;
+    direct_code_edit = false;
     direct_error[0] = '\0';
     pc_log_line("lobby: direct connect code entry, prefilled '%s'", direct_entry);
 }
@@ -1228,6 +1265,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     int state;
     int n;
     u64 input = gm_GetButtonsTriggered(PAD_MAX_CONTROLLERS);
+    bool keep_lobby = false; /* B was used on this page, not to leave it */
 
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         gm_801A4B60(); /* on to the CSS (state_css) */
@@ -1256,11 +1294,33 @@ void gm_Scene_OnlineLobby_OnFrame(void)
              * start publishing our direct record. */
             pc_net_match_prepublish();
             bool edited = false;
-            if (repeat & PAD_ANY_LEFT) {
-                direct_cursor = (direct_cursor + DIRECT_CODE_SLOTS - 1) % DIRECT_CODE_SLOTS;
+            if (!direct_code_edit) {
+                if (input & HSD_PAD_X) {
+                    direct_code_edit = true;
+                    direct_blink = 0;
+                    direct_cursor = (int) strlen(direct_entry);
+                    if (direct_cursor >= DIRECT_CODE_SLOTS) {
+                        direct_cursor = DIRECT_CODE_SLOTS - 1;
+                    }
+                    sfxForward();
+                }
+            } else if (input & (HSD_PAD_X | HSD_PAD_B | PAD_CANCEL)) {
+                /* Done editing; B here must not also leave the page. */
+                direct_code_edit = false;
+                keep_lobby = true;
+                sfxForward();
+            } else if (repeat & PAD_ANY_LEFT) {
+                /* Stop at the ends, and at most one slot past the last
+                 * character, so the cursor never sits out in blank space. */
+                if (direct_cursor > 0) {
+                    direct_cursor--;
+                }
                 edited = true;
             } else if (repeat & PAD_ANY_RIGHT) {
-                direct_cursor = (direct_cursor + 1) % DIRECT_CODE_SLOTS;
+                if (direct_cursor < (int) strlen(direct_entry) &&
+                    direct_cursor < DIRECT_CODE_SLOTS - 1) {
+                    direct_cursor++;
+                }
                 edited = true;
             } else if (repeat & PAD_ANY_UP) {
                 directEntryCycle(1);
@@ -1271,17 +1331,33 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
             if (edited) {
                 sfxMove();
+                direct_blink = 0; /* show the slot at once after a move */
                 direct_error[0] = '\0'; /* the rejected code is being changed */
             }
             view.phase = LOBBY_PHASE_FOUND;
             if (direct_error[0]) {
                 snprintf(view.message, sizeof view.message, "%s", direct_error);
+            } else if (direct_code_edit) {
+                /* The selected slot blinks: its character (or a blank past
+                 * the end) alternates with '_'. */
+                char shown[DIRECT_CODE_SLOTS + 1];
+                int len = (int) strlen(direct_entry);
+                snprintf(shown, sizeof shown, "%s", direct_entry);
+                if (direct_cursor >= len) {
+                    memset(shown + len, ' ', (size_t) (direct_cursor - len + 1));
+                    shown[direct_cursor + 1] = '\0';
+                }
+                if ((direct_blink++ / 20) % 2 == 0) {
+                    shown[direct_cursor] = '_';
+                }
+                snprintf(view.message, sizeof view.message, "Friend's code: %s", shown);
             } else {
-                snprintf(view.message, sizeof view.message,
-                         "Friend's code %-17s  slot %d  START: %s",
-                         direct_entry[0] ? direct_entry : "-", direct_cursor + 1,
-                         direct_entry[0] ? "connect" : "host your code");
+                snprintf(view.message, sizeof view.message, "Friend's code: %s",
+                         direct_entry[0] ? direct_entry : "none");
             }
+            view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        direct_entry[0]  ? "START: connect    X: edit code    B: back" :
+                                           "START: host your code    X: edit code    B: back";
             if (input & HSD_PAD_START) {
                 if (direct_entry[0] && !pc_identity_code_valid(direct_entry)) {
                     sfxBack();
@@ -1295,6 +1371,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 } else {
                     sfxForward();
                     direct_editing = false;
+                    direct_code_edit = false;
                     direct_error[0] = '\0';
                     pc_set_net_target(direct_entry);
                     pc_log_line("lobby: direct connect %s '%s'",
@@ -1393,8 +1470,19 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 }
             }
         }
+        if (matchmadeMode()) {
+            /* What this machine queues with (saved TEAM SELECT team, or
+             * the CSS fallback), and the opponent's once matched. */
+            PcNetTeam mine = matchmadeLocalTeam();
+            teamLine(view.team[0], sizeof view.team[0], "Your team", &mine);
+            const PcNetTeam* theirs =
+                pc_net_matchmade() ? pc_net_team(pc_net_match_is_host() ? 1 : 0) : NULL;
+            if (theirs != NULL) {
+                teamLine(view.team[1], sizeof view.team[1], "Opponent", theirs);
+            }
+        }
         mnOnlineLobby_Update(&view);
-        if (!choosing && (input & (HSD_PAD_B | PAD_CANCEL))) {
+        if (!choosing && !keep_lobby && (input & (HSD_PAD_B | PAD_CANCEL))) {
             sfxBack();
             rematch_direct = false;
             pc_net_peer_status_clear();

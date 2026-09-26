@@ -38,7 +38,7 @@ static struct loadData load_data;
 static struct leaveData leave_data;
 
 #ifdef TARGET_PC
-/* MELEE_BOOT_SCENE=<title|vs|classic|training|unranked|direct|ranked|teamselect|meleevs>: skip the whole menu walk and
+/* MELEE_BOOT_SCENE=<title|vs|classic|training|unranked|direct|ranked|teamselect|meleevs|matchmaking>: skip the whole menu walk and
  * boot into one scene with a fixed setup. Menu navigation here can only be
  * driven by synthetic input, which misses keypresses often enough that an
  * automated run cannot rely on it (see tools/smoke_test.py).
@@ -79,6 +79,13 @@ u8 pc_boot_scene(void)
             scene = GM_VS;
             TagAssist_EnterForcedOn();
             TagAssist_ApplyDefaultRules();
+        } else if (strcmp(want, "matchmaking") == 0) {
+            /* What the MELEE VS menu's MATCHMAKING row does (with a saved
+             * team; without one that row runs TEAM SELECT first). */
+            scene = GM_ONLINE;
+            TagAssist_EnterForcedOn();
+            TagAssist_ApplyDefaultRules();
+            gmOnline_SetKind(ONLINE_KIND_UNRANKED);
         } else if (strcmp(want, "teamselect") == 0) {
             /* What the MELEE VS menu's TEAM SELECT row does. */
             scene = GM_ONLINE;
@@ -87,7 +94,8 @@ u8 pc_boot_scene(void)
             gmOnline_SetKind(ONLINE_KIND_TEAM_SELECT);
         } else {
             OSReport("MELEE_BOOT_SCENE: unknown scene '%s'; valid values are "
-                     "title, vs, classic, training, unranked, direct, ranked, teamselect\n",
+                     "title, vs, classic, training, unranked, direct, ranked, meleevs, "
+                     "matchmaking, teamselect\n",
                      want);
         }
     }

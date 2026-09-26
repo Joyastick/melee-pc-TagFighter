@@ -168,6 +168,34 @@ button.discord-btn:focus { background-color: #202b45; border-color: #5865f2; }
     background-color: #f398322b;
     border-color: #f39832;
 }
+/* Text fields (Online page): RmlUi gives <input type="text"> no look of its
+ * own, so without this the name and code fields were invisible strips. */
+input.text {
+    display: block;
+    flex-shrink: 0;
+    width: 230dp;
+    height: 38dp;
+    padding: 9dp 12dp;
+    box-sizing: border-box;
+    font-size: 14dp;
+    background-color: #080d19;
+    border: 1dp #7187a580;
+    border-radius: 7dp;
+    color: #f0f2f5;
+    cursor: text;
+    tab-index: auto;
+}
+input.text:hover {
+    border-color: #a9c8ef;
+}
+input.text:focus {
+    background-color: #0e1526;
+    border-color: #f39832;
+}
+input.text selection {
+    background-color: #f3983266;
+    color: #ffffff;
+}
 .slider-control {
     display: flex;
     align-items: center;
