@@ -293,6 +293,7 @@ static void usage(const char* argv0) {
 #include "pc/net.h"
 #include "pc/net_match.h"
 #include "pc/net_lan.h"
+#include "pc/net_upnp.h"
 #include <signal.h>
 
 static void pc_shutdown_once(void) {
@@ -304,6 +305,7 @@ static void pc_shutdown_once(void) {
     pc_net_match_stop();
     pc_net_disconnect();
     pc_lan_stop();
+    pc_upnp_shutdown();
     /* Stop producers before joining DMA and destroying platform resources.
      * An unjoined ARQ worker aborts in std::thread's static destructor. */
     pc_input_poll_shutdown();

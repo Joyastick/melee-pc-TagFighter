@@ -371,6 +371,10 @@ Preferences load_preferences(const std::filesystem::path& path) {
             float value;
             if (row >> value && std::isfinite(value) && value >= 0.75f && value <= 1.5f)
                 prefs.scale = value;
+        } else if (key == "net_upnp") {
+            int value;
+            if (row >> value && (value == 0 || value == 1))
+                prefs.net_upnp = value;
         } else if (key == "check_updates" || key == "custom_textures" || key == "unlock_all" ||
                    key == "frozen_stadium" || key == "free_camera" || key == "ucf" ||
                    key == "reverb")
@@ -438,7 +442,7 @@ bool save_preferences(
     std::ostringstream text;
     text << "net_name " << std::quoted(prefs.net_name) << "\nnet_target "
          << std::quoted(prefs.net_target) << "\nnet_delay " << prefs.net_delay << "\nnet_port "
-         << prefs.net_port << "\n";
+         << prefs.net_port << "\nnet_upnp " << prefs.net_upnp << "\n";
     text << "disc " << std::quoted(prefs.disc) << "\nvsync " << prefs.vsync << "\nfullscreen "
          << prefs.fullscreen << "\nscale " << prefs.scale << '\n'
          << "render_scale " << prefs.render_scale << "\nvolume " << prefs.volume << "\nmsaa "

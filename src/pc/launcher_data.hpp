@@ -20,6 +20,7 @@ struct Preferences {
     std::string net_target;  // empty hosts our own connect code
     int net_delay = -1;      // auto; otherwise 0..4 frames
     int net_port = 0;        // operating-system allocated
+    bool net_upnp = true;    // ask the router to forward net_port (net_upnp.c)
 
     bool vsync = true;
     bool fullscreen = false;

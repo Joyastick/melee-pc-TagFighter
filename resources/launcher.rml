@@ -189,7 +189,8 @@
 <div class="setting"><div class="description"><h3>Friend's connect code</h3><p>Leave blank to host your code. Open Online → Direct Connect in-game.</p></div><input type="text" id="net-target" maxlength="17" value="" /></div>
 <div class="setting"><div class="description"><h3>Paste friend's code</h3><p>Fills the field above from the clipboard.</p></div><button id="paste-code">Paste code</button></div>
 <div class="setting"><div class="description"><h3>Input delay</h3><p>Automatic adapts to your connection. Changes apply next match.</p></div><button id="net-delay">Auto</button></div>
-<div class="setting"><div class="description"><p>Matchmaking usually finds a match within seconds. Some home routers (strict NAT) cannot connect directly; the lobby says so while searching.</p></div></div>
+<div class="setting"><div class="description"><h3>Automatic port forwarding (UPnP)</h3><p>Asks your router to open the game's port, so players behind a strict NAT can still connect. Applies to the next search.</p></div><button id="net-upnp">On</button></div>
+<div class="setting"><div class="description"><p>Matchmaking usually finds a match within seconds. Some home routers (strict NAT) cannot connect directly unless the port forwarding above works; the lobby says so while searching.</p></div></div>
 </div>
 <div id="page-controls" class="page">
             <div class="section controls">

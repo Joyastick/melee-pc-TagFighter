@@ -52,6 +52,8 @@ void refresh_online(Rml::ElementDocument* doc) {
         e->SetInnerRML(prefs.net_delay < 0 ? "Auto" : std::to_string(prefs.net_delay) + " frames");
     if (auto* e = doc->GetElementById("net-code"))
         e->SetInnerRML(pc_net_match_local_code());
+    if (auto* e = doc->GetElementById("net-upnp"))
+        e->SetInnerRML(prefs.net_upnp ? "On" : "Off");
 }
 /* The Online page's Copy / Paste buttons (launcher and F1 menu). A <p> can't
  * be selected in RmlUi, and typing '#' is awkward on some keyboards. */
@@ -297,7 +299,7 @@ class Launcher final : public Rml::EventListener {
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf", "tag-bind"};
         case 4:
-            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay"};
+            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay", "net-upnp"};
         default:
             return {};
         }
@@ -508,6 +510,12 @@ class Launcher final : public Rml::EventListener {
     void action(const std::string& id) {
         if (id == "net-delay") {
             prefs.net_delay = prefs.net_delay == 4 ? -1 : prefs.net_delay + 1;
+            save();
+            refresh_settings();
+            return;
+        }
+        if (id == "net-upnp") {
+            prefs.net_upnp = !prefs.net_upnp;
             save();
             refresh_settings();
             return;
@@ -1318,7 +1326,7 @@ public:
         case 2:
             return {"unlock-all", "frozen-stadium", "free-camera", "ucf"};
         case 4:
-            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay"};
+            return {"net-name", "copy-code", "net-target", "paste-code", "net-delay", "net-upnp"};
         default: {
             std::vector<std::string> ids{"pad-port", "tag-bind"};
             for (int i = 0; i < PAD_BUTTON_COUNT; ++i)
@@ -1552,6 +1560,12 @@ public:
     void apply(const Rml::String& id, bool reverse = false) {
         if (id == "net-delay") {
             prefs.net_delay = prefs.net_delay == 4 ? -1 : prefs.net_delay + 1;
+            saved();
+            refresh();
+            return;
+        }
+        if (id == "net-upnp") {
+            prefs.net_upnp = !prefs.net_upnp;
             saved();
             refresh();
             return;
@@ -2019,6 +2033,14 @@ extern "C" int pc_get_net_port(void) {
             return p;
     }
     return prefs.net_port;
+}
+/* net_upnp.c: the Online page's "Automatic port forwarding (UPnP)"; the
+ * MELEE_UPNP environment variable (0 or 1) overrides it for a run. */
+extern "C" bool pc_get_net_upnp(void) {
+    const char* env = getenv("MELEE_UPNP");
+    if (env && *env)
+        return std::strcmp(env, "0") != 0;
+    return prefs.net_upnp;
 }
 extern "C" int pc_get_net_delay(void) {
     return prefs.net_delay;

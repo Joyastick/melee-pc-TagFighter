@@ -6,6 +6,7 @@
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "net_rendezvous.h"
+#include "net_upnp.h"
 #include "pc.h"
 #include "monocypher.h"
 #include <SDL3/SDL_filesystem.h>
@@ -543,9 +544,15 @@ static void dial_get_result(const PcDhtItemResult* r, void* context) {
     }
     dial_next = SDL_GetTicks() + DIRECT_REPOLL_MS;
 }
+/* Our public endpoint for the Direct records: the router's UPnP forward
+ * when it made one (reachable from anyone, even behind a strict NAT), else
+ * the DHT's NAT consensus. */
+static bool public_endpoint(struct pc_dht_endpoint* ep) {
+    return pc_upnp_mapped(ep) || pc_dht_external_endpoint(ep);
+}
 static bool dial_publish(void) {
     struct pc_dht_endpoint ep;
-    if (!pc_dht_external_endpoint(&ep))
+    if (!public_endpoint(&ep))
         return false;
     uint8_t record[DIRECT_RECORD_BYTES];
     int64_t when = (int64_t)time(NULL);
@@ -572,7 +579,7 @@ static bool dial_publish(void) {
  * NAT consensus, so it can decline; the caller retries. */
 static bool direct_publish(void) {
     struct pc_dht_endpoint ep;
-    if (!pc_dht_external_endpoint(&ep))
+    if (!public_endpoint(&ep))
         return false; /* NAT consensus needs a few more DHT replies */
     uint8_t record[DIRECT_RECORD_BYTES];
     int64_t when = (int64_t)time(NULL);
@@ -764,7 +771,7 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
 static void hello_refresh_from(void) {
     static uint32_t lan, known_public;
     struct pc_dht_endpoint self;
-    uint32_t pub = pc_dht_external_endpoint(&self) ? self.address : pc_rdv_public_ip();
+    uint32_t pub = public_endpoint(&self) ? self.address : pc_rdv_public_ip();
     /* A reopened DHT node relearns our public IP over a few seconds, while a
      * rematch Hellos the last peer at once: keep signing the IP this process
      * already learned rather than 0, which the peer only accepts from a LAN
@@ -1023,6 +1030,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
 }
 void pc_net_match_poll(void) {
     uint64_t now = SDL_GetTicks();
+    pc_upnp_want(pc_dht_port());
     if (state == PC_MATCH_SEARCH) {
         pc_dht_poll();
         if (state != PC_MATCH_SEARCH)
@@ -1056,6 +1064,11 @@ void pc_net_match_poll(void) {
             add_hello_target(rdv_peer);
             if (rdv_lan.address && rdv_peer.address == pc_rdv_public_ip())
                 add_hello_target(rdv_lan);
+            /* The server saw the port the peer's router picked toward it;
+             * a peer whose router forwards its local port (UPnP maps
+             * external = local) is reachable there from anyone. */
+            else if (rdv_lan.port && rdv_lan.port != rdv_peer.port)
+                add_hello_target((struct pc_dht_endpoint){rdv_peer.address, rdv_lan.port});
             next_target_hello = now;
         }
         struct pc_dht_endpoint ep;

@@ -222,6 +222,7 @@ set(PC_SOURCES
         src/pc/net_rank_store.c
         src/pc/net_rank_session.c
         src/pc/net_rendezvous.c
+        src/pc/net_upnp.c
         src/pc/libm/pc_rank_exp.c
         src/pc/libm/pc_rank_sqrt.c
         extern/dht/dht.c
