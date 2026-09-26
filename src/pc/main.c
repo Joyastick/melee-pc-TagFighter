@@ -277,7 +277,98 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
     }
     return EXCEPTION_EXECUTE_HANDLER;
 }
+
+/* melee.exe is a console program, so a double-click opens a console window
+ * beside the game. When the game has that console to itself it lets it go
+ * at startup, which closes the window whether Windows showed it in the
+ * classic console or in Windows Terminal (a Terminal window cannot be
+ * hidden). F3 instead opens a live view of melee-pc.log, which holds the
+ * same lines, in a classic console window of its own (conhost.exe, so it
+ * looks the same on every machine); F3 again closes it, and closing it by
+ * hand leaves the game running. Started from a terminal, the console is
+ * that terminal and stays. MELEE_CONSOLE=1 keeps the console at startup. */
+static char s_log_path[MAX_PATH];
+static PROCESS_INFORMATION s_viewer;
+static HANDLE s_viewer_job; /* kill-on-close: takes conhost and its shell down together */
+static void console_init(void) {
+    DWORD processes[2];
+    const char* path = getenv("MELEE_LOG_FILE");
+    if (path == NULL) {
+        path = "melee-pc.log";
+    }
+    if (path[0] != '\0' && log_file() != NULL) {
+        DWORD n = GetFullPathNameA(path, sizeof(s_log_path), s_log_path, NULL);
+        if (n == 0 || n >= sizeof(s_log_path)) {
+            s_log_path[0] = '\0';
+        }
+    }
+    const char* keep = getenv("MELEE_CONSOLE");
+    if (GetConsoleWindow() != NULL && GetConsoleProcessList(processes, 2) == 1 &&
+        (keep == NULL || keep[0] == '\0' || strcmp(keep, "0") == 0))
+    {
+        FreeConsole();
+    }
+}
+static bool viewer_running(void) {
+    return s_viewer.hProcess != NULL && WaitForSingleObject(s_viewer.hProcess, 0) == WAIT_TIMEOUT;
+}
+static void viewer_close(void) {
+    if (s_viewer_job != NULL) {
+        CloseHandle(s_viewer_job);
+        s_viewer_job = NULL;
+    }
+    if (s_viewer.hProcess != NULL) {
+        CloseHandle(s_viewer.hProcess);
+        CloseHandle(s_viewer.hThread);
+    }
+    memset(&s_viewer, 0, sizeof(s_viewer));
+}
+#else
+static void console_init(void) {}
+static void viewer_close(void) {}
 #endif
+
+void pc_console_toggle(void) {
+#if defined(_WIN32)
+    if (viewer_running()) {
+        viewer_close();
+        return;
+    }
+    viewer_close();
+    if (s_log_path[0] == '\0' || strchr(s_log_path, '\'') != NULL) {
+        pc_log_line("console: no log file to show (MELEE_LOG_FILE)");
+        return;
+    }
+    char command[MAX_PATH + 256];
+    snprintf(command, sizeof(command),
+        "conhost.exe powershell.exe -NoProfile -NoLogo -Command \"$host.UI.RawUI.WindowTitle = "
+        "'MeleeVS log (F3 in game closes it)'; Get-Content -LiteralPath '%s' -Wait -Tail 300\"",
+        s_log_path);
+    STARTUPINFOA startup = {0};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_SHOWNOACTIVATE; /* the game keeps the keyboard */
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limit = {0};
+    limit.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    s_viewer_job = CreateJobObjectA(NULL, NULL);
+    if (s_viewer_job != NULL) {
+        SetInformationJobObject(
+            s_viewer_job, JobObjectExtendedLimitInformation, &limit, sizeof(limit));
+    }
+    if (!CreateProcessA(NULL, command, NULL, NULL, FALSE, DETACHED_PROCESS | CREATE_SUSPENDED, NULL,
+            NULL, &startup, &s_viewer))
+    {
+        memset(&s_viewer, 0, sizeof(s_viewer));
+        viewer_close();
+        pc_log_line("console: could not open the log window (error %lu)", GetLastError());
+        return;
+    }
+    if (s_viewer_job != NULL) {
+        AssignProcessToJobObject(s_viewer_job, s_viewer.hProcess);
+    }
+    ResumeThread(s_viewer.hThread);
+#endif
+}
 
 static void usage(const char* argv0) {
     fprintf(stderr,
@@ -306,6 +397,7 @@ static void pc_shutdown_once(void) {
     pc_net_disconnect();
     pc_lan_stop();
     pc_upnp_shutdown();
+    viewer_close(); /* the F3 log window */
     /* Stop producers before joining DMA and destroying platform resources.
      * An unjoined ARQ worker aborts in std::thread's static destructor. */
     pc_input_poll_shutdown();
@@ -460,6 +552,7 @@ static void pc_env_file_bootstrap(void) {
 MELEE_EXPORT int main(int argc, char* argv[]) {
     melee_install_crash_handler(); /* before anything can crash */
     pc_env_file_bootstrap();       /* before anything calls getenv() */
+    console_init();                /* let go of the console; F3 shows the log */
 #if defined(_WIN32)
     SetUnhandledExceptionFilter(crash_handler);
 #endif

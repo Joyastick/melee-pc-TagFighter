@@ -193,6 +193,9 @@ void pc_frame_boundary(void) {
                 else
                     pc_menu_toggle();
             }
+            if (event->sdl.type == SDL_EVENT_KEY_DOWN &&
+                event->sdl.key.scancode == SDL_SCANCODE_F3 && !event->sdl.key.repeat)
+                pc_console_toggle();
             pc_menu_event(&event->sdl);
             pc_keyboard_event(&event->sdl);
             pc_touch_event(&event->sdl);

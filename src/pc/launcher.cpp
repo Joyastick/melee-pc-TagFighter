@@ -896,6 +896,9 @@ public:
                 }
                 if (e->type != AURORA_SDL_EVENT)
                     continue;
+                if (e->sdl.type == SDL_EVENT_KEY_DOWN && e->sdl.key.scancode == SDL_SCANCODE_F3 &&
+                    !e->sdl.key.repeat)
+                    pc_console_toggle(); /* the console window, as in game (vi.c) */
                 if (e->sdl.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                     auto button = e->sdl.gbutton.button;
                     if (button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
