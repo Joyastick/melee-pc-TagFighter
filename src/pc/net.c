@@ -2804,6 +2804,81 @@ static void hitch_test(void) {
     }
 }
 
+/* ---- local pause (Matchmaking) -------------------------------------------
+ * Matchmaking plays with pausing off: a real pause freezes the simulation,
+ * and the simulation is shared, so both machines would stop. START instead
+ * toggles a pause only this machine shows (ifnet.c draws it): while it is
+ * up this machine's fighters get neutral input, and holding L+R+A+START for
+ * LEAVE_HOLD_FRAMES lets that combo through, which the match loop reads on
+ * the synced pads of both machines as "this player left" (gmvs.c,
+ * gmOnline_LeavingPort). START itself never reaches the game in a
+ * matchmade fight, so the combo cannot happen by accident. All of this is
+ * input, filtered before it goes on the wire, so both machines still
+ * simulate exactly the same frames. */
+#define LEAVE_HOLD_FRAMES 60
+#define LEAVE_BUTTONS (PAD_TRIGGER_L | PAD_TRIGGER_R | PAD_BUTTON_A | PAD_BUTTON_START)
+static bool s_local_pause, s_leaving;
+static int s_leave_hold;
+static u16 s_pause_prev;
+
+static void neutral_pad(PADStatus* p) {
+    s8 err = p->err;
+    memset(p, 0, sizeof *p);
+    p->err = err;
+}
+
+static void local_pause_filter(void) {
+    u16 buttons = s_raw_last.button;
+    bool start_edge = (buttons & PAD_BUTTON_START) && !(s_pause_prev & PAD_BUTTON_START);
+    s_pause_prev = buttons;
+    if (!pc_net_matchmade() || !in_fight()) {
+        s_local_pause = s_leaving = false;
+        s_leave_hold = 0;
+        return;
+    }
+    if (s_leaving) {
+        neutral_pad(&s_raw_last);
+        s_raw_last.button = LEAVE_BUTTONS;
+        neutral_pad(&s_raw_partner);
+        return;
+    }
+    if (s_local_pause) {
+        if ((buttons & LEAVE_BUTTONS) == LEAVE_BUTTONS) {
+            if (++s_leave_hold >= LEAVE_HOLD_FRAMES) {
+                s_leaving = true;
+                pc_log_line("net: local pause: leaving the match at frame %d", net.frame);
+            }
+        } else {
+            s_leave_hold = 0;
+            if (start_edge) {
+                s_local_pause = false;
+                pc_log_line("net: local pause off at frame %d", net.frame);
+            }
+        }
+    } else if (start_edge) {
+        s_local_pause = true;
+        s_leave_hold = 0;
+        pc_log_line("net: local pause on at frame %d", net.frame);
+    }
+    if (s_local_pause || s_leaving) {
+        neutral_pad(&s_raw_last);
+        neutral_pad(&s_raw_partner);
+        if (s_leaving)
+            s_raw_last.button = LEAVE_BUTTONS;
+        return;
+    }
+    s_raw_last.button &= (u16)~PAD_BUTTON_START;
+    s_raw_partner.button &= (u16)~PAD_BUTTON_START;
+}
+
+bool pc_net_local_pause(int* leave_hold, int* leave_needed) {
+    if (leave_hold)
+        *leave_hold = s_leaving ? LEAVE_HOLD_FRAMES : s_leave_hold;
+    if (leave_needed)
+        *leave_needed = LEAVE_HOLD_FRAMES;
+    return s_local_pause || s_leaving;
+}
+
 /* Read the latest published hardware state immediately before input is
  * sent. Extra time-sync ticks and rollback must reuse their recorded sample;
  * they must never sample hardware a second time. Physical port zero is the
@@ -2820,6 +2895,7 @@ static void capture_local_sample(bool fresh) {
         if (s_raw_partner.err != PAD_ERR_NONE) {
             memset(&s_raw_partner, 0, sizeof s_raw_partner);
         }
+        local_pause_filter();
     }
 }
 

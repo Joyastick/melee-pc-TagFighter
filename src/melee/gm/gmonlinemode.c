@@ -187,6 +187,7 @@ static unsigned am_game;      /* rematches played in this session */
  * team is team 0 (red), the guest's team 1 (blue), see matchmadeBuild. */
 enum { AM_RESULT_RED, AM_RESULT_BLUE, AM_RESULT_NONE };
 static int am_result = AM_RESULT_NONE;
+static int am_leaver = -1; /* machine that left the last game, or -1 */
 /* A decision that ends the session is carried out AM_HOLD_FRAMES later:
  * in lockstep that guarantees the other machine has also simulated the
  * decision frame, so its goodbye can never be mistaken for a quit. */
@@ -197,6 +198,26 @@ static int am_leave_frame;
 static bool rematch_direct;   /* the lobby reconnects to the last opponent */
 static bool rematch_host;
 static char rematch_code[18]; /* the host's connect code */
+
+int gmOnline_LeavingPort(void)
+{
+#ifdef TARGET_PC
+    const u64 leave = PAD_TRIGGER_L | PAD_TRIGGER_R | PAD_BUTTON_A | PAD_BUTTON_START;
+    if (!pc_net_matchmade()) {
+        return -1;
+    }
+    for (int m = 0; m < 2; m++) {
+        int port = pc_net_game_port(m, 0);
+        if ((gm_GetButtonsPressed(port) & leave) == leave) {
+            am_leaver = m;
+            pc_log_line("online: %s left the match at frame %d",
+                        m == 0 ? "host" : "guest", pc_net_frame());
+            return port;
+        }
+    }
+#endif
+    return -1;
+}
 
 bool gmOnline_IsTeamSelect(void)
 {
@@ -619,10 +640,15 @@ static void matchmadeFinish(MatchEnd* end)
     if (!gm_WasMatchCanceled(end->outcome)) {
         gm_801623A4(end);
     }
-    am_result = gm_WasMatchCanceled(end->outcome) || end->n_team_winners != 1 ?
-                    AM_RESULT_NONE :
-                end->team_winners[0] == 0 ? AM_RESULT_RED :
-                                            AM_RESULT_BLUE;
+    if (am_leaver >= 0) {
+        /* A player left from the local pause: the other team wins. */
+        am_result = am_leaver == 0 ? AM_RESULT_BLUE : AM_RESULT_RED;
+    } else {
+        am_result = gm_WasMatchCanceled(end->outcome) || end->n_team_winners != 1 ?
+                        AM_RESULT_NONE :
+                    end->team_winners[0] == 0 ? AM_RESULT_RED :
+                                                AM_RESULT_BLUE;
+    }
     pc_log_line("online: matchmade game over at frame %d, %s", pc_net_frame(),
                 am_result == AM_RESULT_RED  ? "red team wins" :
                 am_result == AM_RESULT_BLUE ? "blue team wins" :
@@ -756,6 +782,7 @@ static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
 static void matchmadeBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
+    am_leaver = -1; /* the last game's after-match title has been shown */
     start->rules.is_teams = 1;
     for (int i = 0; i < GM_MAX_PLAYERS; i++) {
         start->players[i].slot_type = Gm_PKind_NA;
@@ -931,9 +958,11 @@ static void afterMatchFrame(OnlineLobbyView* view)
     int them = 1 - me;
 
     /* Our team is the host's (red, team 0) or the guest's (blue, team 1). */
-    view->title = am_result == AM_RESULT_NONE ? "MATCH OVER" :
-                  am_result == me             ? "You won!" :
-                                                "You lost.";
+    view->title = am_leaver == me                     ? "You left the match." :
+                  am_leaver >= 0                      ? "Opponent left. You won!" :
+                  am_result == AM_RESULT_NONE         ? "MATCH OVER" :
+                  am_result == me                     ? "You won!" :
+                                                        "You lost.";
     view->phase = LOBBY_PHASE_FOUND;
     view->menu_count = 4;
     for (int i = 0; i < 4; i++) {

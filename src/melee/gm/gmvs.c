@@ -11,6 +11,9 @@
 #include "gmmain_lib.h"
 #include "gmmultiman.h"
 #include "gmpause.h"
+#ifdef TARGET_PC
+#include "gmonlinemode.h"
+#endif
 #include "types.h"
 #include <dolphin/pad.h>
 #include <melee/cm/camera.h>
@@ -1397,6 +1400,18 @@ void fn_8016CFE0(void)
         }
         goto block_50;
     } else {
+#ifdef TARGET_PC
+        {
+            /* Matchmaking's local pause: a player held L+R+A+START to
+             * leave. Read from the synced pads, so both machines quit on
+             * the same frame, the way vanilla's pause menu does. */
+            int leaver = gmOnline_LeavingPort();
+            if (leaver >= 0) {
+                fn_8016CF4C_dontinline(leaver, OUTCOME_NO_CONTEST);
+                return;
+            }
+        }
+#endif
         tmp->state.match_result = gm_GetMatchOutcome();
         if (tmp->state.match_result == OUTCOME_NONE) {
             gm_DoPauseChecksAndRoutine(tmp, 1);

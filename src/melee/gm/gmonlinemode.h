@@ -32,6 +32,11 @@ bool gmOnline_HasSavedTeam(void);
 /* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
  * to the menu (set when MATCHMAKING had no saved team to queue with). */
 void gmOnline_SetTeamSelectThenSearch(bool value);
+/* In a matchmade fight, the game port of a player whose synced pad holds
+ * L+R+A+START (only ever sent by the local pause's hold-to-leave), else -1.
+ * Called every frame by the VS loop (gmvs.c), identically on both
+ * machines; remembers which machine left for the after-match title. */
+int gmOnline_LeavingPort(void);
 
 void gm_Scene_OnlineLobby_OnFrame(void);
 void gm_Scene_OnlineLobby_OnEnter(void*);
