@@ -31,8 +31,15 @@ extern "C" {
  * partner, WireFrame) and adds Rules/Ready.partner_bind, so a MeleeVS duo
  * can share one machine (ports 3 and 4 follow ports 1 and 2's machines).
  * Version 11 adds Rules.layout and each machine's team setup (Rules.team,
- * Ready.team) for MeleeVS Matchmaking, which skips the online CSS/SSS. */
-#define PC_NET_PROTO_VERSION 11
+ * Ready.team) for MeleeVS Matchmaking, which skips the online CSS/SSS.
+ * Version 12 takes upstream melee-pc's netcode review (its own version 9)
+ * without its delta-coded pads: input packets carry up to REDUNDANCY 28
+ * unacked frames, the frame checksum covers each fighter's self and
+ * knockback velocity, READY names the start frame it took (a host whose
+ * RULES went stale re-issues one), and a fight reseeds the RNG every tick
+ * (fight_reseed) and forces UCF on and free camera off, which an older peer
+ * does not. */
+#define PC_NET_PROTO_VERSION 12
 void pc_net_init(void);
 void pc_net_set_input_delay(int frames);
 bool pc_net_active(void);
@@ -41,6 +48,7 @@ bool pc_net_chat_available(void);
 /* True when the simulation must be reproducible elsewhere: netplay,
  * record, replay or sync test. Guards machine-seeded retail behaviour. */
 bool pc_net_deterministic(void);
+bool pc_net_pure_load(const char* filename); /* served from memory, no barrier */
 
 /* Netplay scene hand-off: true while the scene that asked to end must keep
  * ticking, so both peers leave it on the same frame however long their loads
@@ -160,6 +168,7 @@ void pc_net_sync(void);
  * (rollback re-simulation or the MELEE_NET_SYNCTEST self-check). */
 /* Finish rollback/bookkeeping, but defer fresh advances during scene exit. */
 bool pc_net_after_tick(bool scene_ending);
+void pc_net_render_audit(bool after); /* MELEE_NET_RENDER_AUDIT, net_snapshot.c */
 
 /* Called by the frame boundary (src/pc/vi.c) after the pad alarm ran; the
  * returned ns are added to the next pacing wait. Time-sync corrections are
