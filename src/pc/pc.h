@@ -62,6 +62,11 @@ bool pc_input_latency(float* mean_ms, float* max_ms, float* p99_ms);
  * a log summary every 600 frames. */
 bool pc_is_input_hud_enabled(void);
 
+/* F3: open or close a live view of melee-pc.log in its own console window.
+ * A double-clicked melee.exe lets go of its own console at startup instead
+ * (Windows only, main.c). */
+void pc_console_toggle(void);
+
 /* Set once the window is closed; the game loop is expected to exit. */
 extern bool pc_exit_requested;
 
