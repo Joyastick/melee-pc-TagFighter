@@ -100,7 +100,7 @@ target_compile_definitions(aurora_mtx PRIVATE ${MELEE_FP_PERTURB_DEFS})
 add_compile_definitions(${MELEE_FP_PERTURB_DEFS})
 if (WIN32)
     set(MELEE_CRYPTO_LIBS bcrypt)
-    set(MELEE_NETWORK_LIBS winhttp ws2_32 iphlpapi) # iphlpapi: GetAdaptersAddresses in src/pc/net_lan.c
+    set(MELEE_NETWORK_LIBS winhttp ws2_32 iphlpapi ole32 oleaut32 shell32) # iphlpapi: GetAdaptersAddresses in src/pc/net_lan.c; ole32/oleaut32/shell32: src/pc/net_firewall.c
     add_compile_definitions(MELEE_USE_BCRYPT)
 elseif (ANDROID OR IOS OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MELEE_CRYPTO_LIBS)
@@ -218,6 +218,7 @@ set(PC_SOURCES
         src/pc/net_chat.c
         src/pc/net_dht.c
         src/pc/net_dht_item.c
+        src/pc/net_firewall.c
         src/pc/net_identity.c
         src/pc/net_match.c
         src/pc/net_rank.c
