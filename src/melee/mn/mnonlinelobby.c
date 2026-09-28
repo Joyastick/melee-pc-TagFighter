@@ -220,6 +220,14 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
                 buf[0] = '\0';
             }
             setLine(&row[3], buf);
+        } else if (i >= 1 && i - 1 < view->contact_count) {
+            int c = i - 1;
+            setLine(&row[0], "");
+            sanitizeName(buf, ONLINE_LOBBY_NAME_LEN, view->contact_code[c]);
+            setLine(&row[1], buf);
+            setColor(&row[1], c == view->contact_cursor ? &col_you : &col_dim);
+            setLine(&row[2], "");
+            setLine(&row[3], view->contact_when[c]);
         } else {
             setLine(&row[0], "");
             setLine(&row[1], "");

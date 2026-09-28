@@ -37,6 +37,7 @@ extern void pc_set_net_target(const char* code);
 extern bool pc_get_meleevs_team(uint8_t out[9]);
 extern void pc_set_meleevs_team(const uint8_t team[9]);
 #include "pc/pc.h"
+#include <time.h>
 #endif
 
 /* GM_ONLINE: lobby -> CSS -> SSS -> VS -> (sudden death) -> results -> CSS,
@@ -862,6 +863,13 @@ static bool direct_editing;   /* on the code page */
 static bool direct_code_edit; /* X pressed: the D-pad changes the code */
 static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
+/* Recent opponents under "YOU": outside code editing, up/down walks them
+ * (and back to the code the page had) and fills the code, so START dials a
+ * contact exactly like a typed code. */
+static PcNetContact direct_contacts[ONLINE_LOBBY_CONTACTS];
+static int direct_contact_count;
+static int direct_contact_cursor; /* -1: the typed code */
+static char direct_typed[DIRECT_CODE_SLOTS + 1];
 
 /* Reconnect to the last opponent as a Matchmaking (fixed teams, random
  * stage) Direct session: the original host hosts its code, the other side
@@ -1103,7 +1111,51 @@ static void directEntryBegin(void)
     direct_editing = true;
     direct_code_edit = false;
     direct_error[0] = '\0';
-    pc_log_line("lobby: direct connect code entry, prefilled '%s'", direct_entry);
+    direct_contact_count =
+        pc_net_match_contacts(direct_contacts, ONLINE_LOBBY_CONTACTS);
+    direct_contact_cursor = -1;
+    for (int i = 0; i < direct_contact_count; i++) {
+        if (strcmp(direct_contacts[i].code, direct_entry) == 0) {
+            direct_contact_cursor = i;
+        }
+    }
+    snprintf(direct_typed, sizeof direct_typed, "%s", direct_entry);
+    pc_log_line("lobby: direct connect code entry, prefilled '%s', %d contacts",
+                direct_entry, direct_contact_count);
+}
+
+/* Up/down outside editing: -1 (the typed code), then each contact. */
+static void directContactStep(int step)
+{
+    int n = direct_contact_count + 1;
+    if (direct_contact_cursor < 0) {
+        snprintf(direct_typed, sizeof direct_typed, "%s", direct_entry);
+    }
+    direct_contact_cursor = (direct_contact_cursor + 1 + step + n) % n - 1;
+    snprintf(direct_entry, sizeof direct_entry, "%s",
+             direct_contact_cursor < 0
+                 ? direct_typed
+                 : direct_contacts[direct_contact_cursor].code);
+    direct_cursor = (int) strlen(direct_entry);
+    if (direct_cursor >= DIRECT_CODE_SLOTS) {
+        direct_cursor = DIRECT_CODE_SLOTS - 1;
+    }
+    direct_error[0] = '\0';
+}
+
+/* "just now", "5m ago", "3h ago", "12d ago". */
+static void directContactAge(char* out, size_t n, int64_t when)
+{
+    int64_t s = (int64_t) time(NULL) - when;
+    if (s < 60) {
+        snprintf(out, n, "just now");
+    } else if (s < 3600) {
+        snprintf(out, n, "%dm ago", (int) (s / 60));
+    } else if (s < 86400) {
+        snprintf(out, n, "%dh ago", (int) (s / 3600));
+    } else {
+        snprintf(out, n, "%dd ago", (int) (s / 86400));
+    }
 }
 
 /* Slots past the first blank stay blank, so the code is always contiguous. */
@@ -1337,6 +1389,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                         direct_cursor = DIRECT_CODE_SLOTS - 1;
                     }
                     sfxForward();
+                } else if (direct_contact_count > 0 &&
+                           (repeat & (PAD_ANY_UP | PAD_ANY_DOWN))) {
+                    directContactStep((repeat & PAD_ANY_DOWN) ? 1 : -1);
+                    sfxMove();
                 }
             } else if (input & (HSD_PAD_X | HSD_PAD_B | PAD_CANCEL)) {
                 /* Done editing; B here must not also leave the page. */
@@ -1358,9 +1414,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 edited = true;
             } else if (repeat & PAD_ANY_UP) {
                 directEntryCycle(1);
+                direct_contact_cursor = -1; /* now a typed code */
                 edited = true;
             } else if (repeat & PAD_ANY_DOWN) {
                 directEntryCycle(-1);
+                direct_contact_cursor = -1;
                 edited = true;
             }
             if (edited) {
@@ -1389,7 +1447,17 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 snprintf(view.message, sizeof view.message, "Friend's code: %s",
                          direct_entry[0] ? direct_entry : "none");
             }
+            view.contact_count = direct_contact_count;
+            view.contact_cursor = direct_contact_cursor;
+            for (int i = 0; i < direct_contact_count; i++) {
+                lobbyCopyName(view.contact_code[i], direct_contacts[i].code);
+                directContactAge(view.contact_when[i], sizeof view.contact_when[i],
+                                 direct_contacts[i].last_played);
+            }
             view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        direct_contact_count > 0 ?
+                            (direct_entry[0] ? "START: connect    UP/DOWN: recent    X: edit    B: back" :
+                                               "START: host    UP/DOWN: recent    X: edit    B: back") :
                         direct_entry[0]  ? "START: connect    X: edit code    B: back" :
                                            "START: host your code    X: edit code    B: back";
             if (input & HSD_PAD_START) {

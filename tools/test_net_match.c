@@ -558,10 +558,36 @@ int main(int argc, char** argv) {
     unlink(file);
     rmdir(dial_path);
 
+    /* Contacts: newest first, deduplicated by key part (a rename moves the
+     * entry to the front under its new name), invalid codes ignored, and
+     * the file reloads to the same list. */
+    snprintf(profile_directory, sizeof profile_directory, "%s", path);
+    PcNetContact seen[PC_NET_CONTACTS_MAX];
+    assert(pc_net_match_contacts(seen, PC_NET_CONTACTS_MAX) == 0);
+    contacts_note("ALICE#AAAAAAAA");
+    contacts_note("BOB#BBBBBBBB");
+    contacts_note("not a code");
+    contacts_note("ALICE2#AAAAAAAA");
+    assert(pc_net_match_contacts(seen, PC_NET_CONTACTS_MAX) == 2);
+    assert(!strcmp(seen[0].code, "ALICE2#AAAAAAAA") && !strcmp(seen[1].code, "BOB#BBBBBBBB"));
+    assert(seen[0].last_played > 0);
+    contact_count = -1;
+    assert(pc_net_match_contacts(seen, 1) == 1 && !strcmp(seen[0].code, "ALICE2#AAAAAAAA"));
+    assert(pc_net_match_contacts(seen, PC_NET_CONTACTS_MAX) == 2);
+    for (int i = 0; i < PC_NET_CONTACTS_MAX + 4; i++) {
+        char code[18];
+        snprintf(code, sizeof code, "P#AAAAAA%c%c", 'A' + i / 8, 'A' + i % 8);
+        contacts_note(code);
+    }
+    assert(pc_net_match_contacts(seen, PC_NET_CONTACTS_MAX) == PC_NET_CONTACTS_MAX);
+    assert(!strcmp(seen[0].code, "P#AAAAAACD")); /* the last of the 20 */
+    snprintf(file, sizeof file, "%s/contacts.txt", path);
+    unlink(file);
+
     snprintf(file, sizeof file, "%s/identity.key", path);
     unlink(file);
     rmdir(path);
-    puts("pairing transcript signature, nonce/mode binding, code binding, packet bounds and "
-         "direct and dial-back record checks passed");
+    puts("pairing transcript signature, nonce/mode binding, code binding, packet bounds, "
+         "direct and dial-back record and contacts checks passed");
     return 0;
 }

@@ -321,6 +321,84 @@ static bool load_identity(void) {
     return ok;
 }
 
+/* Contacts: Direct Connect opponents, newest first, in contacts.txt as
+ * "NAME#SUFFIX <unix seconds>" lines. Noted only once a match reaches
+ * PC_MATCH_READY, so a typo'd code that never answered is never kept. Keyed
+ * by the 8-character key part, so a renamed player moves to the front with
+ * the new name instead of appearing twice. */
+static PcNetContact contacts[PC_NET_CONTACTS_MAX];
+static int contact_count = -1; /* -1: not loaded */
+
+static const char* code_key(const char* code) {
+    return code + strlen(code) - 8; /* pc_identity_code_valid: NAME#8 chars */
+}
+
+static void contacts_path(char* out, size_t n) {
+    snprintf(out, n, "%s/contacts.txt", profile_directory);
+}
+
+static void contacts_load(void) {
+    if (contact_count >= 0 || !load_identity())
+        return;
+    contact_count = 0;
+    char path[4200];
+    contacts_path(path, sizeof path);
+    FILE* f = fopen(path, "r");
+    if (!f)
+        return;
+    char line[128];
+    while (contact_count < PC_NET_CONTACTS_MAX && fgets(line, sizeof line, f)) {
+        PcNetContact c = {0};
+        long long when = 0;
+        if (sscanf(line, "%17s %lld", c.code, &when) != 2 || !pc_identity_code_valid(c.code))
+            continue;
+        c.last_played = (int64_t)when;
+        contacts[contact_count++] = c;
+    }
+    fclose(f);
+}
+
+static void contacts_note(const char* code) {
+    contacts_load();
+    if (contact_count < 0 || !pc_identity_code_valid(code))
+        return;
+    int at = contact_count < PC_NET_CONTACTS_MAX ? contact_count : PC_NET_CONTACTS_MAX - 1;
+    for (int i = 0; i < contact_count; i++)
+        if (!strcmp(code_key(contacts[i].code), code_key(code))) {
+            at = i;
+            break;
+        }
+    if (at == contact_count)
+        contact_count++;
+    memmove(&contacts[1], &contacts[0], (size_t)at * sizeof contacts[0]);
+    snprintf(contacts[0].code, sizeof contacts[0].code, "%s", code);
+    contacts[0].last_played = (int64_t)time(NULL);
+    /* Write a temp file, then swap it in, so a crash never truncates it. */
+    char path[4200], tmp[4210];
+    contacts_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if (!f) {
+        pc_log_line("match: could not write %s", tmp);
+        return;
+    }
+    for (int i = 0; i < contact_count; i++)
+        fprintf(f, "%s %lld\n", contacts[i].code, (long long)contacts[i].last_played);
+    bool ok = fclose(f) == 0;
+#ifdef _WIN32
+    remove(path); /* rename does not replace an existing file on Windows */
+#endif
+    if (!ok || rename(tmp, path) != 0)
+        pc_log_line("match: could not save %s", path);
+}
+
+int pc_net_match_contacts(PcNetContact* out, int max) {
+    contacts_load();
+    int n = contact_count < 0 ? 0 : contact_count < max ? contact_count : max;
+    memcpy(out, contacts, (size_t)n * sizeof *out);
+    return n;
+}
+
 static void digest(void) {
     char text[256];
     /* Folding the Tag Battle flag in here means a Tag Battle peer and a
@@ -1336,6 +1414,8 @@ void pc_net_match_poll(void) {
             } else {
                 state = PC_MATCH_READY;
                 pc_net_set_datagram_handler(NULL);
+                if (mode == PC_MATCH_DIRECT)
+                    contacts_note(opponent);
             }
         }
         if (pc_net_handshake_state() == 3) {

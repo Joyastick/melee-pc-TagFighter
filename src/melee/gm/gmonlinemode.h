@@ -49,6 +49,7 @@ void gm_Scene_OnlineLobby_OnExit(void*);
 #define ONLINE_LOBBY_MAX_PLAYERS 8
 #define ONLINE_LOBBY_NAME_LEN 18 /* a whole connect code: 8 + "#" + 8, and NUL */
 #define ONLINE_LOBBY_MSG_LEN 96
+#define ONLINE_LOBBY_CONTACTS 4
 
 typedef struct OnlineLobbyPlayer {
     char name[ONLINE_LOBBY_NAME_LEN];
@@ -85,6 +86,13 @@ typedef struct OnlineLobbyView {
     /* Matchmaking: our team and, once matched, the opponent's, one line
      * each above the status line ("" hides it). */
     char team[2][ONLINE_LOBBY_MSG_LEN];
+    /* Direct Connect: recent opponents in the rows below "YOU" (rows
+     * 1 to ONLINE_LOBBY_CONTACTS), each code with how long ago it was
+     * played; the one under the cursor is highlighted. */
+    int contact_count;
+    char contact_code[ONLINE_LOBBY_CONTACTS][ONLINE_LOBBY_NAME_LEN];
+    char contact_when[ONLINE_LOBBY_CONTACTS][16];
+    int contact_cursor; /* -1: none */
 } OnlineLobbyView;
 
 void mnOnlineLobby_Create(void);
