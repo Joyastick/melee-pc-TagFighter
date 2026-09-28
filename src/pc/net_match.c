@@ -505,8 +505,9 @@ static void pair_topic(const char* a, const char* b, uint8_t out[20]) {
 /* The pairing server matches two clients that present the same topic, so
  * Direct cannot hand it the mode-wide pairing topic (it would pair any two
  * Direct players). It gets the callee's doorbell: a host its own suffix, a
- * caller the suffix it dials. Two players who dial each other do not meet
- * there; the pair topic and the direct records cover that. */
+ * caller the suffix it dials. A caller also waits on the pair topic
+ * (rendezvous_pair_topic), where two players who dial each other meet, on a
+ * server that takes two topics per search (pc_rdv_add_topic). */
 static void rendezvous_topic(enum PcNetMatchMode m, const char* doorbell, uint8_t out[20]) {
     if (m != PC_MATCH_DIRECT) {
         pairing_topic(m, out);
@@ -514,6 +515,12 @@ static void rendezvous_topic(enum PcNetMatchMode m, const char* doorbell, uint8_
     }
     char text[64];
     int n = snprintf(text, sizeof text, "meleepc/rdv/v2/direct/%s", doorbell);
+    pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
+}
+static void rendezvous_pair_topic(const char* a, const char* b, uint8_t out[20]) {
+    char text[64];
+    int n = strcmp(a, b) < 0 ? snprintf(text, sizeof text, "meleepc/rdv/v2/pair/%s/%s", a, b) :
+                               snprintf(text, sizeof text, "meleepc/rdv/v2/pair/%s/%s", b, a);
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
 }
 
@@ -1298,6 +1305,10 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     uint8_t rdv_topic[20];
     rendezvous_topic(m, doorbell, rdv_topic);
     pc_rdv_start(rdv_topic, hello.from_lan, pc_dht_port(), send_packet);
+    if (m == PC_MATCH_DIRECT && target_suffix[0]) {
+        rendezvous_pair_topic(own, target_suffix, rdv_topic);
+        pc_rdv_add_topic(rdv_topic);
+    }
     pc_dht_set_datagram_callback(receive, NULL);
     state = PC_MATCH_SEARCH;
     deadline = 0;

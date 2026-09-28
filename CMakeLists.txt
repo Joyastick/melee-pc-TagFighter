@@ -590,6 +590,12 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
         set_tests_properties(net_match_pairing_server PROPERTIES LABELS melee TIMEOUT 180
             ENVIRONMENT "MATCH_PAIRING_SERVER=1" SKIP_RETURN_CODE 77)
+        # Both players dial each other with no DHT candidates: only the
+        # server's pair topic (two topics per search) can bring them together.
+        add_test(NAME net_match_direct_pairing_server COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_direct_pairing_server PROPERTIES LABELS melee TIMEOUT 180
+            ENVIRONMENT "MATCH_PAIRING_SERVER=1;MATCH_DIRECT=1" SKIP_RETURN_CODE 77)
         find_program(GO_EXECUTABLE go)
         if (GO_EXECUTABLE)
             add_test(NAME pairing_server_go COMMAND ${GO_EXECUTABLE} test ./...

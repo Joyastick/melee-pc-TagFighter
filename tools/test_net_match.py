@@ -144,6 +144,8 @@ def run():
         detail = "dual-signed durable set, immutable publication and mutable retry"
     elif os.getenv("MATCH_PROOF_TIMEOUT") or os.getenv("MATCH_PROOF_MISMATCH"):
         detail = "unverified peer state refused before socket handoff"
+    elif os.getenv("MATCH_DIRECT") and os.getenv("MATCH_PAIRING_SERVER"):
+        detail = "mutual direct dial met on the pairing server's pair topic alone"
     elif os.getenv("MATCH_DIRECT"):
         detail = "mutual direct dial by key suffix (one name wrong), contact saved"
     elif os.getenv("MATCH_PAIRING_SERVER"):

@@ -17,7 +17,7 @@ const (
 	entryLifetime = 30 * time.Second // a queued client that stops re-joining is dropped
 	rateBurst     = 40               // packets per source IP ...
 	ratePerSecond = 20               // ... refilled at this rate
-	maxPerIP      = 4                // queued entries one IP may hold (several players behind one NAT)
+	maxPerIP      = 8                // queued entries one IP may hold (several players behind one NAT, two topics each)
 	maxEntries    = 100000           // global cap, far beyond any real load
 )
 
@@ -42,12 +42,20 @@ type bucket struct {
 	last   time.Time
 }
 
+// entryKey: one search (one socket) may wait on several topics at once, as a
+// Direct Connect caller does on its friend's doorbell and on the pair topic.
+type entryKey struct {
+	addr  netip.AddrPort
+	topic topic
+}
+
 // Server holds the queues. It is not safe for concurrent use: main.go runs
 // it from one goroutine.
 type Server struct {
 	key     ed25519.PrivateKey
 	secret  [32]byte
-	entries map[netip.AddrPort]*entry
+	entries map[entryKey]*entry
+	byAddr  map[netip.AddrPort][]*entry
 	queues  map[topic][]*entry
 	perIP   map[netip.Addr]int
 	buckets map[netip.Addr]*bucket
@@ -57,7 +65,8 @@ type Server struct {
 func NewServer(key ed25519.PrivateKey) *Server {
 	s := &Server{
 		key:     key,
-		entries: map[netip.AddrPort]*entry{},
+		entries: map[entryKey]*entry{},
+		byAddr:  map[netip.AddrPort][]*entry{},
 		queues:  map[topic][]*entry{},
 		perIP:   map[netip.Addr]int{},
 		buckets: map[netip.Addr]*bucket{},
@@ -130,7 +139,7 @@ func (s *Server) Handle(pkt []byte, from netip.AddrPort, now time.Time) []Out {
 		}
 		var n nonce
 		copy(n[:], pkt[hdrSize:])
-		return []Out{{from, encodeCookie(s.key, n, s.currentCookie(from, now), from)}}
+		return []Out{{from, encodeCookie(s.key, pkt[4], n, s.currentCookie(from, now), from)}}
 	case typeJoin:
 		j, ok := parseJoin(pkt)
 		if !ok || !s.cookieOK(j.cookie, from, now) {
@@ -146,9 +155,7 @@ func (s *Server) Handle(pkt []byte, from netip.AddrPort, now time.Time) []Out {
 		if !s.cookieOK(c, from, now) {
 			return nil
 		}
-		if e := s.entries[from]; e != nil {
-			s.remove(e)
-		}
+		s.removeAll(from) // the search stopped: every topic it waited on
 	}
 	return nil
 }
@@ -157,19 +164,25 @@ func (s *Server) join(j joinRequest, from netip.AddrPort, now time.Time) []Out {
 	if j.want != 2 {
 		return nil // groups of four arrive with 3-4 player online
 	}
-	if e := s.entries[from]; e != nil {
-		if e.topic == j.topic && e.nonce == j.nonce {
-			// A keepalive: stay in line, and hand back a fresh cookie.
-			e.lastSeen = now
-			e.avoid = j.avoid
-			return []Out{{from, encodeQueued(j.nonce, s.currentCookie(from, now), j.topic)}}
+	if e := s.entries[entryKey{from, j.topic}]; e != nil && e.nonce == j.nonce {
+		// A keepalive: stay in line, and hand back a fresh cookie.
+		e.lastSeen = now
+		e.avoid = j.avoid
+		return []Out{{from, encodeQueued(j.nonce, s.currentCookie(from, now), j.topic)}}
+	}
+	// A new search from the same socket replaces the old one, on every topic.
+	for _, e := range append([]*entry(nil), s.byAddr[from]...) {
+		if e.nonce != j.nonce {
+			s.remove(e)
 		}
-		s.remove(e) // a new search from the same socket replaces the old one
 	}
 	me := &entry{addr: from, nonce: j.nonce, topic: j.topic, lan: j.lan, want: j.want,
 		avoid: j.avoid, lastSeen: now}
 	if peer := s.partner(me, now); peer != nil {
-		s.remove(peer)
+		// Both are paired now: neither may be handed out again from another
+		// topic it was also waiting on.
+		s.removeAll(peer.addr)
+		s.removeAll(me.addr)
 		s.matches++
 		return []Out{
 			{me.addr, encodeMatch(s.key, me.nonce, me.topic, peer.addr, peer.lan)},
@@ -179,7 +192,8 @@ func (s *Server) join(j joinRequest, from netip.AddrPort, now time.Time) []Out {
 	if s.perIP[from.Addr()] >= maxPerIP || len(s.entries) >= maxEntries {
 		return nil
 	}
-	s.entries[from] = me
+	s.entries[entryKey{from, me.topic}] = me
+	s.byAddr[from] = append(s.byAddr[from], me)
 	s.queues[me.topic] = append(s.queues[me.topic], me)
 	s.perIP[from.Addr()]++
 	return []Out{{from, encodeQueued(j.nonce, s.currentCookie(from, now), j.topic)}}
@@ -200,11 +214,30 @@ func (s *Server) partner(me *entry, now time.Time) *entry {
 	return nil
 }
 
+func (s *Server) removeAll(addr netip.AddrPort) {
+	for _, e := range append([]*entry(nil), s.byAddr[addr]...) {
+		s.remove(e)
+	}
+}
+
 func (s *Server) remove(e *entry) {
-	if s.entries[e.addr] != e {
+	k := entryKey{e.addr, e.topic}
+	if s.entries[k] != e {
 		return
 	}
-	delete(s.entries, e.addr)
+	delete(s.entries, k)
+	mine := s.byAddr[e.addr]
+	for i, x := range mine {
+		if x == e {
+			mine = append(mine[:i], mine[i+1:]...)
+			break
+		}
+	}
+	if len(mine) == 0 {
+		delete(s.byAddr, e.addr)
+	} else {
+		s.byAddr[e.addr] = mine
+	}
 	q := s.queues[e.topic]
 	for i, x := range q {
 		if x == e {
