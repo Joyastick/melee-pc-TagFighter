@@ -1294,7 +1294,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     const char* why = NULL;
     int state;
     int n;
-    u64 input = gm_GetButtonsTriggered(PAD_MAX_CONTROLLERS);
+    u64 input = gm_GetButtonsTriggered(pc_net_active() ? pc_net_local_player() : PAD_MAX_CONTROLLERS);
     bool keep_lobby = false; /* B was used on this page, not to leave it */
 
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
