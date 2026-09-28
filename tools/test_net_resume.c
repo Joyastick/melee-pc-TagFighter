@@ -1270,14 +1270,14 @@ static void case_window_carries_every_unacked_frame(void) {
     assert(s_tx_pkt_valid);
     assert(s_tx_pkt.first == WROTE - 11 && s_tx_pkt.newest == WROTE);
     assert(s_tx_pkt.count == 12);
-    assert(s_tx_pkt.pads[11].button == (uint16_t)(0x1000 + WROTE));
+    assert(s_tx_pkt.pads[11].pad[0].button == (uint16_t)(0x1000 + WROTE));
     assert(s_red_target == 12);
     /* A span wider than the packet: its oldest REDUNDANCY frames, so the
      * peer's contiguous mark can advance. */
     s_last_acked = WROTE - 50;
     send_inputs();
     assert(s_tx_pkt.first == WROTE - 49 && s_tx_pkt.count == REDUNDANCY);
-    assert(s_tx_pkt.pads[0].button == (uint16_t)(0x1000 + WROTE - 49));
+    assert(s_tx_pkt.pads[0].pad[0].button == (uint16_t)(0x1000 + WROTE - 49));
     /* Nothing unacked: an empty packet at the newest frame, as before. */
     s_last_acked = WROTE;
     send_inputs();
@@ -1292,7 +1292,7 @@ static void case_window_carries_every_unacked_frame(void) {
  * pending, so we confirm through HAVE+8. */
 static void peer_pads_as_predicted(void) {
     for (int32_t f = HAVE + 1; f <= HAVE + 8; f++) {
-        s_remote_ring[f & (RING - 1)].button = (uint16_t)(0x2000 + f);
+        s_remote_ring[f & (RING - 1)].pad[0].button = (uint16_t)(0x2000 + f);
     }
     peer_pads(HAVE + 1, HAVE + 8);
     assert(s_rb_frame < 0);
