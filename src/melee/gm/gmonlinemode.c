@@ -28,7 +28,6 @@
 #include "pc/net.h"
 #include "pc/net_lan.h"
 #include "pc/net_identity.h"
-#include "pc/net_firewall.h"
 #include "pc/net_match.h"
 #include "pc/net_rank_session.h"
 #include "pc/net_rendezvous.h"
@@ -872,12 +871,6 @@ static int direct_contact_count;
 static int direct_contact_cursor; /* -1: the typed code */
 static char direct_typed[DIRECT_CODE_SLOTS + 1];
 
-/* Windows Firewall blocks this melee.exe: the lobby asks before anything
- * starts (net_firewall.h). START continues without it, once per run. */
-static bool firewall_gate;
-static bool firewall_dismissed;
-static void lobbyBegin(void);
-
 /* Reconnect to the last opponent as a Matchmaking (fixed teams, random
  * stage) Direct session: the original host hosts its code, the other side
  * dials it, and the last peer endpoint is tried at once. */
@@ -1165,39 +1158,6 @@ static void directContactAge(char* out, size_t n, int64_t when)
     }
 }
 
-static void firewallFrame(OnlineLobbyView* view, u64 input)
-{
-    int fw = pc_firewall_state();
-    memset(view, 0, sizeof *view);
-    view->title = "NETWORK ACCESS";
-    view->phase = fw == PC_FIREWALL_FAILED ? LOBBY_PHASE_ERROR : LOBBY_PHASE_FOUND;
-    snprintf(view->message, sizeof view->message, "%s",
-             fw == PC_FIREWALL_ASKING ? "Waiting for Windows to allow MeleeVS..." :
-             fw == PC_FIREWALL_FAILED ? "Not allowed. Players may not reach you." :
-                                        "Windows Firewall blocks players from reaching you.");
-    view->hint = fw == PC_FIREWALL_ASKING ? "Answer the Windows prompt" :
-                 "A: allow (asks for admin)    START: skip    B: back";
-    if (fw == PC_FIREWALL_OPEN) {
-        sfxForward();
-        lobbyBegin();
-    } else if (fw == PC_FIREWALL_ASKING) {
-        /* the worker thread is waiting on UAC */
-    } else if (input & HSD_PAD_A) {
-        sfxForward();
-        pc_firewall_allow();
-    } else if (input & HSD_PAD_START) {
-        sfxForward();
-        firewall_dismissed = true;
-        lobbyBegin();
-    } else if (input & (HSD_PAD_B | PAD_CANCEL)) {
-        sfxBack();
-        firewall_gate = false;
-        pc_net_match_stop();
-        gm_ChangeGameModeAfterCurrentScene(GM_MENU);
-        gm_801A4B60();
-    }
-}
-
 /* Slots past the first blank stay blank, so the code is always contiguous. */
 static void directEntrySet(int slot, char c)
 {
@@ -1238,21 +1198,7 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
         profileRefresh();
     } else if (after_match) {
         /* the after-match choice runs in OnFrame */
-    } else if (!firewall_dismissed && pc_firewall_check() != PC_FIREWALL_OPEN) {
-        firewall_gate = true; /* firewallFrame asks first, then lobbyBegin */
-    } else {
-        lobbyBegin();
-    }
-#endif
-}
-
-#ifdef TARGET_PC
-/* What entering the lobby starts, once the firewall question is out of the
- * way (or never came up). */
-static void lobbyBegin(void)
-{
-    firewall_gate = false;
-    if (internetLobby() && online_kind == ONLINE_KIND_DIRECT) {
+    } else if (internetLobby() && online_kind == ONLINE_KIND_DIRECT) {
         /* Ask for the code first: starting on a stale launcher pref is how
          * two players both ended up hosting their own codes forever. */
         if (rematch_direct) {
@@ -1272,8 +1218,8 @@ static void lobbyBegin(void)
         pc_net_set_matchmade(false, NULL); /* LAN keeps the regular MeleeVS CSS */
         pc_lan_start();
     }
-}
 #endif
+}
 
 void gm_Scene_OnlineLobby_OnExit(UNUSED void* unused)
 {
@@ -1409,14 +1355,6 @@ void gm_Scene_OnlineLobby_OnFrame(void)
 
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         gm_801A4B60(); /* on to the CSS (state_css) */
-        return;
-    }
-    if (firewall_gate) {
-        firewallFrame(&view, input);
-        if (!firewall_gate) {
-            return; /* lobbyBegin ran; the lobby draws from next frame */
-        }
-        mnOnlineLobby_Update(&view);
         return;
     }
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {

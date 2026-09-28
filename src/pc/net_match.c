@@ -1462,6 +1462,28 @@ void pc_net_match_idle(void) {
 void pc_net_match_rematch_hint(void) {
     rematch_hint = true;
 }
+/* Windows Firewall only asks about a UDP program once another machine's
+ * packet has been dropped, so on the same network the first connect failed
+ * before any prompt showed. A TCP listen asks at once: open one on the
+ * Online menu, once per run, so Windows' own "allow access" prompt comes
+ * up there (it adds UDP rules too). No prompt once any rule exists. */
+static void firewall_prompt(void) {
+#ifdef _WIN32
+    static bool done;
+    if (done)
+        return;
+    done = true;
+    MatchSocket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET)
+        return;
+    struct sockaddr_in any = {0};
+    any.sin_family = AF_INET;
+    if (!bind(s, (struct sockaddr*)&any, sizeof any) && !listen(s, 1))
+        pc_log_line("match: opened a TCP listener so Windows asks about the firewall now");
+    closesocket(s);
+#endif
+}
+
 void pc_net_match_warm(void) {
     static uint64_t next_attempt;
     if (state == PC_MATCH_SEARCH || state == PC_MATCH_CONNECT || state == PC_MATCH_READY ||
@@ -1475,6 +1497,7 @@ void pc_net_match_warm(void) {
         if (!pc_dht_warm((uint16_t)pc_get_net_port()))
             return;
     }
+    firewall_prompt(); /* after the DHT node: Winsock is up */
     pc_dht_poll();
 }
 int pc_net_match_state(const char** why) {
