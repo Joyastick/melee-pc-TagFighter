@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the pairing server for the VM and install or update it there.
+# For a guided redeploy with checks before and after (tests, key unchanged,
+# live probe), run redeploy-wizard.sh next to this instead.
 #
 #   server/pairing/deploy/deploy.sh ubuntu@<vm-ip> [-i ~/.ssh/meleevs_pairing]
 #
