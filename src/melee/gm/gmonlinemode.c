@@ -1462,13 +1462,28 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                         direct_entry[0]  ? "START: connect    X: edit code    B: back" :
                                            "START: host your code    X: edit code    B: back";
             if (input & HSD_PAD_START) {
-                if (direct_entry[0] && !pc_identity_code_valid(direct_entry)) {
+                /* Only the eight characters after '#' identify a player (a
+                 * bare eight works too, and 0/1/8 read as O/I/B); the name
+                 * before it is just a label. */
+                char suffix[9], name[9];
+                bool parsed = direct_entry[0] &&
+                              pc_identity_parse_code(direct_entry, suffix, name);
+                bool own = parsed &&
+                           strcmp(suffix, pc_identity_code_suffix(
+                                              pc_net_match_local_code())) == 0;
+                if (direct_entry[0] && (!parsed || own)) {
                     sfxBack();
                     /* Held until the code changes: a one-frame message is
                      * invisible, and the player needs to know why nothing
                      * happened. */
-                    snprintf(direct_error, sizeof direct_error,
-                             "%s is not a connect code (NAME#AB2CDE3F)", direct_entry);
+                    if (own) {
+                        snprintf(direct_error, sizeof direct_error,
+                                 "That is your own code");
+                    } else {
+                        snprintf(direct_error, sizeof direct_error,
+                                 "%s is not a connect code (NAME#AB2CDE3F)",
+                                 direct_entry);
+                    }
                     snprintf(view.message, sizeof view.message, "%s", direct_error);
                     pc_log_line("lobby: direct connect rejected '%s'", direct_entry);
                 } else {

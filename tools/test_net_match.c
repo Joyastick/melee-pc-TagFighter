@@ -155,6 +155,10 @@ bool pc_upnp_mapped(struct pc_dht_endpoint* out) {
     (void)out;
     return false;
 }
+bool pc_dht_add_topic(const unsigned char hash[20]) {
+    (void)hash;
+    return true;
+}
 void pc_dht_set_datagram_callback(pc_dht_datagram_fn f, void* c) {
     dht_cb = f;
     dht_ctx = c;
@@ -303,6 +307,31 @@ void pc_net_disconnect(void) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && !strcmp(argv[1], "code")) {
+        puts(pc_net_match_local_code());
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "parse")) {
+        char suffix[9], name[9];
+        assert(pc_identity_parse_code("sian#k3xq-2m7a", suffix, name));
+        assert(!strcmp(suffix, "K3XQ2M7A") && !strcmp(name, "SIAN"));
+        assert(pc_identity_parse_code("FOX#AB0DE1G8", suffix, name) && !strcmp(suffix, "ABODEIGB"));
+        assert(pc_identity_parse_code("just k3xq2m7a", suffix, name) && !name[0]);
+        assert(pc_identity_parse_code("#K3XQ2M7A", suffix, name) && !name[0]);
+        assert(!pc_identity_parse_code("FOX#ABCDEFG", suffix, name));
+        assert(!pc_identity_parse_code("FOX#ABCDEFGHJ", suffix, name));
+        assert(!pc_identity_parse_code("hello there", suffix, name));
+        assert(!strcmp(pc_identity_code_suffix("FOX#K3XQ2M7A"), "K3XQ2M7A"));
+        assert(!strcmp(pc_identity_code_suffix("not a code"), ""));
+        /* Dialling our own code, under any name, is refused before anything
+         * is sent. */
+        local_port = 0;
+        char mine[18];
+        snprintf(mine, sizeof mine, "OTHER#%s", pc_identity_code_suffix(pc_net_match_local_code()));
+        assert(!pc_net_match_start(PC_MATCH_DIRECT, mine));
+        puts("parse ok");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "cancel")) {
         local_port = 0;
         assert(
@@ -325,8 +354,11 @@ int main(int argc, char** argv) {
          * server's MATCH can bring the two processes together. */
         if (getenv("MATCH_NO_CANDIDATE"))
             candidate = 0;
-        assert(
-            pc_net_match_start(getenv("MATCH_RANKED") ? PC_MATCH_RANKED : PC_MATCH_UNRANKED, ""));
+        if (getenv("MATCH_DIAL"))
+            assert(pc_net_match_start(PC_MATCH_DIRECT, getenv("MATCH_DIAL")));
+        else
+            assert(pc_net_match_start(
+                getenv("MATCH_RANKED") ? PC_MATCH_RANKED : PC_MATCH_UNRANKED, ""));
         /* Both players accept the opponent they are offered; in the decline
          * run P0 declines instead, and both must end up searching again. */
         bool decline = getenv("MATCH_DECLINE") != NULL;
@@ -364,6 +396,12 @@ int main(int argc, char** argv) {
             return 0;
         }
         assert(pc_net_match_state(NULL) == PC_MATCH_READY);
+        if (getenv("MATCH_DIAL")) {
+            /* The opponent is remembered, by the code their Hello carried. */
+            PcNetContact c[PC_NET_CONTACTS_MAX];
+            assert(pc_net_match_contacts(c, PC_NET_CONTACTS_MAX) == 1);
+            assert(!strcmp(c[0].code, pc_net_match_opponent_code()));
+        }
         /* Loopback keeps one port for both server ports: a normal NAT. */
         if (getenv("MATCH_NO_CANDIDATE"))
             assert(pc_rdv_nat() == PC_RDV_NAT_OK);
@@ -488,9 +526,9 @@ int main(int argc, char** argv) {
     h.code[strlen(h.code) - 1] ^= 1;
     assert(!key_code_matches(h.public_key, h.code));
 
-    /* Direct connect record: bound to the host's code, its signature and
-     * freshness; the slot key is derived from the code alone. */
-    snprintf(target, sizeof target, "%s", identity.code);
+    /* Direct connect record: bound to the host's key suffix, its signature
+     * and freshness; the slot key is derived from the suffix alone. */
+    key_suffix(identity.public_key, target_suffix);
     uint8_t record[DIRECT_RECORD_BYTES];
     memcpy(record, "MPD1", 4);
     memcpy(record + 4, identity.public_key, 32);
@@ -518,9 +556,9 @@ int main(int argc, char** argv) {
     assert(!direct_record_read(record, sizeof record, &found, &lan)); /* stale */
     put_be(record + 42, (uint64_t)time(NULL), 8);
     pc_identity_sign(&identity, record + DIRECT_SIGNED_BYTES, record, DIRECT_SIGNED_BYTES);
-    target[strlen(target) - 1] ^= 1; /* someone else's code */
+    target_suffix[7] ^= 1; /* someone else's code */
     assert(!direct_record_read(record, sizeof record, &found, &lan));
-    target[0] = 0;
+    target_suffix[0] = 0;
     /* Hello targets dedupe and stay bounded. */
     hello_target_count = hello_target_cursor = 0;
     for (unsigned i = 0; i < HELLO_TARGETS + 2; i++)
@@ -529,12 +567,12 @@ int main(int argc, char** argv) {
     assert(hello_target_count == HELLO_TARGETS);
     hello_target_count = 0;
     PcNetIdentity slot_a, slot_b;
-    direct_slot_for("HOST#AAAAAAAA");
+    direct_slot_for("AAAAAAAA");
     slot_a = direct_slot;
-    direct_slot_for("HOST#AAAAAAAA");
+    direct_slot_for("AAAAAAAA");
     slot_b = direct_slot;
     assert(!memcmp(slot_a.public_key, slot_b.public_key, 32));
-    direct_slot_for("HOST#AAAAAAAB");
+    direct_slot_for("AAAAAAAB");
     assert(memcmp(slot_a.public_key, direct_slot.public_key, 32));
     char file[512];
     /* The host's code also names a separate dial-back slot. */

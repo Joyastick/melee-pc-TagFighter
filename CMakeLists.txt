@@ -578,6 +578,12 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
         set_tests_properties(net_match_decline PROPERTIES LABELS melee TIMEOUT 60
             ENVIRONMENT "MATCH_DECLINE=1")
+        # Direct Connect: both players dial each other, one with the wrong
+        # name; they meet by key suffix and each saves the other as a contact.
+        add_test(NAME net_match_direct COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_direct PROPERTIES LABELS melee TIMEOUT 60
+            ENVIRONMENT "MATCH_DIRECT=1")
         # Pairing server (server/pairing, Go): its own tests, and two clients
         # pairing through it with no DHT candidates. Skipped without Go.
         add_test(NAME net_match_pairing_server COMMAND ${Python3_EXECUTABLE}

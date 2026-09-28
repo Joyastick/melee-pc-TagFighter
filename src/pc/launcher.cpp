@@ -63,27 +63,19 @@ std::string copy_connect_code() {
         return "";
     return code;
 }
-/* The clipboard as the friend's code: spaces dropped, upper-cased, and only
- * taken when it is a whole connect code (NAME#XXXXXXXX). */
+/* The clipboard as the friend's code: the first connect code anywhere in the
+ * text (a chat line works), any case, with 0/1/8 read as O/I/B, stored as
+ * NAME#XXXXXXXX (or #XXXXXXXX: only the part after '#' has to be right). */
 bool paste_connect_code() {
     char* clip = SDL_GetClipboardText();
     if (!clip)
         return false;
-    std::string value;
-    bool ok = true;
-    for (const char* c = clip; *c && ok; c++) {
-        char ch = *c;
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
-            continue;
-        if (ch >= 'a' && ch <= 'z')
-            ch -= 'a' - 'A';
-        ok = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '#';
-        value += ch;
-    }
+    char suffix[9], name[9];
+    bool ok = pc_identity_parse_code(clip, suffix, name);
     SDL_free(clip);
-    if (!ok || value.size() > 17 || !pc_identity_code_valid(value.c_str()))
+    if (!ok)
         return false;
-    prefs.net_target = value;
+    prefs.net_target = std::string(name) + "#" + suffix;
     return true;
 }
 bool change_online(Rml::Event& event) {
