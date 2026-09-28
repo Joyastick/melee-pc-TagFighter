@@ -140,9 +140,13 @@ void pc_dht_idle(void) {
     pc_dht_item_cancel();
     dht_cb = NULL;
 }
+static uint32_t external_ip; /* network order; 0: not learned */
 bool pc_dht_external_endpoint(struct pc_dht_endpoint* out) {
-    (void)out;
-    return false;
+    if (!external_ip)
+        return false;
+    out->address = external_ip;
+    out->port = 1;
+    return true;
 }
 void pc_upnp_want(uint16_t port) {
     (void)port;
@@ -462,6 +466,12 @@ int main(int argc, char** argv) {
     assert(hello_source_ok(&h, htonl(0x0A0B0C0Du)));  /* its public IP */
     assert(hello_source_ok(&h, htonl(0xC0A80105u)));  /* its LAN IP */
     assert(!hello_source_ok(&h, htonl(0x1FD9B0CBu))); /* a relay */
+    /* Double NAT: same public IP as ours, arriving via the inner router. */
+    assert(!hello_source_ok(&h, htonl(0xC0A80095u)));
+    external_ip = htonl(0x0A0B0C0Du);
+    assert(hello_source_ok(&h, htonl(0xC0A80095u)));  /* private: same household */
+    assert(!hello_source_ok(&h, htonl(0x1FD9B0CBu))); /* public relay still not */
+    external_ip = 0;
     h.from_public = 0;
     assert(hello_source_ok(&h, htonl(0x7F000001u)));  /* unknown yet: loopback ok */
     assert(!hello_source_ok(&h, htonl(0x1FD9B0CBu))); /* unknown yet: internet not */

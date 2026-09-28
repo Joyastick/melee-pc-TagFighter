@@ -876,6 +876,11 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
         return true;
     if (h->from_lan && source == h->from_lan)
         return true;
+    /* Double NAT at home (a mesh router behind the ISP's): the Hello arrives
+     * from the inner router's address, which neither signed IP names. Only a
+     * machine behind our own public IP can reach us from a private address. */
+    if (h->from_public && same_public_ip(h->from_public))
+        return private_ip(source);
     return !h->from_public && private_ip(source);
 }
 /* Fill in (and re-sign for) our own addresses once they are known. */
