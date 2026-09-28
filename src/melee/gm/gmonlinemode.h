@@ -86,9 +86,11 @@ typedef struct OnlineLobbyView {
     /* Matchmaking: our team and, once matched, the opponent's, one line
      * each above the status line ("" hides it). */
     char team[2][ONLINE_LOBBY_MSG_LEN];
-    /* Direct Connect: recent opponents in the rows below "YOU" (rows
-     * 1 to ONLINE_LOBBY_CONTACTS), each code with how long ago it was
-     * played; the one under the cursor is highlighted. */
+    /* Direct Connect: recent opponents below "YOU", split from it by a
+     * rule, under contact_title (row 1; NULL: no list at all), one per row
+     * from row 2, each code with how long ago it was played; the one under
+     * the cursor is highlighted. */
+    const char* contact_title;
     int contact_count;
     char contact_code[ONLINE_LOBBY_CONTACTS][ONLINE_LOBBY_NAME_LEN];
     char contact_when[ONLINE_LOBBY_CONTACTS][16];

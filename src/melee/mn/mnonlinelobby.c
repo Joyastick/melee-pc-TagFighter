@@ -55,6 +55,7 @@ static HSD_Text* lobby_text;
 static Line lines[line_count];
 static int lobby_frame;
 static bool lobby_error_tint;
+static bool lobby_contacts; /* the Direct Connect list is up: drawPanel rules it off */
 
 static GXColor col_white = { 0xFF, 0xFF, 0xFF, 0xFF };
 static GXColor col_dim = { 0xB0, 0xB0, 0xB0, 0xFF };
@@ -118,6 +119,10 @@ static void drawPanel(UNUSED HSD_GObj* gobj, int pass)
     DrawRectangle(32.0f, -456.0f, 576.0f, 432.0f, &panel);
     DrawRectangle(48.0f, -98.0f, 544.0f, 2.0f, &rule);
     DrawRectangle(48.0f, -390.0f, 544.0f, 2.0f, &rule_dim);
+    if (lobby_contacts) {
+        /* Between row 0 ("YOU" and our code) and the contacts' title. */
+        DrawRectangle(48.0f, -(ROW_Y0 + ROW_DY - 6.0f), 544.0f, 1.0f, &rule_dim);
+    }
 }
 
 void mnOnlineLobby_Create(void)
@@ -189,6 +194,7 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
         return;
     }
     lobby_frame++;
+    lobby_contacts = view->contact_title != NULL && view->menu_count == 0;
     setLine(&lines[line_title], view->title != NULL ? view->title : "");
 
     for (i = 0; i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
@@ -220,14 +226,29 @@ void mnOnlineLobby_Update(const OnlineLobbyView* view)
                 buf[0] = '\0';
             }
             setLine(&row[3], buf);
-        } else if (i >= 1 && i - 1 < view->contact_count) {
-            int c = i - 1;
+        } else if (view->contact_title != NULL && i == 1) {
+            /* The subtitle spans the name columns; row[0] is the narrow
+             * "YOU" column, so it goes in the name line. */
             setLine(&row[0], "");
-            sanitizeName(buf, ONLINE_LOBBY_NAME_LEN, view->contact_code[c]);
-            setLine(&row[1], buf);
-            setColor(&row[1], c == view->contact_cursor ? &col_you : &col_dim);
+            setLine(&row[1], view->contact_title);
+            setColor(&row[1], &col_host);
             setLine(&row[2], "");
-            setLine(&row[3], view->contact_when[c]);
+            setLine(&row[3], "");
+        } else if (view->contact_title != NULL && i >= 2 &&
+                   (i - 2 < view->contact_count ||
+                    (i == 2 && view->contact_count == 0))) {
+            int c = i - 2;
+            bool none = view->contact_count == 0;
+            setLine(&row[0], "");
+            if (none) {
+                snprintf(buf, sizeof(buf), "None yet");
+            } else {
+                sanitizeName(buf, ONLINE_LOBBY_NAME_LEN, view->contact_code[c]);
+            }
+            setLine(&row[1], buf);
+            setColor(&row[1], !none && c == view->contact_cursor ? &col_you : &col_dim);
+            setLine(&row[2], "");
+            setLine(&row[3], none ? "" : view->contact_when[c]);
         } else {
             setLine(&row[0], "");
             setLine(&row[1], "");

@@ -1509,6 +1509,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 snprintf(view.message, sizeof view.message, "Friend's code: %s",
                          direct_entry[0] ? direct_entry : "none");
             }
+            view.contact_title = "RECENT OPPONENTS";
             view.contact_count = direct_contact_count;
             view.contact_cursor = direct_contact_cursor;
             for (int i = 0; i < direct_contact_count; i++) {
