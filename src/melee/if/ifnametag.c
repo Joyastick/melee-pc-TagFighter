@@ -2,6 +2,7 @@
 
 #include "forward.h"
 #include "ifall.h"
+#include <string.h>
 #include <dolphin/mtx.h>
 #include <melee/cm/camera.h>
 #include <melee/gm/gm_unsplit.h>
@@ -22,6 +23,8 @@
 #include <sysdolphin/baselib/gobjplink.h>
 #include <sysdolphin/baselib/gobjproc.h>
 #include <sysdolphin/baselib/gobjuserdata.h>
+#include <sysdolphin/baselib/hsd_3915.h>
+#include <sysdolphin/baselib/state.h>
 #include <sysdolphin/baselib/jobj.h>
 #include <sysdolphin/baselib/lobj.h>
 #include <sysdolphin/baselib/memory.h>
@@ -149,8 +152,76 @@ float un_802FC9B4(unsigned char slot, unsigned char arg1, unsigned char arg2,
 #pragma pop
 #endif
 
+#define TAG_LABEL_SCALE 0.85f ///< overall size of Tag Battle labels
+static inline float label_scale(int slot)
+{
+    return TagAssist_IsTagBattleOn() && slot < 4 ? TAG_LABEL_SCALE : 1.0f;
+}
+
+/// Length of each slot's currently-drawn text, for sizing its backing bar.
+static int s_lastNametagLen[Gm_Player_NumMax];
+
+/// Text color of the point port's nametag, by Player_GetTeam (Red, Blue,
+/// Green). The assist stays white. Both sit on a dark backing bar (see
+/// NameTag_RenderCallback) so the color reads on any stage.
+static const GXColor s_teamTextColor[3] = {
+    { 255, 90, 90, 255 },
+    { 100, 160, 255, 255 },
+    { 90, 225, 100, 255 },
+};
+static const GXColor s_whiteTextColor = { 255, 255, 255, 255 };
+
+/// Set each frame by fn_802FCC44: whether slot's Tag Battle label (and so its
+/// backing bar and arrow) is on screen.
+static bool s_barVisible[Gm_Player_NumMax];
+
+/// Backing bar behind a Tag Battle label: width = pad + per-char * text
+/// length; TOP/HEIGHT are screen units below the SIS text's y. The stock
+/// plate (box + arrow) is hidden in Tag Battle and replaced by this bar and
+/// a triangle arrow drawn below it. Tuning knobs.
+#define TAG_BAR_PAD (18.0f * TAG_LABEL_SCALE)
+#define TAG_BAR_PER_CHAR (10.7f * TAG_LABEL_SCALE)
+#define TAG_BAR_HEIGHT (22.0f * TAG_LABEL_SCALE)
+#define TAG_BAR_TOP (22.3f - TAG_BAR_HEIGHT * 0.5f) ///< text centre stays ~22 below its y at any scale
+#define TAG_BAR_TEXT_DY 56.0f ///< SIS y is this far above the plate origin
+#define TAG_ARROW_GAP (4.0f * TAG_LABEL_SCALE)
+#define TAG_ARROW_HEIGHT (12.0f * TAG_LABEL_SCALE)
+#define TAG_ARROW_HALF_WIDTH (12.5f * TAG_LABEL_SCALE)
+
 static void NameTag_RenderCallback(HSD_GObj* gobj, int pass)
 {
+    u8 slot = *(u8*) HSD_GObjGetUserData(gobj);
+    HSD_JObj* jobj = gobj->hsd_obj;
+    if (pass == 0 && TagAssist_IsTagBattleOn() && slot < 4 &&
+        s_barVisible[slot])
+    {
+        static const GXColor bar = { 0, 0, 0, 0xB0 };
+        static const GXColor assistArrow = { 200, 200, 200, 255 };
+        const GXColor* arrow = &assistArrow;
+        float w = TAG_BAR_PAD + TAG_BAR_PER_CHAR * s_lastNametagLen[slot];
+        float cx = jobj->translate.x;
+        // The plate's translate is (screen x, -screen y); the text sits
+        // TAG_BAR_TEXT_DY above that, and GX y grows upward.
+        float top = jobj->translate.y + TAG_BAR_TEXT_DY - TAG_BAR_TOP;
+        float bottom = top - TAG_BAR_HEIGHT;
+        float tri_top = bottom - TAG_ARROW_GAP;
+        int team = Player_GetTeam(slot);
+        if (TagAssist_IsPortCurrentlyPoint(slot) && team >= 0 && team < 3) {
+            arrow = &s_teamTextColor[team];
+        }
+        hsd_80391A04(1.0f, 1.0f, 1);
+        DrawRectangle(cx - w * 0.5f, bottom, w, TAG_BAR_HEIGHT,
+                      (GXColor*) &bar);
+        GXBegin(GX_TRIANGLES, GX_VTXFMT0, 3);
+        GXPosition2f32(cx - TAG_ARROW_HALF_WIDTH, tri_top);
+        GXColor4u8(arrow->r, arrow->g, arrow->b, arrow->a);
+        GXPosition2f32(cx + TAG_ARROW_HALF_WIDTH, tri_top);
+        GXColor4u8(arrow->r, arrow->g, arrow->b, arrow->a);
+        GXPosition2f32(cx, tri_top - TAG_ARROW_HEIGHT);
+        GXColor4u8(arrow->r, arrow->g, arrow->b, arrow->a);
+        GXEnd();
+        HSD_StateInvalidate(-1);
+    }
     HSD_GObj_JObjCallback(gobj, pass);
 }
 
@@ -181,10 +252,16 @@ static inline bool has_nametag(int slot)
 /// the called-out assist) only show while an assist is actually out on
 /// screen -- there's nothing to disambiguate when it's just the one
 /// character on screen, so no tag clutters the HUD the rest of the time.
+/// Frames left of the "Assist Ready" badge over a point character, started
+/// when its team's assist becomes ready (see fn_802FCC44).
+#define TAG_READY_BADGE_FRAMES 120
+static u16 s_readyBadge[Gm_Player_NumMax];
+static bool s_wasReady[Gm_Player_NumMax];
+
 static inline bool nametag_should_show(int slot)
 {
     if (TagAssist_IsTagBattleOn() && slot < 4) {
-        return TagAssist_IsAssistOut(slot);
+        return TagAssist_IsAssistOut(slot) || s_readyBadge[slot] > 0;
     }
     return has_nametag(slot);
 }
@@ -245,8 +322,8 @@ void un_802FCBA0(void)
 /// TAG_MAX_TAGS_PER_CALL is a single digit, so N is always one char.
 static char s_pointText[Gm_Player_NumMax][9];
 
-/// One buffer per slot for the assist countdown digit.
-static char s_countdownText[Gm_Player_NumMax][4];
+/// One buffer per slot for the assist's "Assist: 3.4" text.
+static char s_countdownText[Gm_Player_NumMax][12];
 
 /// The point port shows "Point" followed by how many more tags
 /// TAG_MAX_TAGS_PER_CALL still allows this call, e.g. "Point: 2" -- put here
@@ -279,6 +356,11 @@ static char s_countdownText[Gm_Player_NumMax][4];
 static const char* GetNametagText(int slot)
 {
     if (TagAssist_IsTagBattleOn() && slot < 4) {
+        if (TagAssist_IsPortCurrentlyPoint(slot) &&
+            !TagAssist_IsAssistOut(slot))
+        {
+            return "Assist Ready";
+        }
         if (TagAssist_IsPortCurrentlyPoint(slot)) {
             u8 tagsRemaining = TagAssist_GetTagsRemaining(slot);
             char* out = s_pointText[slot];
@@ -297,16 +379,17 @@ static const char* GetNametagText(int slot)
             u32 framesLeft = TagAssist_GetAssistFramesLeft(slot);
             u32 tenths;
             if (framesLeft == 0) {
-                return "...";
+                return "Assist: ...";
             }
             // 60 frames/sec -- convert to tenths of a second so the display
             // still fits a single digit before the point (max is 5.0s,
             // ASSIST_DURATION_FRAMES).
             tenths = (framesLeft * 10 + 59) / 60;
-            s_countdownText[slot][0] = (char) ('0' + (tenths / 10) % 10);
-            s_countdownText[slot][1] = '.';
-            s_countdownText[slot][2] = (char) ('0' + tenths % 10);
-            s_countdownText[slot][3] = '\0';
+            memcpy(s_countdownText[slot], "Assist: ", 8);
+            s_countdownText[slot][8] = (char) ('0' + (tenths / 10) % 10);
+            s_countdownText[slot][9] = '.';
+            s_countdownText[slot][10] = (char) ('0' + tenths % 10);
+            s_countdownText[slot][11] = '\0';
             return s_countdownText[slot];
         }
     }
@@ -331,9 +414,11 @@ static const char* GetNametagText(int slot)
 /// times a second.
 static int nametag_content_key(int slot)
 {
-    if (!TagAssist_IsTagBattleOn() || slot >= 4 || !TagAssist_IsAssistOut(slot))
-    {
+    if (!TagAssist_IsTagBattleOn() || slot >= 4) {
         return -1;
+    }
+    if (!TagAssist_IsAssistOut(slot)) {
+        return s_readyBadge[slot] > 0 ? 300 : -1;
     }
     if (TagAssist_IsPortCurrentlyPoint(slot)) {
         return (int) (100 + TagAssist_GetTagsRemaining(slot));
@@ -364,8 +449,21 @@ static int s_lastNametagKey[Gm_Player_NumMax];
 /// in-place, so repeated calls don't leak.
 static void nametag_update_text(int slot)
 {
-    HSD_SisLib_803A70A0(un_804D6D78, un_804A1EF8[slot],
-                        (char*) GetNametagText(slot));
+    const char* text = GetNametagText(slot);
+    int len = 0;
+    while (text[len] != '\0') {
+        len++;
+    }
+    s_lastNametagLen[slot] = len;
+    HSD_SisLib_803A70A0(un_804D6D78, un_804A1EF8[slot], (char*) text);
+    if (TagAssist_IsTagBattleOn() && slot < 4) {
+        int team = Player_GetTeam(slot);
+        HSD_SisLib_803A74F0(un_804D6D78, un_804A1EF8[slot],
+                            (GXColor*) (TagAssist_IsPortCurrentlyPoint(slot) &&
+                                                team >= 0 && team < 3
+                                            ? &s_teamTextColor[team]
+                                            : &s_whiteTextColor));
+    }
 }
 
 void fn_802FCC44(HSD_GObj* gobj)
@@ -375,6 +473,18 @@ void fn_802FCC44(HSD_GObj* gobj)
     u8* slot = HSD_GObjGetUserData(gobj);
     HSD_JObj* jobj = gobj->hsd_obj;
     PAD_STACK(8);
+    if (TagAssist_IsTagBattleOn() && *slot < 4) {
+        bool ready = TagAssist_IsPortCurrentlyPoint(*slot) &&
+                     TagAssist_IsAssistReady(*slot);
+        if (!ready) {
+            s_readyBadge[*slot] = 0;
+        } else if (!s_wasReady[*slot]) {
+            s_readyBadge[*slot] = TAG_READY_BADGE_FRAMES;
+        } else if (s_readyBadge[*slot] > 0) {
+            s_readyBadge[*slot]--;
+        }
+        s_wasReady[*slot] = ready;
+    }
     if (has_nametag(*slot)) {
         int key = nametag_content_key(*slot);
         if (key != s_lastNametagKey[*slot]) {
@@ -389,16 +499,13 @@ void fn_802FCC44(HSD_GObj* gobj)
          nametag_should_show(*slot)))
     {
         HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
+        s_barVisible[*slot] = nametag_should_show(*slot);
         if (TagAssist_IsTagBattleOn() && *slot < 4) {
-            // Tag Battle's "Point"/countdown text is drawn entirely through
-            // the separate SIS text overlay below, which doesn't read this
-            // jobj's transform or hidden flag at all -- so hiding the
-            // shared nametag model's plate mesh here just removes the
-            // background box, leaving the text (and its own positioning)
-            // completely unaffected.
+            // Replaced by our own bar and arrow (NameTag_RenderCallback).
             HSD_JObjSetFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
         }
     } else {
+        s_barVisible[*slot] = false;
         HSD_JObjSetFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
         if (has_nametag(*slot)) {
             HSD_SisLib_803A746C(un_804D6D78, un_804A1EF8[*slot], -5000.0f,
@@ -456,8 +563,8 @@ void NameTag_Create(int slot)
                 un_804A1EF8[slot] = HSD_SisLib_803A6B98(
                     un_804D6D78, -5000.0f, 0.0f, GetNametagText(slot));
                 HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
-                                    NAMETAG_DEFAULT_SCALE_X,
-                                    NAMETAG_DEFAULT_SCALE_Y);
+                                    NAMETAG_DEFAULT_SCALE_X * label_scale(slot),
+                                    NAMETAG_DEFAULT_SCALE_Y * label_scale(slot));
             }
             HSD_JObjReqAnimAll(jobj, f);
         }
@@ -485,7 +592,8 @@ void un_802FD28C(int slot)
             HSD_SisLib_803A6B98(un_804D6D78, -5000.0f, 0.0f,
                                 GetNametagText(slot));
         HSD_SisLib_803A7548(un_804D6D78, un_804A1EF8[slot],
-                            NAMETAG_DEFAULT_SCALE_X, NAMETAG_DEFAULT_SCALE_Y);
+                            NAMETAG_DEFAULT_SCALE_X * label_scale(slot),
+                            NAMETAG_DEFAULT_SCALE_Y * label_scale(slot));
     }
     HSD_JObjReqAnimAll(jobj, f);
     HSD_JObjAnimAll(jobj);
@@ -544,6 +652,8 @@ void un_802FD4C8(void)
     }
     un_804D6D68 = NULL;
     un_804D6D6C = 0;
+    memzero(s_readyBadge, sizeof(s_readyBadge));
+    memzero(s_wasReady, sizeof(s_wasReady));
     memzero(un_804D6D70, i = sizeof(un_804D6D70));
     un_804D6D68 = (gobj = un_802FD4C8_inline(15));
     DP_SET(nametag_CObjDesc.eyepos, &nametag_eyepos);
@@ -561,5 +671,122 @@ void un_802FD4C8(void)
     un_802FCBA0();
     for (i = 0; i < Gm_Player_NumMax; i++) {
         NameTag_Create(i);
+    }
+}
+
+/// "Assist Ready" under the HUD percent of a team's benched assist. Same
+/// recipe as ifnet.c: a SIS canvas parented to the HUD camera, entry
+/// coordinates in HUD world units (origin screen centre, y down, 1 unit =
+/// 10 logical px); the glyph cell's bottom edge sits at entry y + 32.
+/// Tuning knobs: X is taken from the port's HUD position, Y is where the
+/// text's cell bottom sits (screen bottom edge is 24).
+#define READY_HUD_SCALE 0.045f
+#define READY_HUD_CELL_BOTTOM 23.0f
+#define READY_HUD_OFFSCREEN -5000.0f
+
+/// Backing plate, in HUD world units (y up here, so the text's entry y is
+/// negated): width and height. The plate is drawn by its own gobj on the
+/// same HUD gx link, created before the text canvas so it draws underneath
+/// it. Tuning knobs.
+#define READY_HUD_PLATE_W 12.5f
+#define READY_HUD_PLATE_H 2.2f
+#define READY_HUD_PLATE_CELL_H (32.0f * READY_HUD_SCALE)
+
+static struct {
+    HSD_GObj* gobj;
+    HSD_GObj* plate_gobj;
+    HSD_Text* text;
+    int entry[4];
+    bool shown[4];
+} s_readyHud;
+
+static void ReadyHud_DrawPlates(HSD_GObj* gobj, int pass)
+{
+    static const GXColor plate = { 0, 0, 0, 0xB0 };
+    int i;
+    (void) gobj;
+    if (pass != 0) {
+        return;
+    }
+    hsd_80391A04(1.0f, 1.0f, 1);
+    for (i = 0; i < 4; i++) {
+        float cy;
+        if (!s_readyHud.shown[i]) {
+            continue;
+        }
+        // Cell centre in entry coordinates, then to world y (entry y is down).
+        cy = READY_HUD_CELL_BOTTOM - READY_HUD_PLATE_CELL_H * 0.5f;
+        DrawRectangle(ifAll_GetPlayerHUDPosition(i)->x -
+                          READY_HUD_PLATE_W * 0.5f,
+                      -cy - READY_HUD_PLATE_H * 0.5f, READY_HUD_PLATE_W,
+                      READY_HUD_PLATE_H, (GXColor*) &plate);
+    }
+    HSD_StateInvalidate(-1);
+}
+
+static void ReadyHud_Think(HSD_GObj* gobj)
+{
+    int i;
+    (void) gobj;
+    for (i = 0; i < 4; i++) {
+        bool show = TagAssist_IsTagBattleOn() && !ifAll_IsHUDHidden() &&
+                    !TagAssist_IsPortCurrentlyPoint(i) &&
+                    TagAssist_IsAssistReady(i);
+        if (show) {
+            HSD_SisLib_803A746C(s_readyHud.text, s_readyHud.entry[i],
+                                ifAll_GetPlayerHUDPosition(i)->x,
+                                READY_HUD_CELL_BOTTOM - 32.0f);
+        } else if (s_readyHud.shown[i]) {
+            HSD_SisLib_803A746C(s_readyHud.text, s_readyHud.entry[i],
+                                READY_HUD_OFFSCREEN, 0.0f);
+        }
+        s_readyHud.shown[i] = show;
+    }
+}
+
+void NameTag_ReadyHudCreate(void)
+{
+    static const GXColor green = { 120, 255, 140, 255 };
+    int canvas;
+    int i;
+    s_readyHud.text = NULL;
+    s_readyHud.gobj = NULL;
+    s_readyHud.plate_gobj = NULL;
+    if (!TagAssist_IsTagBattleOn()) {
+        return;
+    }
+    s_readyHud.plate_gobj = GObj_Create(HSD_GOBJ_CLASS_UI, 15, 0);
+    GObj_SetupGXLink(s_readyHud.plate_gobj, ReadyHud_DrawPlates, 11, 0);
+    canvas = HSD_SisLib_803A611C(2, ifAll_GetHUDGObj(), HSD_GOBJ_CLASS_UI, 15,
+                                 0, 11, 0, 19);
+    s_readyHud.text = HSD_SisLib_803A6754(2, canvas);
+    s_readyHud.text->default_kerning = 1;
+    s_readyHud.text->default_alignment = 1;
+    for (i = 0; i < 4; i++) {
+        s_readyHud.shown[i] = false;
+        s_readyHud.entry[i] = HSD_SisLib_803A6B98(
+            s_readyHud.text, READY_HUD_OFFSCREEN, 0.0f, "Assist Ready");
+        HSD_SisLib_803A7548(s_readyHud.text, s_readyHud.entry[i],
+                            READY_HUD_SCALE, READY_HUD_SCALE);
+        HSD_SisLib_803A74F0(s_readyHud.text, s_readyHud.entry[i],
+                            (GXColor*) &green);
+    }
+    s_readyHud.gobj = GObj_Create(HSD_GOBJ_CLASS_UI, 15, 0);
+    HSD_GObj_SetupProc(s_readyHud.gobj, ReadyHud_Think, 17);
+}
+
+void NameTag_ReadyHudFree(void)
+{
+    if (s_readyHud.plate_gobj != NULL) {
+        HSD_GObjFree(s_readyHud.plate_gobj);
+        s_readyHud.plate_gobj = NULL;
+    }
+    if (s_readyHud.gobj != NULL) {
+        HSD_GObjFree(s_readyHud.gobj);
+        s_readyHud.gobj = NULL;
+    }
+    if (s_readyHud.text != NULL) {
+        HSD_SisLib_803A5CC4(s_readyHud.text);
+        s_readyHud.text = NULL;
     }
 }

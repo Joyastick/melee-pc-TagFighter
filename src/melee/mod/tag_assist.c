@@ -2351,6 +2351,27 @@ bool TagAssist_IsAssistOut(int port)
     return team->initialized && team->assist_out;
 }
 
+bool TagAssist_IsAssistReady(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return false;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return false;
+    }
+    team = &sTeams[color];
+    if (!team->initialized || team->assist_out || team->point_eliminated ||
+        team->assist == NULL || sFrameCounter < team->ready_frame)
+    {
+        return false;
+    }
+    return Player_GetStocks(GET_FIGHTER(team->assist)->player_id) > 0;
+}
+
 u32 TagAssist_GetAssistFramesLeft(int port)
 {
     u8 color;
