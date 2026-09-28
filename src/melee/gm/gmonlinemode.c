@@ -1294,7 +1294,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     const char* why = NULL;
     int state;
     int n;
-    u64 input = gm_GetButtonsTriggered(pc_net_active() ? pc_net_local_player() : PAD_MAX_CONTROLLERS);
+    /* Live session: this machine's own game port only (pc_net_game_port:
+     * host 1 / guest 2 for Direct and LAN, host 1 / guest 3 for
+     * Matchmaking), so the peer's synced presses cannot drive this lobby. */
+    u64 input = gm_GetButtonsTriggered(
+        pc_net_active() ? (u8) pc_net_game_port(pc_net_local_player(), 0) : PAD_MAX_CONTROLLERS);
     bool keep_lobby = false; /* B was used on this page, not to leave it */
 
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
