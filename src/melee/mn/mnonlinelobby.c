@@ -120,8 +120,10 @@ static void drawPanel(UNUSED HSD_GObj* gobj, int pass)
     DrawRectangle(48.0f, -98.0f, 544.0f, 2.0f, &rule);
     DrawRectangle(48.0f, -390.0f, 544.0f, 2.0f, &rule_dim);
     if (lobby_contacts) {
-        /* Between row 0 ("YOU" and our code) and the contacts' title. */
-        DrawRectangle(48.0f, -(ROW_Y0 + ROW_DY - 6.0f), 544.0f, 1.0f, &rule_dim);
+        /* Between row 0 ("YOU" and our code) and the contacts' title. SIS
+         * text draws below its y (a row's glyphs span about y+14 to y+32),
+         * so this is the middle of the gap, not of the row pitch. */
+        DrawRectangle(48.0f, -(ROW_Y0 + ROW_DY + 7.0f), 544.0f, 1.0f, &rule_dim);
     }
 }
 
