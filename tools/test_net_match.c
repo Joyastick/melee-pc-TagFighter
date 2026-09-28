@@ -386,7 +386,10 @@ int main(int argc, char** argv) {
             puts(declines ? "declined" : "was declined");
             return 0;
         }
-        assert(prompted && ping >= 0);
+        /* A direct dial auto-accepts (net_match.c: prompting = mode !=
+         * PC_MATCH_DIRECT), so it never surfaces a pending offer to decide
+         * on; everything else still goes through the accept/decline prompt. */
+        assert(getenv("MATCH_DIAL") ? !prompted : (prompted && ping >= 0));
         if (getenv("MATCH_PROOF_TIMEOUT") || getenv("MATCH_PROOF_MISMATCH")) {
             assert(pc_net_match_state(NULL) == PC_MATCH_FAIL);
             assert(game_fd < 0);
