@@ -421,7 +421,7 @@ class Launcher final : public Rml::EventListener {
         } else if (ustate.status == pc::updater::Status::Failed) {
             text("check-status", ustate.message);
         } else {
-            text("check-status", "MeleeVS is up to date (" + pc::get_app_version() + ").");
+            text("check-status", "MeleeVS is up to date (" + pc::get_display_version() + ").");
         }
         notice();
         quiet = false;
@@ -773,9 +773,9 @@ public:
         document->AddEventListener(Rml::EventId::Keydown, this);
         document->AddEventListener(Rml::EventId::Change, this);
         document->Show();
-        text("app-version", pc::get_app_version());
+        text("app-version", pc::get_display_version());
         text("upstream-version", pc::get_upstream_pc_version());
-        text("check-status", "Current version: " + pc::get_app_version());
+        text("check-status", "Current version: " + pc::get_display_version());
         if (prefs.check_updates) {
             pc::updater::check_for_updates_async(true);
         }
@@ -1444,7 +1444,7 @@ public:
         label("fps", prefs.fps ? "On" : "Off");
         slider("scale", prefs.scale * 100.0f);
         label("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
-        label("menu-version", pc::get_app_version());
+        label("menu-version", pc::get_display_version());
         label("menu-upstream-version", pc::get_upstream_pc_version());
         auto ustate = pc::updater::get_state();
         if (ustate.status == pc::updater::Status::UpdateAvailable) {
@@ -1454,7 +1454,7 @@ public:
         } else if (ustate.status == pc::updater::Status::Failed) {
             label("port-update-status", "Check failed");
         } else {
-            label("port-update-status", "Up to date (" + pc::get_app_version() + ")");
+            label("port-update-status", "Up to date (" + pc::get_display_version() + ")");
         }
         refresh_bindings();
         quiet = false;
