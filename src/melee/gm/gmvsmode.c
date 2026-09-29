@@ -197,6 +197,16 @@ void onEnterDebugVs(GameModeState* state)
             start->rules.stkind = (StKind) st;
         }
     }
+    /* MELEE_DEBUG_VS_PLAYERS=<3|4>: humans on ports 3 and 4 too, for the
+     * 3-4 machine netplay test (tools/net_group_test.py). */
+    if (getenv("MELEE_DEBUG_VS_PLAYERS") != NULL) {
+        int humans = atoi(getenv("MELEE_DEBUG_VS_PLAYERS"));
+        static const CharacterKind extra[2] = { CKind_Fox, CKind_Donkey };
+        for (i = 2; i < humans && i < Gm_Player_NumMax; i++) {
+            start->players[i].ckind = extra[i - 2];
+            start->players[i].slot_type = Gm_PKind_Human;
+        }
+    }
     if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "cpu") == 0) {
         start->players[1].slot_type = Gm_PKind_Cpu;
     } else if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "cpu4") == 0) {

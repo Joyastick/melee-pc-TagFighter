@@ -933,7 +933,12 @@ static void on_ready(int peer, const uint8_t* payload, int len) {
  * earlier session out. From it we key our links to the other guests, in the
  * order both ends agree on (lower machine number first). */
 static void on_go(int peer, const uint8_t* payload, int len) {
-    if (!group() || net.hs_host || net.hs != HS_PENDING || net.peers[peer].machine != 0) {
+    /* IDLE counts as waiting: a guest's RULES can land before its own frame
+     * loop has called pc_net_guest_wait_match (on_rules' "RULES may already
+     * have landed"), and in a group that is no longer the end of it. */
+    if (!group() || net.hs_host || (net.hs != HS_PENDING && net.hs != HS_IDLE) ||
+        net.peers[peer].machine != 0)
+    {
         hs_drop(LOG_READY_IDLE, "GO", "not expected");
         return;
     }
