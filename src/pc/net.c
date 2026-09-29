@@ -1627,10 +1627,11 @@ void pc_net_disconnect(void);
  * releases immediately while the other is still waiting, and the sims part
  * on the frame that peer enters the next scene (measured tablet<->PC, "peer
  * 121" against an exit asked at 5775). */
-static uint32_t s_scene_seq;                     /* exits we have completed */
-static int32_t s_scene_exit_local = -1;          /* frame our scene asked to end on */
-static int32_t s_scene_exit_at = -1;             /* agreed frame, once both are in */
-static int32_t s_scene_wait_since = -1;          /* frame the incomplete wait began */
+static uint32_t s_scene_seq;            /* exits we have completed */
+static int32_t s_scene_exit_local = -1; /* frame our scene asked to end on */
+static int32_t s_scene_exit_at = -1;    /* agreed frame, once both are in */
+static int32_t s_scene_wait_since = -1; /* frame the incomplete wait began */
+static bool s_scene_settle;             /* leaving: no new predictions, corrections still allowed */
 static int32_t s_scene_exit_remote[SCENE_SLOTS]; /* the peer's, by its own seq */
 
 void net_scene_rel(const void* payload, int len) {
@@ -1671,6 +1672,7 @@ void net_scene_rel(const void* payload, int len) {
 static void scene_handoff_reset(void) {
     s_scene_seq = 0;
     s_scene_exit_local = s_scene_exit_at = -1;
+    s_scene_settle = false;
     s_scene_wait_since = -1;
     for (int i = 0; i < SCENE_SLOTS; i++) {
         s_scene_exit_remote[i] = -1;
@@ -1697,6 +1699,10 @@ bool pc_net_scene_hold(void) {
          * way resume_send() already does. */
         if (pc_net_send_reliable(REL_SCENE, &m, sizeof m)) {
             s_scene_exit_local = net.frame;
+            /* From here no new frame is predicted, so every input still
+             * outstanding arrives, and any correction it brings can still
+             * roll back: the barrier is not raised until the scene changes. */
+            s_scene_settle = true;
         }
     }
     /* A hand-off that never completes is otherwise silent: the scene simply
@@ -1730,15 +1736,12 @@ bool pc_net_scene_hold(void) {
     if (s_scene_exit_at < 0) {
         int32_t later = *remote > s_scene_exit_local ? *remote : s_scene_exit_local;
         s_scene_exit_at = later + SCENE_HANDOFF;
-        /* Nothing may still be predicted when the scene goes: the next
-         * scene's first tick raises the barrier past every outstanding
-         * frame, and snapshot_unusable() rejects those snapshots anyway, so
-         * a correction arriving then is dropped and the peers finish the
-         * match on different remote inputs. Running the last frames of the
-         * scene lockstep costs nothing -- they are the frames after the
-         * match has already been decided -- and it is the same thing the
-         * entry side does. */
-        barrier_raise(s_scene_exit_at);
+        /* Not barrier_raise(s_scene_exit_at) here: the last predicted frames may
+         * still be waiting for a remote input, and a barrier past them turns
+         * that late correction into a desync ("cannot roll back ... behind
+         * the barrier", frame 5619 of a match asked to end
+         * at 5618). Settle mode has stopped predicting since the ask; the next
+         * scene's first tick raises the barrier. */
         pc_log_line("net: scene %u ends at frame %d (asked %d, peer %d)", s_scene_seq,
             s_scene_exit_at, s_scene_exit_local, *remote);
     }
@@ -1747,6 +1750,7 @@ bool pc_net_scene_hold(void) {
     }
     *remote = -1;
     s_scene_exit_local = s_scene_exit_at = -1;
+    s_scene_settle = false;
     s_scene_seq++;
     return false;
 }
@@ -3143,7 +3147,8 @@ static void fresh_tick(PADStatus* head, bool raw) {
          * after a rollback of odd depth the two peers advance the scene on
          * opposite ticks -- one simulates a frame the other skips. */
         bool speed_1 = gmVs_IsGameSpeedNormal();
-        bool lockstep = s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1;
+        bool lockstep =
+            s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1 || s_scene_settle;
         /* The last lockstep frames before this fight can predict: size and
          * page in the rollback ring now, a slot a frame, while the wait below
          * is for the peer anyway (net_snapshot.c snaps_reserve). A barrier
