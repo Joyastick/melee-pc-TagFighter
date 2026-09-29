@@ -610,6 +610,235 @@ static bool s_take_refused_io;   /* the last take was one of them */
 static int32_t s_oom_frame = -1;
 static bool s_oom_fired;
 
+
+/* ---- snapshot profile (MELEE_NET_SNAP_PROFILE=1) -----------------------
+ * Diagnostic only: answers which parts of a snapshot ever change during a
+ * fight, so a slimmer snapshot can be argued from numbers. Each take, right
+ * after the copy, is compared page by page (4 KB, from the region's base)
+ * against the previous take of the same region, and the page is kept as the
+ * new reference. Consecutive takes are consecutive PREDICTED frames, not
+ * consecutive frames, so a page is "changed" if it moved between two takes.
+ * A region whose base moved or shrank is re-anchored (counted as a relayout)
+ * and skipped for that take; growth at the top compares the common prefix.
+ * The reference copy is as big as a snapshot; nothing here runs when the
+ * variable is unset, and nothing here feeds back into the simulation. */
+#define PROF_PAGE 4096
+#define PROF_TOP_CELLS 12
+#define PROF_BIG_CELL (64 * 1024)
+
+typedef struct ProfRegion {
+    const char* name;
+    uint8_t* base; /* region base when anchored */
+    uint8_t* ref;  /* previous take's bytes */
+    size_t len;
+    size_t ref_cap;
+    uint8_t* ever; /* per page: 1 once it changed */
+    uint32_t* hits; /* per page: takes it changed in */
+    size_t pages;
+    unsigned takes;       /* takes compared, this anchor */
+    unsigned relayouts;   /* re-anchors, whole session */
+    uint64_t changed_sum; /* pages changed, summed over takes */
+} ProfRegion;
+
+static int s_prof = -1;
+static ProfRegion s_prof_r[MAX_REGIONS];
+static int s_prof_scene = -2;
+
+static bool prof_on(void) {
+    if (s_prof < 0) {
+        const char* e = getenv("MELEE_NET_SNAP_PROFILE");
+        s_prof = e != NULL && e[0] == '1';
+    }
+    return s_prof != 0;
+}
+
+static void prof_anchor(ProfRegion* pr, const Region* r, const uint8_t* bytes) {
+    size_t pages = (r->len + PROF_PAGE - 1) / PROF_PAGE;
+    if (r->len > pr->ref_cap) {
+        uint8_t* n = realloc(pr->ref, r->len);
+        if (n == NULL) {
+            pr->base = NULL;
+            return;
+        }
+        pr->ref = n;
+        pr->ref_cap = r->len;
+    }
+    free(pr->ever);
+    free(pr->hits);
+    pr->ever = calloc(pages, 1);
+    pr->hits = calloc(pages, sizeof *pr->hits);
+    if (pr->ever == NULL || pr->hits == NULL) {
+        pr->base = NULL;
+        return;
+    }
+    memcpy(pr->ref, bytes, r->len);
+    pr->name = r->name;
+    pr->base = r->ptr;
+    pr->len = r->len;
+    pr->pages = pages;
+    pr->takes = 0;
+    pr->changed_sum = 0;
+}
+
+static void prof_note_take(const Snapshot* s) {
+    int scene = scene_kind();
+    bool reset = scene != s_prof_scene;
+    s_prof_scene = scene;
+    size_t off = 0;
+    for (int i = 0; i < s->nregions && i < MAX_REGIONS; i++) {
+        const Region* r = &s->regions[i];
+        const uint8_t* bytes = s->buf + off;
+        off += r->len;
+        ProfRegion* pr = &s_prof_r[i];
+        if (r->len == 0) {
+            continue;
+        }
+        bool same = pr->base == (uint8_t*)r->ptr && r->len >= pr->len && pr->name == r->name;
+        if (reset || pr->base == NULL || !same) {
+            if (pr->base != NULL && !reset) {
+                pr->relayouts++;
+            }
+            prof_anchor(pr, r, bytes);
+            continue;
+        }
+        size_t common = pr->len;
+        for (size_t o = 0; o < common; o += PROF_PAGE) {
+            size_t n = common - o < PROF_PAGE ? common - o : PROF_PAGE;
+            if (memcmp(pr->ref + o, bytes + o, n) != 0) {
+                memcpy(pr->ref + o, bytes + o, n);
+                pr->ever[o / PROF_PAGE] = 1;
+                pr->hits[o / PROF_PAGE]++;
+                pr->changed_sum++;
+            }
+        }
+        if (r->len > pr->len) { /* grew at the top: new pages start clean */
+            if (r->len > pr->ref_cap) {
+                uint8_t* nr = realloc(pr->ref, r->len);
+                if (nr == NULL) {
+                    prof_anchor(pr, r, bytes);
+                    continue;
+                }
+                pr->ref = nr;
+                pr->ref_cap = r->len;
+            }
+            size_t pages = (r->len + PROF_PAGE - 1) / PROF_PAGE;
+            uint8_t* ne = realloc(pr->ever, pages);
+            uint32_t* nh = realloc(pr->hits, pages * sizeof *nh);
+            if (ne == NULL || nh == NULL) {
+                prof_anchor(pr, r, bytes);
+                continue;
+            }
+            pr->ever = ne;
+            pr->hits = nh;
+            memset(pr->ever + pr->pages, 0, pages - pr->pages);
+            memset(pr->hits + pr->pages, 0, (pages - pr->pages) * sizeof *nh);
+            memcpy(pr->ref + pr->len, bytes + pr->len, r->len - pr->len);
+            pr->pages = pages;
+            pr->len = r->len;
+        }
+        pr->takes++;
+    }
+}
+
+typedef struct ProfCell {
+    uint8_t* p;
+    uint32_t size;
+} ProfCell;
+
+static ProfCell s_prof_top[PROF_TOP_CELLS];
+static uint64_t s_prof_alloc_bytes, s_prof_alloc_cells, s_prof_big_bytes;
+static uint8_t* s_prof_lo;
+static uint8_t* s_prof_hi;
+
+static void prof_visit(void* p, u32 size) {
+    uint8_t* b = p;
+    if (b < s_prof_lo || b >= s_prof_hi) {
+        return;
+    }
+    s_prof_alloc_bytes += size;
+    s_prof_alloc_cells++;
+    if (size >= PROF_BIG_CELL) {
+        s_prof_big_bytes += size;
+    }
+    int at = PROF_TOP_CELLS;
+    while (at > 0 && (s_prof_top[at - 1].p == NULL || s_prof_top[at - 1].size < size)) {
+        at--;
+    }
+    if (at == PROF_TOP_CELLS) {
+        return;
+    }
+    memmove(&s_prof_top[at + 1], &s_prof_top[at], (PROF_TOP_CELLS - 1 - at) * sizeof *s_prof_top);
+    s_prof_top[at] = (ProfCell){b, size};
+}
+
+/* Pages of [lo, lo+len) that ever changed, and the mean share of takes the
+ * changed ones changed in; both from the region's own page map. */
+static void prof_span(const ProfRegion* pr, const uint8_t* lo, size_t len, size_t* pages,
+    size_t* ever, size_t* always) {
+    *pages = *ever = *always = 0;
+    if (lo < pr->base) {
+        return;
+    }
+    size_t first = (size_t)(lo - pr->base) / PROF_PAGE;
+    size_t last = ((size_t)(lo - pr->base) + len + PROF_PAGE - 1) / PROF_PAGE;
+    for (size_t pg = first; pg < last && pg < pr->pages; pg++) {
+        (*pages)++;
+        if (pr->ever[pg]) {
+            (*ever)++;
+        }
+        if (pr->takes >= 10 && pr->hits[pg] * 10 >= pr->takes * 9) {
+            (*always)++;
+        }
+    }
+}
+
+/* Called from snap_stats_report. One line per region, then for each heap
+ * the allocated bytes against the span the snapshot copies and the largest
+ * live cells with how much of each ever changed. Only the per-window
+ * counters reset; the ever-changed map lasts the scene. */
+static void prof_report(void) {
+    for (int i = 0; i < MAX_REGIONS; i++) {
+        ProfRegion* pr = &s_prof_r[i];
+        if (pr->base == NULL || pr->takes == 0) {
+            continue;
+        }
+        size_t ever = 0, always = 0;
+        for (size_t pg = 0; pg < pr->pages; pg++) {
+            ever += pr->ever[pg];
+            always += pr->takes >= 10 && pr->hits[pg] * 10 >= pr->takes * 9;
+        }
+        pc_log_line("net:   snapprof %-10s %6.2f MB, %zu pages: per take %.1f%% changed, ever "
+                    "%.1f%%, in 90%%+ of takes %.1f%% (takes %u, relayouts %u)",
+            pr->name, pr->len / 1048576.0, pr->pages,
+            pr->changed_sum * 100.0 / ((double)pr->pages * pr->takes), ever * 100.0 / pr->pages,
+            always * 100.0 / pr->pages, pr->takes, pr->relayouts);
+        if (strncmp(pr->name, "heap", 4) != 0) {
+            continue;
+        }
+        memset(s_prof_top, 0, sizeof s_prof_top);
+        s_prof_alloc_bytes = s_prof_alloc_cells = s_prof_big_bytes = 0;
+        s_prof_lo = pr->base;
+        s_prof_hi = pr->base + pr->len;
+        OSVisitAllocated(prof_visit);
+        pc_log_line("net:   snapprof %-10s allocated %.2f MB in %llu cells of a %.2f MB span "
+                    "(%.2f MB in cells of 64 KB or more)",
+            pr->name, s_prof_alloc_bytes / 1048576.0, (unsigned long long)s_prof_alloc_cells,
+            pr->len / 1048576.0, s_prof_big_bytes / 1048576.0);
+        for (int c = 0; c < PROF_TOP_CELLS && s_prof_top[c].p != NULL; c++) {
+            size_t pages, e, a;
+            prof_span(pr, s_prof_top[c].p, s_prof_top[c].size, &pages, &e, &a);
+            pc_log_line("net:   snapprof   cell +0x%06zx %7.1f KB: %zu/%zu pages ever changed, "
+                        "%zu in 90%%+ of takes",
+                (size_t)(s_prof_top[c].p - pr->base), s_prof_top[c].size / 1024.0, e, pages, a);
+        }
+        for (size_t pg = 0; pg < pr->pages; pg++) {
+            pr->hits[pg] = 0;
+        }
+        pr->takes = 0;
+        pr->changed_sum = 0;
+    }
+}
+
 /* False when the state region is unavailable or the buffer could not be
  * grown; the snapshot is then invalid. */
 bool snapshot_take(Snapshot* s, int32_t frame) {
@@ -684,6 +913,9 @@ bool snapshot_take(Snapshot* s, int32_t frame) {
     }
     if (dt > s_take_ns_worst) {
         s_take_ns_worst = dt;
+    }
+    if (prof_on() && in_fight()) {
+        prof_note_take(s);
     }
     return true;
 }
@@ -781,6 +1013,9 @@ void snap_stats_report(void) {
     s_take_inflight = 0;
     s_full_hash_ns = s_full_hash_ns_max = 0;
     s_full_hashes = 0;
+    if (prof_on()) {
+        prof_report();
+    }
 }
 
 /* rollback_to carries the live PadLibData bookkeeping and raw queue across a
