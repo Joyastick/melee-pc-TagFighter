@@ -334,6 +334,7 @@ _Static_assert(sizeof(SceneMsg) == 8, "wire layout");
  * release order, so plain delay stays FIFO and jitter reorders. */
 typedef struct Held {
     uint64_t release_ns;
+    uint8_t peer; /* outgoing only: index into net.peers */
     uint16_t len;
     uint8_t buf[HELD_BYTES + NET_MAC_LEN];
 } Held;
@@ -398,6 +399,13 @@ typedef struct Peer {
     bool rx_seq_init;
     uint16_t rx_seq_top;  /* highest seq seen */
     uint64_t rx_seq_bits; /* bit k: (top-k) received; bit 0 = top */
+    int machine;          /* its machine number, the Hdr.player it sends with */
+    uint32_t ping_us;     /* smoothed round trip to it */
+    uint16_t tx_seq;      /* next tx seq to it (tx_lock) */
+    struct {
+        uint16_t seq;
+        uint64_t send_ns;
+    } rtt_ring[64]; /* last 64 sends to it (tx_lock) */
 } Peer;
 
 struct NetSession {
@@ -473,7 +481,7 @@ void net_resume_rel(const void* payload, int len);
 /* One sendto with errno/WSA translation and the sock_err counter; used by
  * the senders here and the link simulator's flush (net_sim.c). Caller holds
  * tx_lock. Returns bytes sent, or -1 on any error (transient or logged). */
-int net_sendto(const void* buf, size_t len);
+int net_sendto(int peer, const void* buf, size_t len);
 
 /* ---- net_wire.c ------------------------------------------------------- */
 
@@ -527,7 +535,8 @@ void net_addr_text(const struct sockaddr* sa, char* out, size_t cap);
 
 int held_put(Held* held, const void* buf, size_t len, uint64_t release_ns);
 Held* held_due(Held* held, uint64_t now);
-void tx(const void* buf, size_t len); /* caller holds tx_lock */
+void tx_to(int peer, const void* buf, size_t len); /* caller holds tx_lock */
+void tx(const void* buf, size_t len);              /* to peer 0, the control peer */
 void tx_flush(void);                  /* caller holds tx_lock */
 void sim_env(uint16_t bind_port);     /* MELEE_NET_SIM_* into net.sim_* */
 void sim_reset(void);

@@ -20,6 +20,14 @@
 #include "../src/pc/net.c"
 #include "../src/sysdolphin/baselib/rumble.c"
 
+/* The single peer's state, under the names this test grew up with. */
+#define s_remote_have (net.peers[0].remote_have)
+#define s_remote_newest (net.peers[0].remote_newest)
+#define s_remote_ring (net.peers[0].remote_ring)
+#define s_last_acked (net.peers[0].last_acked)
+#define s_heard (net.peers[0].heard)
+#define s_last_rx_ns (net.peers[0].last_rx_ns)
+
 #include <stdarg.h>
 
 /* not <assert.h>: the decomp's debug.h owns __assert, and -DNDEBUG must not blind this */
@@ -173,7 +181,8 @@ void net_addr_text(const struct sockaddr* sa, char* out, size_t cap) {
     snprintf(out, cap, "peer");
 }
 /* net_sim.c */
-void tx(const void* buf, size_t len) {
+void tx_to(int peer, const void* buf, size_t len) {
+    (void)peer;
     const uint8_t* p = buf;
     net.tx_pkts++;
     if (p[0] == 'M' && len >= offsetof(Packet, pads)) {
@@ -183,6 +192,9 @@ void tx(const void* buf, size_t len) {
         s_tx_pkt_valid = true;
         net.tx_inputs++;
     }
+}
+void tx(const void* buf, size_t len) {
+    tx_to(0, buf, len);
 }
 void tx_flush(void) {}
 int held_put(Held* held, const void* buf, size_t len, uint64_t release_ns) {
@@ -441,12 +453,12 @@ static void setup(void) {
     net.tick_frame = FRAME - 1;
     /* The peer's address: loopback discard, so sendto() succeeds and nothing
      * ever answers. */
-    struct sockaddr_in* p = (struct sockaddr_in*)&net.peer;
+    struct sockaddr_in* p = (struct sockaddr_in*)&net.peers[0].addr;
     memset(p, 0, sizeof *p);
     p->sin_family = AF_INET;
     p->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     p->sin_port = htons(9);
-    net.peer_len = sizeof *p;
+    net.peers[0].addr_len = sizeof *p;
     s_wrote = WROTE;
     s_remote_have = HAVE;
     s_last_acked = ACKED;
@@ -500,7 +512,7 @@ static void peer_pads(int32_t first, int32_t last) {
         pk.pads[i].pad[0].button = (uint16_t)(0x2000 + first + i);
     }
     peer_heard();
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
 }
 
 /* The peer's checksum for `frame`, as the one report an input packet
@@ -512,7 +524,7 @@ static void peer_ck(int32_t frame, uint32_t ck) {
     pk.newest = frame;
     pk.ck_frame = frame;
     pk.ck = ck;
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
 }
 
 /* ---- cases ------------------------------------------------------------ */
@@ -919,7 +931,7 @@ static void case_receive_identity(void) {
     recv_inputs();
     assert(!s_peer_left && net.session == SESSION);
 
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     a.h.magic = '?';
     send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
@@ -955,7 +967,7 @@ static void case_session_learned_only_from_rules(void) {
     net.hs = HS_PENDING;
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
 
     Ack a = {{'A', WIRE_VERSION, SESSION, 0}, 0, -1};
     wire_hdr(&a.h);
@@ -1010,7 +1022,7 @@ static void case_old_protocol(void) {
     setup();
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     Ack a = {{'A', 5, SESSION, 1}, 0, -1};
     wire_hdr(&a.h);
     wire_ack(&a);
@@ -1030,7 +1042,7 @@ static void case_bad_mac_rejected(void) {
     setup();
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     net_key_direct("shared secret");
     assert(net_key_ready() && !s_mac_seen);
     /* A pinned key refuses from the very first datagram: it is not waiting
@@ -1124,7 +1136,7 @@ static void deliver_changed_input(void) {
     for (int i = 0; i < pk.count; i++) {
         pk.pads[i].pad[0].button = 0x100;
     }
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
     s_step = NULL;
 }
 

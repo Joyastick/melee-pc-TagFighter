@@ -549,18 +549,32 @@ const PcNetTeam* pc_net_team(int machine) {
     return pc_net_matchmade() && machine >= 0 && machine < 2 ? &s_team[machine] : NULL;
 }
 
+/* A match of 3 or 4 machines seats one player per machine, on the port of
+ * its machine number and with no couch partner (four ports, no room). */
 int pc_net_game_port(int machine, int slot) {
+    if (net.npeers > 1) {
+        return slot == 0 ? machine : -1;
+    }
     return pc_net_matchmade() ? machine * 2 + slot : machine + 2 * slot;
 }
 
+/* The couch partner's Tag Bind on `machine`, or negative when it has none. */
+int pc_net_partner_bind_of(int machine) {
+    if (net.npeers > 1) {
+        return -1;
+    }
+    return machine == net.local ? pc_net_local_partner_bind() :
+           machine == net.remote ? pc_net_remote_partner_bind() :
+                                   -1;
+}
+
 bool pc_net_port_human(int port) {
-    for (int machine = 0; machine < 2; machine++) {
+    for (int machine = 0; machine <= net.npeers; machine++) {
         if (port == pc_net_game_port(machine, 0)) {
             return true;
         }
         if (port == pc_net_game_port(machine, 1)) {
-            return (machine == net.local ? pc_net_local_partner_bind() :
-                                           pc_net_remote_partner_bind()) >= 0;
+            return pc_net_partner_bind_of(machine) >= 0;
         }
     }
     return false;

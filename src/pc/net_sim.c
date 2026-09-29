@@ -28,6 +28,7 @@ int held_put(Held* held, const void* buf, size_t len, uint64_t release_ns) {
     for (int i = 0; i < HELD_MAX; i++) {
         if (held[i].release_ns == 0) {
             held[i].release_ns = release_ns;
+            held[i].peer = 0;
             held[i].len = (uint16_t)len;
             memcpy(held[i].buf, buf, len);
             return i;
@@ -53,7 +54,7 @@ Held* held_due(Held* held, uint64_t now) {
  * where it gets its authentication tag: one choke point covers the input
  * packets, the acks, the reliable lane and the BYE, and the copy that makes
  * room for the tag is the same copy the held queue would make anyway. */
-void tx(const void* body, size_t body_len) {
+void tx_to(int peer, const void* body, size_t body_len) {
     uint8_t stamped[HELD_BYTES + NET_MAC_LEN];
     if (body_len > HELD_BYTES) {
         return; /* no sender builds one: a truncated datagram would be worse */
@@ -80,7 +81,7 @@ void tx(const void* body, size_t body_len) {
         return;
     }
     if (!net.sim_hold) {
-        net_sendto(buf, len);
+        net_sendto(peer, buf, len);
         return;
     }
     int copies = net.sim_dup > 0 && (int)sim_rand(100) < net.sim_dup ? 2 : 1;
@@ -96,6 +97,7 @@ void tx(const void* body, size_t body_len) {
         if (slot < 0) {
             return;
         }
+        s_held[slot].peer = (uint8_t)peer;
         if (s_sim_swap >= 0) {
             s_held[s_sim_swap].release_ns = (uint64_t)release + 1; /* right behind this one */
             s_sim_swap = -1;
@@ -112,6 +114,10 @@ void tx(const void* body, size_t body_len) {
     }
 }
 
+void tx(const void* body, size_t body_len) {
+    tx_to(0, body, body_len);
+}
+
 /* Release held packets whose simulated delay has passed (caller holds tx_lock). */
 void tx_flush(void) {
     uint64_t now = SDL_GetTicksNS();
@@ -119,7 +125,7 @@ void tx_flush(void) {
         if (s_sim_swap >= 0 && h == &s_held[s_sim_swap]) {
             s_sim_swap = -1; /* its deadline won; the slot is about to be free for reuse */
         }
-        net_sendto(h->buf, h->len);
+        net_sendto(h->peer, h->buf, h->len);
         h->release_ns = 0;
     }
 }

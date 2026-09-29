@@ -152,6 +152,7 @@ const PcNetTeam* pc_net_team(int machine);
  * partner or assist. Direct/LAN keep MeleeVS's CSS layout (host 1+3, guest
  * 2+4); Matchmaking puts each team together (host 1+2, guest 3+4). */
 int pc_net_game_port(int machine, int slot);
+int pc_net_partner_bind_of(int machine); /* couch partner's Tag Bind, or < 0 */
 
 /* Whether game port 0-3 is a human in this session: ports 0/1 always, 2/3
  * only for a machine that announced a couch partner. The CSS uses it to
