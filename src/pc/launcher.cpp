@@ -421,7 +421,7 @@ class Launcher final : public Rml::EventListener {
         } else if (ustate.status == pc::updater::Status::Failed) {
             text("check-status", ustate.message);
         } else {
-            text("check-status", "Melee-PC is up to date (" + pc::get_app_version() + ").");
+            text("check-status", "MeleeVS is up to date (" + pc::get_app_version() + ").");
         }
         notice();
         quiet = false;
@@ -1029,7 +1029,7 @@ public:
                         text("update-title", ustate.latest_release.name.empty() ?
                                                  ustate.latest_release.tag_name :
                                                  ustate.latest_release.name);
-                        std::string desc = "A newer version of Melee PC is available (" +
+                        std::string desc = "A newer version of MeleeVS is available (" +
                                            ustate.latest_release.tag_name + ").";
                         if (!ustate.target_asset_name.empty()) {
                             desc += " Ready to download: " + ustate.target_asset_name;

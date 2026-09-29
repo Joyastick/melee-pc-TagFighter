@@ -11,7 +11,7 @@
             <span class="update-badge">UPDATE AVAILABLE</span>
             <span id="update-tag" class="update-tag">v0.1.8-beta</span>
           </div>
-          <div id="update-title" class="update-title">Melee PC Update</div>
+          <div id="update-title" class="update-title">MeleeVS Update</div>
           <p id="update-desc" class="update-desc">A newer version is available.</p>
           <div id="update-progress-row" class="update-progress-row" style="display: none;">
             <div class="progress-bar-bg">
@@ -175,7 +175,7 @@
               <button id="check-updates">On</button>
             </div>
             <div class="setting">
-              <div class="description"><h3>Check for updates now</h3><p id="check-status">Melee-PC is up to date.</p></div>
+              <div class="description"><h3>Check for updates now</h3><p id="check-status">MeleeVS is up to date.</p></div>
               <button id="check-now">Check now</button>
             </div>
             <div class="setting">
