@@ -2760,7 +2760,10 @@ static bool rollback_to(int32_t f) {
         barrier_raise(simulated_upto());
         if (!s_rb_lost_logged) {
             s_rb_lost_logged = true;
-            pc_log_line("net: cannot roll back to frame %d (%s), expect a desync", f, why);
+            pc_log_line("net: cannot roll back to frame %d (%s), expect a desync (simulated to %d, "
+                        "slot holds frame %d, barrier %d, peer has %d)",
+                f, why, simulated_upto(), s->buf != NULL ? s->frame : -1, net.rb_barrier,
+                s_remote_have);
         }
         return false;
     }
@@ -2789,6 +2792,13 @@ static bool rollback_to(int32_t f) {
     if (depth > s_rb_depth_cur) {
         s_rb_depth_cur = depth;
     }
+    /* Frames from f on are being rewritten: until resim_prepare(f) finishes,
+     * tick_frame still names the newest frame of the timeline just discarded,
+     * and an input that lands while that call waits (a refused snapshot take
+     * makes it wait) would flag a rollback to a frame about to be re-run anyway.
+     * That request then finds the invalidated snapshot, is counted lost, and the
+     * barrier it raises makes every frame still predicted uncorrectable. */
+    net.tick_frame = f - 1;
     net.resim = true;
     return resim_prepare(f);
 }
