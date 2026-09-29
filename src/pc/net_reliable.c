@@ -50,6 +50,7 @@
 
 typedef struct RelMsg {
     uint8_t type;
+    int8_t from; /* sender's machine number (lane 1 receive queue only) */
     uint16_t len;
     uint8_t payload[REL_MAX];
 } RelMsg;
@@ -195,12 +196,19 @@ bool pc_net_send_reliable(uint8_t type, const void* payload, int len) {
 }
 
 int pc_net_recv_reliable(uint8_t* type, void* payload, int max) {
+    return pc_net_recv_reliable_from(type, payload, max, NULL);
+}
+
+int pc_net_recv_reliable_from(uint8_t* type, void* payload, int max, int* machine) {
     if (s_rel_rx_n == 0 || type == NULL || payload == NULL || max < 0) {
         return -1;
     }
     RelMsg* m = &s_rel_rx[s_rel_rx_head];
     int n = m->len > max ? max : m->len;
     *type = m->type;
+    if (machine != NULL) {
+        *machine = m->from;
+    }
     memcpy(payload, m->payload, (size_t)n);
     s_rel_rx_head = (s_rel_rx_head + 1) % REL_QUEUE;
     s_rel_rx_n--;
@@ -227,14 +235,13 @@ void on_rel_from(int peer, const Rel* r, int n) {
                 net_delay_rel(r->payload, r->len);
             }
         } else if (r->type == REL_SCENE) {
-            if (peer == 0) {
-                net_scene_rel(r->payload, r->len);
-            }
+            net_scene_rel_from(peer, r->payload, r->len);
         } else if (r->type == REL_CHAT) {
             pc_net_chat_receive(r->payload, r->len);
         } else if (s_rel_rx_n < REL_QUEUE) {
             RelMsg* m = &s_rel_rx[(s_rel_rx_head + s_rel_rx_n++) % REL_QUEUE];
             m->type = r->type;
+            m->from = (int8_t)net.peers[peer].machine;
             m->len = r->len;
             memcpy(m->payload, r->payload, r->len);
         } else {

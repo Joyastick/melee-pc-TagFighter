@@ -5771,7 +5771,11 @@ s32 mnCharSel_802640A0(void)
                         HSD_PadMasterStatus[i].err == 0 ? Gm_PKind_Human
                                                          : Gm_PKind_Cpu;
                 }
-                mnCharSel_803F0DFC.doors[i].team = (u8) (i & 1);
+                /* 3-4 machines sit on ports 0-3 by machine number and split
+                 * 0,1 vs 2,3 (net_group.h's layout); a 2-machine session has
+                 * one machine per team (port 0/2 Red, 1/3 Blue). */
+                mnCharSel_803F0DFC.doors[i].team =
+                    (u8) (pc_net_active() && pc_net_machines() > 2 ? i >> 1 : i & 1);
                 TagAssist_CssSyncPortTeam(i, mnCharSel_803F0DFC.doors[i].team);
                 // The line above only sets the CSS's own UI-side door state.
                 // Match start reads vs.start.players[].slot_type (this is

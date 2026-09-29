@@ -104,6 +104,8 @@ bool pc_net_send_reliable(uint8_t type, const void* payload, int len);
 /* Returns payload length (>= 0) and fills *type when a message is pending,
  * -1 otherwise. */
 int pc_net_recv_reliable(uint8_t* type, void* payload, int max);
+/* Same, and *machine (if not NULL) is the sender's machine number. */
+int pc_net_recv_reliable_from(uint8_t* type, void* payload, int max, int* machine);
 
 /* Match handshake used by every lobby: host calls pc_net_host_match() once
  * both sides are connected; it sends RULES (seed, ruleset id) and waits for

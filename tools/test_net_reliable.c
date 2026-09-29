@@ -66,6 +66,10 @@ void net_scene_rel(const void* payload, int len) {
     (void)payload;
     (void)len;
 }
+void net_scene_rel_from(int peer, const void* payload, int len) {
+    (void)peer;
+    net_scene_rel(payload, len);
+}
 void net_delay_rel(const void* payload, int len) {
     s_delay_msgs++;
     (void)payload;

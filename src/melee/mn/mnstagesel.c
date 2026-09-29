@@ -193,8 +193,8 @@ static void rankStageFrame(void)
  * shared seed, so both peers agree without another message. Values are
  * table indices (mnStageSel_803F06D0), 30 = random. */
 #define NET_MSG_STAGE_PICK 0x20
-static int net_local_pick = -1;
-static int net_remote_pick = -1;
+#define NET_PICK_MACHINES 4
+static int net_pick[NET_PICK_MACHINES] = { -1, -1, -1, -1 }; /* by machine */
 
 static bool netStageSel_Active(void)
 {
@@ -203,17 +203,31 @@ static bool netStageSel_Active(void)
 
 static void netStageSel_Reset(void)
 {
-    net_local_pick = net_remote_pick = -1;
+    for (int m = 0; m < NET_PICK_MACHINES; m++) {
+        net_pick[m] = -1;
+    }
+}
+
+/* Every machine has picked. */
+static bool netStageSel_AllPicked(void)
+{
+    for (int m = 0; m < pc_net_machines(); m++) {
+        if (net_pick[m] < 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void netStageSel_Poll(void)
 {
     u8 type;
     u8 buf[4];
-    while (pc_net_recv_reliable(&type, buf, sizeof buf) >= 0) {
-        if (type == NET_MSG_STAGE_PICK) {
-            net_remote_pick = buf[0];
-            pc_log_line("sss: opponent picked %d", net_remote_pick);
+    int from;
+    while (pc_net_recv_reliable_from(&type, buf, sizeof buf, &from) >= 0) {
+        if (type == NET_MSG_STAGE_PICK && from >= 0 && from < NET_PICK_MACHINES) {
+            net_pick[from] = buf[0];
+            pc_log_line("sss: machine %d picked %d", from, net_pick[from]);
         }
     }
 }
@@ -221,31 +235,31 @@ static void netStageSel_Poll(void)
 static void netStageSel_SendPick(int idx)
 {
     u8 b = (u8) idx;
-    net_local_pick = idx;
+    net_pick[pc_net_local_player()] = idx;
     pc_net_send_reliable(NET_MSG_STAGE_PICK, &b, 1);
     pc_log_line("sss: we picked %d", idx);
 }
 
-/* Both peers have picked: order the picks by port so the expression is the
- * same on both sides, then let the shared seed flip the coin. */
+/* Every machine has picked: fold the picks in machine order so the expression
+ * is the same everywhere, then let the shared seed choose among them. */
 static u32 netStageSel_Mix(void)
 {
-    int local = pc_net_local_player();
-    int p0 = local == 0 ? net_local_pick : net_remote_pick;
-    int p1 = local == 0 ? net_remote_pick : net_local_pick;
-    if (p0 < 0 || p1 < 0) {
+    u32 h = 0;
+    if (!netStageSel_AllPicked()) {
         return pc_net_seed() * 2654435761u + (u32) mnStageSel_804D6CAE;
     }
-    return pc_net_seed() * 2654435761u + (u32) (p0 * 31 + p1);
+    for (int m = 0; m < pc_net_machines(); m++) {
+        h = h * 31 + (u32) net_pick[m];
+    }
+    return pc_net_seed() * 2654435761u + h;
 }
 
 static int netStageSel_Resolve(void)
 {
-    int local = pc_net_local_player();
-    int p0 = local == 0 ? net_local_pick : net_remote_pick;
-    int p1 = local == 0 ? net_remote_pick : net_local_pick;
-    int pick = (netStageSel_Mix() >> 16) & 1 ? p1 : p0;
-    pc_log_line("sss: picks P1=%d P2=%d -> %d", p0, p1, pick);
+    int n = pc_net_machines();
+    int pick = net_pick[((netStageSel_Mix() >> 16) & 0xFFFF) % n];
+    pc_log_line("sss: picks %d %d %d %d (%d machines) -> %d", net_pick[0], net_pick[1], net_pick[2],
+                net_pick[3], n, pick);
     return pick;
 }
 
@@ -1137,8 +1151,11 @@ void mnStageSel_Scene_OnFrame(void)
         mnStageSel_804D6CAD = get_pad(mnStageSel_804D50A0)->stickY;
 #ifdef TARGET_PC
         if (netStageSel_Active() && !pc_rank_session_active()) {
-            b_pressed = (HSD_PadCopyStatus[0].trigger & 0x200) ||
-                        (HSD_PadCopyStatus[1].trigger & 0x200);
+            /* B on any machine's port (ports 0 and 1; 3-4 machines: each
+             * machine's own port) backs everyone out together. */
+            for (int m = 0; m < (pc_net_machines() > 2 ? pc_net_machines() : 2); m++) {
+                b_pressed = b_pressed || (HSD_PadCopyStatus[m].trigger & 0x200);
+            }
         } else
 #endif
         {
@@ -1176,8 +1193,8 @@ void mnStageSel_Scene_OnFrame(void)
                 gm_801A4B60();
                 return;
             }
-            if (net_remote_pick < 0) {
-                return; /* opponent still choosing; keep showing our pick */
+            if (!netStageSel_AllPicked()) {
+                return; /* others still choosing; keep showing our pick */
             }
             mnStageSel_804D6CAE = netStageSel_Resolve();
             /* >= NUM_STAGES, not >= 0x1E: 29 is the RANDOM button (stkind 0)

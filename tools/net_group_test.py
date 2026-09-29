@@ -75,6 +75,8 @@ class Machine:
         if hasattr(os, "mkfifo"):
             e.setdefault("SDL_VIDEO_DRIVER", os.environ.get("SDL_VIDEODRIVER", "x11"))
         e.update(env)
+        for k in [k for k, v in e.items() if v is None]:  # env value None = unset
+            del e[k]
         os.makedirs(e["MELEE_CACHE_DIR"], exist_ok=True)
         self.log = open(self.log_path, "wb")
         self.proc = subprocess.Popen([exe, "--no-card", disc], env=e, stdout=self.log,
@@ -154,6 +156,26 @@ def check_group(ms):
     return fails
 
 
+def css_walk(ms):
+    """From the Tag Battle CSS (MELEE_BOOT_SCENE=meleevs): every machine picks on
+    its own port (A), Start moves on to the SSS, every machine picks a stage
+    (A), and the match follows. Each step repeats until the next scene's own
+    archive shows up in every log, as net_test.press_until does."""
+    for _ in range(12):  # pick (A), then Start once everyone has a character
+        if nt.count(ms[0], nt.SCENE_FILE["sss"]) and all(nt.count(m, nt.SCENE_FILE["sss"]) for m in ms):
+            break
+        nt.press(ms, "X", 8, 1.5)
+        nt.press(ms, "Return", 8, 1.5)
+    else:
+        return False
+    for d in ("Right", "Down", "Left", "Up") * 6:  # sweep the cursor over the grid, A on each stop
+        if all(nt.count(m, nt.SCENE_FILE["match"]) for m in ms):
+            return True
+        nt.press(ms, d, 15, 0.3)
+        nt.press(ms, "X", 8, 1.0)
+    return all(nt.count(m, nt.SCENE_FILE["match"]) for m in ms)
+
+
 def run(args):
     n = args.machines
     if not 2 <= n <= 4:
@@ -170,6 +192,9 @@ def run(args):
         sim["MELEE_NET_SIM_DELAY_MS"] = str(args.delay)
     if args.jitter:
         sim["MELEE_NET_SIM_JITTER_MS"] = "20"
+    if args.css:  # the real menus instead of the debug match shortcut
+        sim.update({"MELEE_DEBUG_VS": None, "MELEE_DEBUG_VS_PLAYERS": None,
+                    "MELEE_BOOT_SCENE": "meleevs"})
     if args.input_delay is not None:
         sim["MELEE_NET_DELAY"] = str(args.input_delay)  # low: forces predictions, so rollbacks
     work = args.work or tempfile.mkdtemp(prefix="net_group_")
@@ -195,6 +220,12 @@ def run(args):
         if any(m.proc.poll() is not None for m in ms):
             print("net_group_test: a machine exited before the match", flush=True)
             ok = False
+        elif have_keys and args.css:
+            if not css_walk(ms) or not nt.wait_match(ms, 150):
+                print("net_group_test: never got through CSS and SSS into the match", flush=True)
+                ok = False
+            else:
+                workout = nt.Workout(ms)
         elif have_keys:
             if not nt.press_until(ms, "Return", 9, nt.SCENE_FILE["match"], tries=40, each=8.0,
                                   on=(ms[0],)) or not nt.wait_match(ms, 150):
@@ -244,6 +275,8 @@ def main():
     p.add_argument("--frames", type=int, default=0, help="exit frame (default: boot + minutes)")
     p.add_argument("--minutes", type=float, default=0.5)
     p.add_argument("--no-match", action="store_true", help="menus only, no key driving")
+    p.add_argument("--css", action="store_true",
+                   help="walk the real Tag Battle CSS and SSS instead of the debug match")
     p.add_argument("--key", action="store_true", help="pin MELEE_NET_KEY instead of deriving keys")
     p.add_argument("--loss", type=int, default=0)
     p.add_argument("--delay", type=int, default=0)

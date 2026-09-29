@@ -1695,9 +1695,10 @@ static uint32_t s_scene_seq;                     /* exits we have completed */
 static int32_t s_scene_exit_local = -1;          /* frame our scene asked to end on */
 static int32_t s_scene_exit_at = -1;             /* agreed frame, once both are in */
 static int32_t s_scene_wait_since = -1;          /* frame the incomplete wait began */
-static int32_t s_scene_exit_remote[SCENE_SLOTS]; /* the peer's, by its own seq */
+static int32_t s_scene_exit_remote[NET_MAX_PEERS][SCENE_SLOTS]; /* each peer's, by its own seq */
+#define SCENE_PEERS (net.npeers > 0 ? net.npeers : 1)
 
-void net_scene_rel(const void* payload, int len) {
+void net_scene_rel_from(int peer, const void* payload, int len) {
     SceneMsg m;
     if (len != (int)sizeof m) {
         pc_log_line("net: REL_SCENE of %d bytes ignored", len);
@@ -1729,15 +1730,21 @@ void net_scene_rel(const void* payload, int len) {
         pc_log_line("net: REL_SCENE seq %u ignored (we are on %u)", seq, s_scene_seq);
         return;
     }
-    s_scene_exit_remote[seq % SCENE_SLOTS] = (int32_t)f;
+    s_scene_exit_remote[peer][seq % SCENE_SLOTS] = (int32_t)f;
+}
+
+void net_scene_rel(const void* payload, int len) {
+    net_scene_rel_from(0, payload, len);
 }
 
 static void scene_handoff_reset(void) {
     s_scene_seq = 0;
     s_scene_exit_local = s_scene_exit_at = -1;
     s_scene_wait_since = -1;
-    for (int i = 0; i < SCENE_SLOTS; i++) {
-        s_scene_exit_remote[i] = -1;
+    for (int p = 0; p < NET_MAX_PEERS; p++) {
+        for (int i = 0; i < SCENE_SLOTS; i++) {
+            s_scene_exit_remote[p][i] = -1;
+        }
     }
 }
 
@@ -1749,7 +1756,15 @@ bool pc_net_scene_hold(void) {
          * recorded pair agreed, not where this run's own code asks to. */
         return record_replay_scene_hold(net.frame);
     }
-    int32_t* remote = &s_scene_exit_remote[s_scene_seq % SCENE_SLOTS];
+    /* Every peer must have announced; the exit is the latest of all asks. */
+    int32_t remote_max = -1;
+    bool all_in = true;
+    for (int p = 0; p < SCENE_PEERS; p++) {
+        int32_t r = s_scene_exit_remote[p][s_scene_seq % SCENE_SLOTS];
+        all_in = all_in && r >= 0;
+        remote_max = r > remote_max ? r : remote_max;
+    }
+    int32_t* remote = &remote_max;
     if (s_scene_exit_local < 0) {
         SceneMsg m = {htonl(s_scene_seq), htonl((uint32_t)net.frame)};
         /* Only latch the frame if the announcement actually went out. The
@@ -1770,7 +1785,7 @@ bool pc_net_scene_hold(void) {
      * eventually. The peer keeps sending inputs, so neither the stall timeout
      * nor the watchdog notices a peer that has simply stopped answering this
      * exchange, and the player is left in a scene they cannot leave. */
-    if (s_scene_exit_local < 0 || *remote < 0) {
+    if (s_scene_exit_local < 0 || !all_in) {
         static int32_t said;
         if (s_scene_wait_since < 0) {
             s_scene_wait_since = net.frame;
@@ -1809,7 +1824,9 @@ bool pc_net_scene_hold(void) {
     if (net.frame < s_scene_exit_at) {
         return true;
     }
-    *remote = -1;
+    for (int p = 0; p < SCENE_PEERS; p++) {
+        s_scene_exit_remote[p][s_scene_seq % SCENE_SLOTS] = -1;
+    }
     s_scene_exit_local = s_scene_exit_at = -1;
     s_scene_seq++;
     return false;

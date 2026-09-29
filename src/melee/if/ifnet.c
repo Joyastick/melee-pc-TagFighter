@@ -58,7 +58,8 @@ static void ifNet_Think(HSD_GObj* gobj)
     char line[160], opponent[32], debug[32] = "";
     const char* code = pc_net_match_state(NULL) == PC_MATCH_READY ?
                        pc_net_match_opponent_code() : NULL;
-    if (code && code[0]) snprintf(opponent, sizeof opponent, "%s", code);
+    if (pc_net_machines() > 2) snprintf(opponent, sizeof opponent, "%d others", pc_net_machines() - 1);
+    else if (code && code[0]) snprintf(opponent, sizeof opponent, "%s", code);
     else snprintf(opponent, sizeof opponent, "P%d",
                   pc_net_game_port(1 - pc_net_local_player(), 0) + 1);
     if (ifNet.debug) snprintf(debug, sizeof debug, "  rb %u", rollbacks);
