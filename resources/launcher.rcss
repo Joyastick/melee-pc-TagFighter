@@ -15,10 +15,11 @@ body {
     width: 100%; height: 100%; overflow: auto;
 }
 #shell { width: 86%; max-width: 1080dp; margin: 0 auto; padding: 30dp 0; }
-.topline { display: flex; justify-content: space-between; align-items: center; border-bottom: 1dp #293244; padding-bottom: 20dp; }
+.topline { display: flex; justify-content: flex-end; align-items: center; border-bottom: 1dp #293244; padding-bottom: 20dp; }
 .brand { color: #f4be63; font-weight: bold; letter-spacing: 2dp; font-size: 16dp; }
 .edition { color: #94a1b8; font-size: 13dp; letter-spacing: 1dp; }
 .hero { padding: 38dp 0 28dp; }
+.logo { width: 440dp; height: 150dp; }
 .eyebrow { font-size: 13dp; letter-spacing: 3dp; color: #f4be63; margin-bottom: 8dp; }
 .mod-tag { font-size: 18dp; letter-spacing: 0; color: #94a1b8; vertical-align: middle; }
 .mod-subtitle { font-size: 15dp; color: #94a1b8; margin: 10dp 0 0; }
@@ -369,6 +370,7 @@ input.range sliderarrowdec, input.range sliderarrowinc {
     #shell { width: 90%; padding: 18dp 0; }
     .edition { display: none; }
     .hero { padding: 24dp 0; }
+    .logo { width: 320dp; height: 109dp; }
     h1 { font-size: 66dp; }
     .columns { display: block; }
     .menu { width: 100%; margin-right: 0; }

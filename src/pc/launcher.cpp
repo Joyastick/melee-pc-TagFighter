@@ -1918,6 +1918,17 @@ extern "C" void pc_menu_event(const SDL_Event* event) {
         port_menu.gamepad(*event);
 }
 extern "C" void pc_menu_update(void) {
+    // Window title carries the FPS, refreshed twice a second. Skipped when
+    // MELEE_WINDOW_TITLE overrides the name (netplay test windows).
+    static uint64_t last_title = 0;
+    if (SDL_GetTicks() - last_title >= 500) {
+        last_title = SDL_GetTicks();
+        if (!getenv("MELEE_WINDOW_TITLE")) {
+            char title[64];
+            snprintf(title, sizeof title, "MeleeVS - %d FPS", int(aurora_get_fps() + 0.5f));
+            VISetWindowTitle(title);
+        }
+    }
     if (port_menu.counter) {
         if (prefs.fps) {
             if (!port_menu.counter->IsVisible())
