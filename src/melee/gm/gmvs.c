@@ -77,6 +77,15 @@ VsSceneState* gmVs_GetSceneState(void)
     return &controller.state;
 }
 
+#ifdef TARGET_PC
+/* net.c is built without the game sources' bitfield layout, so it cannot read
+ * StartMeleeRules itself (game_speed sits at a different offset there). */
+bool gmVs_IsGameSpeedNormal(void)
+{
+    return controller.start.game_speed == 1.0F;
+}
+#endif
+
 struct StartMeleeRules* gm_GetStartMeleeRules(void)
 {
     return &controller.start;

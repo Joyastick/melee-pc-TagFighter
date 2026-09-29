@@ -34,6 +34,7 @@
 #include <dolphin/ar.h>
 #include <dolphin/os.h>
 #include <dolphin/vi.h>
+#include <melee/gm/gmvs.h>
 #include <melee/gm/gmvsmelee.h>
 #include <melee/lb/lb_0195.h>
 #include <sysdolphin/baselib/controller.h>
@@ -3141,7 +3142,7 @@ static void fresh_tick(PADStatus* head, bool raw) {
          * (gmslomo.c sets game_speed 0.5 and declares itself GS_VS), so
          * after a rollback of odd depth the two peers advance the scene on
          * opposite ticks -- one simulates a frame the other skips. */
-        bool speed_1 = gmVsMelee_StartData.rules.game_speed == 1.0F;
+        bool speed_1 = gmVs_IsGameSpeedNormal();
         bool lockstep = s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1;
         /* The last lockstep frames before this fight can predict: size and
          * page in the rollback ring now, a slot a frame, while the wait below
