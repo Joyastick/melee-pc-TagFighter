@@ -2155,8 +2155,11 @@ static bool connect_impl(
      * drops the new raw sample instead; the local input is read from the
      * head anyway. */
     HSD_PadLibData.qtype = 2;
-    net.local = player ? 1 : 0;
-    net.remote = 1 - net.local;
+    /* `player` is this machine's number: 0 or 1 for the two-machine callers,
+     * up to 3 in a group (pc_net_connect_group). Peers are the other machines
+     * in ascending order, so machine 0 (the host) is peers[0] for every guest. */
+    net.local = player < 0 ? 0 : player > NET_MAX_PEERS ? NET_MAX_PEERS : player;
+    net.remote = net.local == 0 ? 1 : 0;
     net.npeers = 1;
     net.peers[0].machine = net.remote;
     /* A hand-typed address may be a peer the user has not started yet, so it
@@ -2271,26 +2274,115 @@ bool pc_net_connect_socket(
     return connect_impl((sock_t)socket, ip, port, player, seed);
 }
 
+/* A 3 or 4 machine match. ips/ports are indexed by machine number (`machines`
+ * entries, our own unused); machine 0 hosts. The first other machine goes
+ * through the ordinary connect (its address, the socket, the session state),
+ * the rest are added as further peers of the same socket. socket -1 binds one
+ * as pc_net_connect does. */
+bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
+    const uint16_t* ports, uint32_t seed) {
+    if (machines < 2 || machines > NET_MAX_MACHINES || local < 0 || local >= machines) {
+        return false;
+    }
+    int first = local == 0 ? 1 : 0;
+    pc_net_set_session_secret(NULL);
+    if (!connect_impl(socket == -1 ? SOCK_INVALID : (sock_t)socket, ips[first], ports[first], local,
+            seed))
+    {
+        return false;
+    }
+    int n = 1;
+    for (int m = first + 1; m < machines; m++) {
+        if (m == local) {
+            continue;
+        }
+        char portstr[8];
+        snprintf(portstr, sizeof portstr, "%u", ports[m]);
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = net.peers[0].addr.ss_family; /* one socket, one family */
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(ips[m], portstr, &hints, &res) != 0 || res == NULL ||
+            !addr_is_host(res->ai_addr))
+        {
+            pc_log_line("net: group: cannot use %s:%u for machine %d", ips[m], ports[m], m);
+            if (res != NULL) {
+                freeaddrinfo(res);
+            }
+            pc_net_disconnect();
+            return false;
+        }
+        /* Both locks: the receive thread reads peers under s_rx_lock, senders
+         * under tx_lock, and neither may see a half-written peer. */
+        SDL_LockMutex(s_rx_lock);
+        SDL_LockMutex(net.tx_lock);
+        Peer* pr = &net.peers[n];
+        memcpy(&pr->addr, res->ai_addr, res->ai_addrlen);
+        pr->addr_len = (socklen_t)res->ai_addrlen;
+        pr->machine = m;
+        net.npeers = ++n;
+        SDL_UnlockMutex(net.tx_lock);
+        SDL_UnlockMutex(s_rx_lock);
+        freeaddrinfo(res);
+    }
+    net.peers[0].machine = first;
+    pc_log_line("net: group of %d machines, we are machine %d", machines, local);
+    return true;
+}
+
 void pc_net_init(void) {
     s_game_thread = SDL_GetCurrentThreadID(); /* pc_platform_init runs on it */
     const char* peer = getenv("MELEE_NET");
     if (peer == NULL || peer[0] == '\0') {
         return;
     }
-    char host[256];
-    const char* colon = strrchr(peer, ':');
-    if (colon == NULL || (size_t)(colon - peer) >= sizeof host) {
-        pc_log_line("net: MELEE_NET must be host:port");
-        return;
-    }
-    memcpy(host, peer, (size_t)(colon - peer));
-    host[colon - peer] = '\0';
     const char* player = getenv("MELEE_NET_PLAYER");
     const char* seed = getenv("MELEE_SEED");
-    if (!pc_net_connect(host, (uint16_t)atoi(colon + 1), player && player[0] == '1',
-            seed ? (uint32_t)strtoul(seed, NULL, 0) : 0))
-    {
-        return;
+    uint32_t seed_value = seed ? (uint32_t)strtoul(seed, NULL, 0) : 0;
+    if (strchr(peer, ',') != NULL) {
+        /* MELEE_NET=host:port,host:port[,host:port] lists every OTHER machine
+         * in ascending machine order; MELEE_NET_PLAYER is this machine's
+         * number (0 hosts). A 3 or 4 machine match with no lobby. */
+        char list[512];
+        snprintf(list, sizeof list, "%s", peer);
+        char hosts[NET_MAX_MACHINES][128];
+        const char* hp[NET_MAX_MACHINES];
+        uint16_t ports[NET_MAX_MACHINES];
+        int local = player ? atoi(player) : 0;
+        int n = 0, machines = 0;
+        for (char* tok = strtok(list, ","); tok != NULL; tok = strtok(NULL, ",")) {
+            char* c = strrchr(tok, ':');
+            if (c == NULL || n >= NET_MAX_PEERS || (size_t)(c - tok) >= sizeof hosts[0]) {
+                pc_log_line("net: MELEE_NET must be host:port[,host:port...] (up to %d)",
+                    NET_MAX_PEERS);
+                return;
+            }
+            int m = n < local ? n : n + 1; /* skip our own number */
+            n++;
+            machines = n + 1;
+            memcpy(hosts[m], tok, (size_t)(c - tok));
+            hosts[m][c - tok] = '\0';
+            hp[m] = hosts[m];
+            ports[m] = (uint16_t)atoi(c + 1);
+        }
+        if (local < 0 || local >= machines ||
+            !pc_net_connect_group(-1, local, machines, hp, ports, seed_value))
+        {
+            pc_log_line("net: MELEE_NET group refused (machine %d of %d)", local, machines);
+            return;
+        }
+    } else {
+        char host[256];
+        const char* colon = strrchr(peer, ':');
+        if (colon == NULL || (size_t)(colon - peer) >= sizeof host) {
+            pc_log_line("net: MELEE_NET must be host:port");
+            return;
+        }
+        memcpy(host, peer, (size_t)(colon - peer));
+        host[colon - peer] = '\0';
+        if (!pc_net_connect(host, (uint16_t)atoi(colon + 1), player && player[0] == '1', seed_value)) {
+            return;
+        }
     }
     /* No lobby agreed this match, so the session agrees it itself: the same
      * RULES/READY exchange a lobby session runs, hosted by player 1, fired

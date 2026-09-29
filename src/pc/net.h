@@ -73,6 +73,11 @@ bool pc_net_local_pause(int* leave_hold, int* leave_needed);
  * transfers on success only; no new NAT mapping is created. */
 bool pc_net_connect_socket(
     intptr_t socket, const char* ip, uint16_t port, int player, uint32_t seed);
+/* A 3 or 4 machine match on one socket: ips/ports indexed by machine number
+ * (`machines` entries, our own ignored), machine 0 hosts. socket -1 binds a
+ * new one. Peers end up in ascending machine order. */
+bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
+    const uint16_t* ports, uint32_t seed);
 /* The 32-byte secret pairing agreed for the next session (NULL clears it).
  * Set just before pc_net_connect_socket(); the handshake's datagram key is
  * then derived under it, and it is wiped when that session ends. */

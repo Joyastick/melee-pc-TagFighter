@@ -220,6 +220,7 @@ set(PC_SOURCES
         src/pc/net_dht_item.c
         src/pc/net_identity.c
         src/pc/net_match.c
+        src/pc/net_group.c
         src/pc/net_rank.c
         src/pc/net_rank_store.c
         src/pc/net_rank_session.c
@@ -545,6 +546,12 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         add_test(NAME net_dht_bootstrap COMMAND net_dht_bootstrap_test)
         set_tests_properties(net_dht_bootstrap PROPERTIES LABELS melee TIMEOUT 30)
         add_dependencies(unit_tests net_dht_bootstrap_test)
+        add_executable(net_group_test EXCLUDE_FROM_ALL tools/test_net_group.c src/pc/net_group.c)
+        target_include_directories(net_group_test PRIVATE src src/pc)
+        target_compile_options(net_group_test PRIVATE -UNDEBUG)
+        add_test(NAME net_group COMMAND net_group_test)
+        set_tests_properties(net_group PROPERTIES LABELS melee TIMEOUT 30)
+        add_dependencies(unit_tests net_group_test)
         add_executable(net_sfx_test EXCLUDE_FROM_ALL tools/test_net_sfx.c src/pc/net_sfx.c)
         target_include_directories(net_sfx_test PRIVATE src)
         target_compile_options(net_sfx_test PRIVATE -UNDEBUG)
