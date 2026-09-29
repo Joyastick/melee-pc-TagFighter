@@ -2381,6 +2381,28 @@ bool TagAssist_IsAssistReady(int port)
     return Player_GetStocks(GET_FIGHTER(team->assist)->player_id) > 0;
 }
 
+bool TagAssist_CanShareStock(int port)
+{
+    u8 color;
+    TeamState* team;
+
+    if (!sTagBattleOn || port >= 4) {
+        return false;
+    }
+    color = sPortTeamColor[port];
+    if (color >= 2) {
+        return false;
+    }
+    team = &sTeams[color];
+    if (!team->initialized || !team->point_eliminated ||
+        team->eliminated_partner == NULL || team->point == NULL ||
+        GET_FIGHTER(team->point)->player_id != port)
+    {
+        return false;
+    }
+    return Player_GetStocks(port) > 1;
+}
+
 u32 TagAssist_GetAssistFramesLeft(int port)
 {
     u8 color;
