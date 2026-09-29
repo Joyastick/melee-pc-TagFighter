@@ -168,12 +168,16 @@ def css_walk(ms):
         nt.press(ms, "Return", 8, 1.5)
     else:
         return False
+    fight = r"net: scene \d+ -> 2 at frame"  # into the fight (a fresh cache logs STORED, not HIT)
     for d in ("Right", "Down", "Left", "Up") * 6:  # sweep the cursor over the grid, A on each stop
-        if all(nt.count(m, nt.SCENE_FILE["match"]) for m in ms):
+        if all(nt.count(m, fight) for m in ms):
             return True
         nt.press(ms, d, 15, 0.3)
         nt.press(ms, "X", 8, 1.0)
-    return all(nt.count(m, nt.SCENE_FILE["match"]) for m in ms)
+    deadline = time.time() + 30
+    while time.time() < deadline and not all(nt.count(m, fight) for m in ms):
+        time.sleep(1)
+    return all(nt.count(m, fight) for m in ms)
 
 
 def run(args):
@@ -192,6 +196,8 @@ def run(args):
         sim["MELEE_NET_SIM_DELAY_MS"] = str(args.delay)
     if args.jitter:
         sim["MELEE_NET_SIM_JITTER_MS"] = "20"
+    if args.stocks:  # a stock match: someone loses the last stock and GAME! ends it
+        sim["MELEE_DEBUG_VS_STOCKS"] = str(args.stocks)
     if args.css:  # the real menus instead of the debug match shortcut
         sim.update({"MELEE_DEBUG_VS": None, "MELEE_DEBUG_VS_PLAYERS": None,
                     "MELEE_BOOT_SCENE": "meleevs"})
@@ -221,7 +227,9 @@ def run(args):
             print("net_group_test: a machine exited before the match", flush=True)
             ok = False
         elif have_keys and args.css:
-            if not css_walk(ms) or not nt.wait_match(ms, 150):
+            # No wait_match here: it wants a moving checksum, and an idle match has none
+            # until the workout starts, so it would wait for itself.
+            if not css_walk(ms):
                 print("net_group_test: never got through CSS and SSS into the match", flush=True)
                 ok = False
             else:
@@ -249,6 +257,9 @@ def run(args):
                 print("net_group_test: no frame progress for 25 s, giving up", flush=True)
                 break
     finally:
+        print("net_group_test: at the end: " + ", ".join(
+            f"{m.name} " + ("running" if m.proc.poll() is None else f"exited {m.proc.poll()}")
+            for m in ms), flush=True)
         if workout is not None:
             print(f"net_group_test: workout wrote {workout.done()} key lines", flush=True)
         for m in ms:
@@ -275,6 +286,8 @@ def main():
     p.add_argument("--frames", type=int, default=0, help="exit frame (default: boot + minutes)")
     p.add_argument("--minutes", type=float, default=0.5)
     p.add_argument("--no-match", action="store_true", help="menus only, no key driving")
+    p.add_argument("--stocks", type=int, default=0,
+                   help="debug match with N stocks each, so it ends on GAME! (match-end path)")
     p.add_argument("--css", action="store_true",
                    help="walk the real Tag Battle CSS and SSS instead of the debug match")
     p.add_argument("--key", action="store_true", help="pin MELEE_NET_KEY instead of deriving keys")

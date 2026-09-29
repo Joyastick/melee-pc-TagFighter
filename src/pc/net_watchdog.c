@@ -113,6 +113,80 @@ void net_watchdog_tick(int32_t frame) {
 void net_watchdog_heartbeat(void) {
     s_last_move_ns = SDL_GetTicksNS();
 }
+#elif defined(_WIN32) && defined(__x86_64__)
+/* Windows x64: the timer thread suspends the stuck game thread and unwinds
+ * it with the image's own unwind tables. The addresses are logged after the
+ * thread is resumed (a log lock it holds would otherwise wedge this one).
+ * Resolve with addr2line -f -C -e melee.exe <preferred base + offset>. */
+#include <windows.h>
+
+#define WATCHDOG_MS 5000
+#define WATCHDOG_DEPTH 24
+
+static HANDLE s_game_thread;
+static bool s_reported;
+static int32_t s_last_frame = -1;
+static uint64_t s_last_move_ns;
+
+void net_watchdog_arm(void) {
+    if (s_game_thread == NULL) {
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+            FALSE, GetCurrentThreadId());
+        __atomic_store_n(&s_game_thread, h, __ATOMIC_RELEASE);
+    }
+}
+
+void net_watchdog_tick(int32_t frame) {
+    uint64_t now = SDL_GetTicksNS();
+    HANDLE h = __atomic_load_n(&s_game_thread, __ATOMIC_ACQUIRE);
+    if (frame != s_last_frame) {
+        s_last_frame = frame;
+        s_last_move_ns = now;
+        s_reported = false;
+        return;
+    }
+    if (s_reported || h == NULL || s_last_move_ns == 0 ||
+        now - s_last_move_ns < (uint64_t)WATCHDOG_MS * 1000000ull)
+    {
+        return;
+    }
+    s_reported = true;
+    uintptr_t pc[WATCHDOG_DEPTH];
+    int n = 0;
+    CONTEXT ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.ContextFlags = CONTEXT_FULL;
+    if (SuspendThread(h) != (DWORD)-1) {
+        if (GetThreadContext(h, &ctx)) {
+            while (n < WATCHDOG_DEPTH && ctx.Rip != 0) {
+                pc[n++] = (uintptr_t)ctx.Rip;
+                DWORD64 base = 0;
+                PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &base, NULL);
+                if (fn == NULL) { /* a leaf with no unwind data: the return address is at Rsp */
+                    ctx.Rip = *(DWORD64*)ctx.Rsp;
+                    ctx.Rsp += 8;
+                    continue;
+                }
+                PVOID handler_data = NULL;
+                DWORD64 frame_base = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, fn, &ctx, &handler_data,
+                    &frame_base, NULL);
+            }
+        }
+        ResumeThread(h);
+    }
+    uintptr_t image = (uintptr_t)GetModuleHandleA(NULL);
+    pc_log_line("net: the game thread has not ticked for %d ms at frame %d; stack follows",
+        WATCHDOG_MS, frame);
+    for (int i = 0; i < n; i++) {
+        pc_log_line("net: wedged #%d pc %" PRIxPTR " (base %" PRIxPTR ", offset %" PRIxPTR ")", i,
+            pc[i], image, pc[i] - image);
+    }
+}
+
+void net_watchdog_heartbeat(void) {
+    s_last_move_ns = SDL_GetTicksNS();
+}
 #else
 void net_watchdog_arm(void) {}
 
