@@ -35,7 +35,7 @@
  *     s_rel_tx[s_rel_tx_head] is the message in flight, resent until its
  *     'K' arrives. The reliable receive queue is game thread only;
  *   - the session key (net_wire.c), the RTT ring, and net.session and
- *     net.peer, which the receive thread alone changes once a session is up
+ *     net.peers[0], which the receive thread alone changes once a session is up
  *     (the guest learning its id, a dual-stack peer answering from another
  *     address).
  * All simulation state (frames, input rings, snapshots, rollback, time
@@ -375,12 +375,37 @@ enum { HS_IDLE, HS_PENDING, HS_DONE, HS_FAILED };
  * test for the desync it caused. */
 enum { SYNC_ON, SYNC_OFF, SYNC_LEGACY };
 
+/* One remote machine of a match: where it is, what we hold of its input, and
+ * the receive-side dedup and checksum state that goes with it. A match is
+ * 1 to NET_MAX_PEERS of these (mesh: every machine talks to every other). */
+#define NET_MAX_PEERS 3
+typedef struct Peer {
+    struct sockaddr_storage addr;
+    socklen_t addr_len;
+    WireFrame remote_ring[RING]; /* real input, or the prediction in use */
+    int32_t remote_have;         /* newest contiguous real frame */
+    int32_t remote_newest;       /* newest frame it reported holding */
+    int32_t last_acked;          /* newest local frame it holds */
+    /* Its checksums by frame: each is compared once we confirm the frame too. */
+    struct {
+        int32_t frame; /* -1: empty */
+        uint32_t ck;
+    } rck[RING];
+    int32_t ck_checked; /* newest frame compared against its checksum */
+    bool heard;         /* any packet from it yet */
+    uint64_t last_rx_ns;
+    int32_t rx_have; /* newest contiguous frame queued by the receive thread (acked) */
+    bool rx_seq_init;
+    uint16_t rx_seq_top;  /* highest seq seen */
+    uint64_t rx_seq_bits; /* bit k: (top-k) received; bit 0 = top */
+} Peer;
+
 struct NetSession {
     /* session (net.c); active and sock flip under tx_lock */
     bool active;
     sock_t sock;
-    struct sockaddr_storage peer;
-    socklen_t peer_len;
+    Peer peers[NET_MAX_PEERS];
+    int npeers; /* 1 until the N-peer rollback lands */
     int local, remote, delay;
     uint32_t session; /* 0 on the guest until the host's first packet */
     /* How long to wait for the peer's first datagram, ms. CONNECT_TIMEOUT_MS

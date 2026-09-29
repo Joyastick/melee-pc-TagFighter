@@ -54,28 +54,40 @@
 
 /* ---- state ------------------------------------------------------------ */
 
-struct NetSession net = {
-    .sock = SOCK_INVALID, .tick_frame = -1, .rb_barrier = -1, .start_frame = -1};
+struct NetSession net = {.sock = SOCK_INVALID,
+    .tick_frame = -1,
+    .rb_barrier = -1,
+    .start_frame = -1,
+    .npeers = 1,
+    .peers = {[0] = {.remote_have = -1,
+                  .remote_newest = -1,
+                  .last_acked = -1,
+                  .ck_checked = -1,
+                  .rx_have = -1}}};
+
+/* Peer 0 is the only peer until the N-peer rollback lands; these names keep
+ * every existing use pointing at it. Each becomes a per-peer loop later. */
+#define s_remote_ring (net.peers[0].remote_ring)
+#define s_remote_have (net.peers[0].remote_have)
+#define s_remote_newest (net.peers[0].remote_newest)
+#define s_last_acked (net.peers[0].last_acked)
+#define s_rck (net.peers[0].rck)
+#define s_ck_checked (net.peers[0].ck_checked)
+#define s_heard (net.peers[0].heard)
+#define s_last_rx_ns (net.peers[0].last_rx_ns)
+#define s_rx_have (net.peers[0].rx_have)
+#define s_rx_seq_init (net.peers[0].rx_seq_init)
+#define s_rx_seq_top (net.peers[0].rx_seq_top)
+#define s_rx_seq_bits (net.peers[0].rx_seq_bits)
 
 static WireFrame s_local_ring[RING];  /* indexed by frame & (RING-1) */
-static WireFrame s_remote_ring[RING]; /* real input, or the prediction in use */
-static int32_t s_remote_have = -1;    /* newest contiguous real remote frame */
-static int32_t s_remote_newest = -1;  /* newest frame the peer reported holding */
-static int32_t s_last_acked = -1;     /* newest local frame the peer holds */
 static int32_t s_rb_frame = -1;       /* oldest mispredicted frame not rolled back yet */
 /* The peer's checksums by frame. Each input packet reports one frame, the
  * newest it has confirmed, and that is often ahead of ours; a single slot
  * overwritten by every packet meant those frames were never compared from
  * this side. Kept by frame instead, each is compared once we confirm it too
  * (GGRS's pending-checksum map, bounded here by the ring). */
-static struct {
-    int32_t frame; /* -1: empty */
-    uint32_t ck;
-} s_rck[RING];
-static int32_t s_ck_checked = -1; /* newest frame compared against the peer's */
 static uint32_t s_ck_ring[RING];  /* our checksum entering each frame */
-static bool s_heard;              /* any packet from the peer yet */
-static uint64_t s_last_rx_ns;     /* when the last accepted datagram arrived */
 /* When the contiguous remote mark last moved, 0 before the first time. The
  * no-progress bound is measured from here, not from the start of a wait:
  * wait_remote's own clock restarts on every call, so a peer that advanced one
@@ -157,7 +169,6 @@ static atomic_int s_frame_pub; /* net.frame as the receive thread may read it */
 static atomic_bool s_want_resend;
 /* send_inputs' adv, recomputed every tick (tx_timer stamps it on resends) */
 static atomic_int s_adv_pub;
-static int32_t s_rx_have = -1;   /* newest contiguous remote frame queued (acked) */
 static bool s_rx_left;           /* BYE or protocol mismatch seen: s_peer_left to be */
 static int s_rx_why;             /* the s_status that goes with it */
 static unsigned s_rx_full;       /* datagrams dropped on a full queue, this window */
@@ -172,9 +183,6 @@ static struct {
     uint16_t seq;
     uint64_t send_ns;
 } s_rtt_ring[64]; /* last 64 sends (tx_lock) */
-static bool s_rx_seq_init;
-static uint16_t s_rx_seq_top;             /* highest seq seen */
-static uint64_t s_rx_seq_bits;            /* bit k: (top-k) received; bit 0 = top */
 static unsigned s_rx_dups, s_rx_reorders; /* this stats window */
 
 /* Socket errors: transient ones (EAGAIN/EINTR/ICMP unreachable) are ignored,
@@ -370,7 +378,7 @@ static void sock_err_note(const char* what, int e) {
 /* One sendto with error translation (caller holds tx_lock). */
 int net_sendto(const void* buf, size_t len) {
     int r =
-        (int)sendto(net.sock, (const char*)buf, len, 0, (struct sockaddr*)&net.peer, net.peer_len);
+        (int)sendto(net.sock, (const char*)buf, len, 0, (struct sockaddr*)&net.peers[0].addr, net.peers[0].addr_len);
     if (r < 0) {
         int e = sock_last_err();
         if (sock_would_block(e)) {
@@ -1005,7 +1013,7 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
             MAC_QUIET_MAX);
     }
     wire_hdr(h);
-    bool same_addr = addr_eq(from, &net.peer);
+    bool same_addr = addr_eq(from, &net.peers[0].addr);
     /* Once pinned, unrelated traffic cannot change any session state.
      *
      * Before pinning, the address is NOT a usable filter: the two sides
@@ -1022,7 +1030,7 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
         if (!s_warn_src) {
             char got[80] = "?", want[80] = "?";
             net_addr_text((const struct sockaddr*)from, got, sizeof got);
-            net_addr_text((const struct sockaddr*)&net.peer, want, sizeof want);
+            net_addr_text((const struct sockaddr*)&net.peers[0].addr, want, sizeof want);
             s_warn_src = true;
             pc_log_line("net: dropped a datagram from %s (the peer is %s)", got, want);
         }
@@ -1082,11 +1090,11 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
     if (!s_heard && !same_addr) {
         char got[80] = "?", want[80] = "?";
         net_addr_text((const struct sockaddr*)from, got, sizeof got);
-        net_addr_text((const struct sockaddr*)&net.peer, want, sizeof want);
+        net_addr_text((const struct sockaddr*)&net.peers[0].addr, want, sizeof want);
         pc_log_line("net: peer answers from %s, not %s; following it", got, want);
         SDL_LockMutex(net.tx_lock);
-        memcpy(&net.peer, from, sizeof net.peer);
-        net.peer_len = from_len;
+        memcpy(&net.peers[0].addr, from, sizeof net.peers[0].addr);
+        net.peers[0].addr_len = from_len;
         SDL_UnlockMutex(net.tx_lock);
     }
     if (net.sim_rx_delay_ns == 0) {
@@ -2018,8 +2026,8 @@ static bool connect_impl(
         freeaddrinfo(res);
         return false;
     }
-    memcpy(&net.peer, res->ai_addr, res->ai_addrlen);
-    net.peer_len = (socklen_t)res->ai_addrlen;
+    memcpy(&net.peers[0].addr, res->ai_addr, res->ai_addrlen);
+    net.peers[0].addr_len = (socklen_t)res->ai_addrlen;
     int family = res->ai_family;
     freeaddrinfo(res);
 
