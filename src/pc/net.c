@@ -83,14 +83,14 @@ static int32_t have_min(void) {
     return m;
 }
 
-static WireFrame s_local_ring[RING];  /* indexed by frame & (RING-1) */
-static int32_t s_rb_frame = -1;       /* oldest mispredicted frame not rolled back yet */
+static WireFrame s_local_ring[RING]; /* indexed by frame & (RING-1) */
+static int32_t s_rb_frame = -1;      /* oldest mispredicted frame not rolled back yet */
 /* The peer's checksums by frame. Each input packet reports one frame, the
  * newest it has confirmed, and that is often ahead of ours; a single slot
  * overwritten by every packet meant those frames were never compared from
  * this side. Kept by frame instead, each is compared once we confirm it too
  * (GGRS's pending-checksum map, bounded here by the ring). */
-static uint32_t s_ck_ring[RING];  /* our checksum entering each frame */
+static uint32_t s_ck_ring[RING]; /* our checksum entering each frame */
 /* When the contiguous remote mark last moved, 0 before the first time. The
  * no-progress bound is measured from here, not from the start of a wait:
  * wait_remote's own clock restarts on every call, so a peer that advanced one
@@ -375,7 +375,8 @@ static void sock_err_note(const char* what, int e) {
 /* One sendto with error translation (caller holds tx_lock). */
 int net_sendto(int peer, const void* buf, size_t len) {
     const Peer* to = &net.peers[peer];
-    int r = (int)sendto(net.sock, (const char*)buf, len, 0, (const struct sockaddr*)&to->addr, to->addr_len);
+    int r = (int)sendto(
+        net.sock, (const char*)buf, len, 0, (const struct sockaddr*)&to->addr, to->addr_len);
     if (r < 0) {
         int e = sock_last_err();
         if (sock_would_block(e)) {
@@ -1313,8 +1314,7 @@ static void dump_rings_around(int32_t f) {
     pc_log_line("net: ring have %d newest %d wrote %d delay %d barrier %d rb_frame %d resim %d, "
                 "last rollbacks %s",
         CP->remote_have, CP->remote_newest, s_wrote, net.delay, net.rb_barrier, s_rb_frame,
-        net.resim,
-        rb);
+        net.resim, rb);
 }
 
 /* Every frame both peers have confirmed and the peer reported a checksum
@@ -1340,8 +1340,8 @@ static void check_desync(void) {
             if (s_ck_ring[i] != pr->rck[i].ck) {
                 net.desync_reported = true;
                 s_status = PC_NET_PEER_DESYNC;
-                pc_log_line("net: DESYNC at frame %d against machine %d (local %08x remote %08x)", f,
-                    pr->machine, s_ck_ring[i], pr->rck[i].ck);
+                pc_log_line("net: DESYNC at frame %d against machine %d (local %08x remote %08x)",
+                    f, pr->machine, s_ck_ring[i], pr->rck[i].ck);
                 dump_rings_around(f);
                 dump_states_around(f);
                 return;
@@ -1691,11 +1691,11 @@ void pc_net_disconnect(void);
  * releases immediately while the other is still waiting, and the sims part
  * on the frame that peer enters the next scene (measured tablet<->PC, "peer
  * 121" against an exit asked at 5775). */
-static uint32_t s_scene_seq;                     /* exits we have completed */
-static int32_t s_scene_exit_local = -1;          /* frame our scene asked to end on */
-static int32_t s_scene_exit_at = -1;             /* agreed frame, once both are in */
-static int32_t s_scene_wait_since = -1;          /* frame the incomplete wait began */
-static bool s_scene_settle;                      /* leaving: no new predictions, corrections still allowed */
+static uint32_t s_scene_seq;            /* exits we have completed */
+static int32_t s_scene_exit_local = -1; /* frame our scene asked to end on */
+static int32_t s_scene_exit_at = -1;    /* agreed frame, once both are in */
+static int32_t s_scene_wait_since = -1; /* frame the incomplete wait began */
+static bool s_scene_settle;             /* leaving: no new predictions, corrections still allowed */
 static int32_t s_scene_exit_remote[NET_MAX_PEERS][SCENE_SLOTS]; /* each peer's, by its own seq */
 #define SCENE_PEERS (net.npeers > 0 ? net.npeers : 1)
 
@@ -2308,8 +2308,8 @@ bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* 
     }
     int first = local == 0 ? 1 : 0;
     pc_net_set_session_secret(NULL);
-    if (!connect_impl(socket == -1 ? SOCK_INVALID : (sock_t)socket, ips[first], ports[first], local,
-            seed))
+    if (!connect_impl(
+            socket == -1 ? SOCK_INVALID : (sock_t)socket, ips[first], ports[first], local, seed))
     {
         return false;
     }
@@ -2375,8 +2375,8 @@ void pc_net_init(void) {
         for (char* tok = strtok(list, ","); tok != NULL; tok = strtok(NULL, ",")) {
             char* c = strrchr(tok, ':');
             if (c == NULL || n >= NET_MAX_PEERS || (size_t)(c - tok) >= sizeof hosts[0]) {
-                pc_log_line("net: MELEE_NET must be host:port[,host:port...] (up to %d)",
-                    NET_MAX_PEERS);
+                pc_log_line(
+                    "net: MELEE_NET must be host:port[,host:port...] (up to %d)", NET_MAX_PEERS);
                 return;
             }
             int m = n < local ? n : n + 1; /* skip our own number */
@@ -2402,7 +2402,9 @@ void pc_net_init(void) {
         }
         memcpy(host, peer, (size_t)(colon - peer));
         host[colon - peer] = '\0';
-        if (!pc_net_connect(host, (uint16_t)atoi(colon + 1), player && player[0] == '1', seed_value)) {
+        if (!pc_net_connect(
+                host, (uint16_t)atoi(colon + 1), player && player[0] == '1', seed_value))
+        {
             return;
         }
     }
@@ -3333,8 +3335,8 @@ static void fresh_tick(PADStatus* head, bool raw) {
          * after a rollback of odd depth the two peers advance the scene on
          * opposite ticks -- one simulates a frame the other skips. */
         bool speed_1 = gmVs_IsGameSpeedNormal();
-        bool lockstep = s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1 ||
-                        s_scene_settle;
+        bool lockstep =
+            s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1 || s_scene_settle;
         /* The last lockstep frames before this fight can predict: size and
          * page in the rollback ring now, a slot a frame, while the wait below
          * is for the peer anyway (net_snapshot.c snaps_reserve). A barrier
@@ -3434,12 +3436,11 @@ static void fresh_tick(PADStatus* head, bool raw) {
             net.skips, s_advances, net.ping_us / 1000,
             s_ping_n ? s_ping_sum / 1000.0 / s_ping_n : 0.0, s_rtt_min / 1000, s_rtt_max / 1000,
             jitter_us() / 1000.0, s_loss_pct, net.tx_pkts, s_rx_pkts, net.offset_last / 1000.0,
-            net.frame - 1 - have_min(), net.rb_barrier, pc_net_quality(), s_rx_dups,
-            s_rx_reorders, s_sock_err, s_resim_eat, s_red_target, s_rx_bad_src, s_rx_bad_sess,
-            s_rx_bad_player, s_rx_bad_mac, s_rx_malformed, s_tx_would_block, s_rx_full,
-            net.pad_reuse, net.pad_empty, s_aj_replays, s_aj_over, s_seed_out_draws,
-            s_seed_out_frames, s_pad_slips, s_qdepth_max, s_pad_full, s_tick_idle, s_deaf_asks,
-            s_deaf_true);
+            net.frame - 1 - have_min(), net.rb_barrier, pc_net_quality(), s_rx_dups, s_rx_reorders,
+            s_sock_err, s_resim_eat, s_red_target, s_rx_bad_src, s_rx_bad_sess, s_rx_bad_player,
+            s_rx_bad_mac, s_rx_malformed, s_tx_would_block, s_rx_full, net.pad_reuse, net.pad_empty,
+            s_aj_replays, s_aj_over, s_seed_out_draws, s_seed_out_frames, s_pad_slips, s_qdepth_max,
+            s_pad_full, s_tick_idle, s_deaf_asks, s_deaf_true);
         s_stall_ns_max = 0;
         s_ping_sum = 0;
         s_ping_n = 0;

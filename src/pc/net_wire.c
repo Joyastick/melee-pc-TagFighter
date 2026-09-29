@@ -175,9 +175,9 @@ static const char KEY_LABEL_DIRECT[] = "melee-pc netplay direct key v1";
  * nonces, so a 3 or 4 machine match holds up to NET_MAX_PEERS of them. */
 static uint8_t s_key[NET_MAX_PEERS][32];
 static uint8_t s_secret[32];
-static bool s_secret_on;  /* s_secret holds pairing's secret for this session */
+static bool s_secret_on;             /* s_secret holds pairing's secret for this session */
 static bool s_key_on[NET_MAX_PEERS]; /* s_key[i] holds a key for the session in progress */
-static bool s_key_pinned; /* from MELEE_NET_KEY: the handshake must not rekey */
+static bool s_key_pinned;            /* from MELEE_NET_KEY: the handshake must not rekey */
 
 static void put32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24);
@@ -204,7 +204,8 @@ void net_key_session_peer(int peer, uint64_t host_nonce, uint64_t guest_nonce) {
     put64(p + 4, host_nonce);
     put64(p + 12, guest_nonce);
     if (s_secret_on) {
-        crypto_blake2b_keyed(s_key[peer], sizeof s_key[peer], s_secret, sizeof s_secret, m, sizeof m);
+        crypto_blake2b_keyed(
+            s_key[peer], sizeof s_key[peer], s_secret, sizeof s_secret, m, sizeof m);
     } else {
         crypto_blake2b(s_key[peer], sizeof s_key[peer], m, sizeof m);
     }

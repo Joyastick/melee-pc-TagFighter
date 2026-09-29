@@ -16,13 +16,13 @@ extern "C" {
 #define GROUP_MAX 4
 
 typedef struct GroupMember {
-    uint8_t key[32];    /* identity key: who this is */
-    uint32_t pub_ip;    /* NAT-observed address as a.b.c.d = a<<24 | b<<16 | c<<8 | d */
-    uint16_t pub_port;  /* host order */
-    uint32_t lan_ip;    /* 0 if not known */
+    uint8_t key[32];   /* identity key: who this is */
+    uint32_t pub_ip;   /* NAT-observed address as a.b.c.d = a<<24 | b<<16 | c<<8 | d */
+    uint16_t pub_port; /* host order */
+    uint32_t lan_ip;   /* 0 if not known */
     uint16_t lan_port;
-    uint8_t team;       /* 0 = A, 1 = B */
-    uint8_t party;      /* members that queued together share it */
+    uint8_t team;  /* 0 = A, 1 = B */
+    uint8_t party; /* members that queued together share it */
 } GroupMember;
 
 /* Machine number = index; machine 0 hosts. Machines are ordered team A first,
@@ -40,8 +40,8 @@ const char* group_roster_check(const GroupRoster* r);
 /* Build a roster from parties: party[i] holds `size[i]` members (1 or 2), and
  * exactly two parties make a match. Party 0 becomes team A and hosts. False
  * (roster untouched) unless that holds. */
-bool group_from_parties(GroupRoster* out, const GroupMember* const* party, const int* size,
-    int parties);
+bool group_from_parties(
+    GroupRoster* out, const GroupMember* const* party, const int* size, int parties);
 
 /* The game port machine `machine` plays on: team t owns ports 2t and 2t+1,
  * its machines take them in machine order, and a team of one leaves its

@@ -117,7 +117,7 @@ static inline void sock_startup(void) {}
 
 /* ---- constants -------------------------------------------------------- */
 
-#define RING 64 /* frames of history kept per side; power of two */
+#define RING 64         /* frames of history kept per side; power of two */
 #define NET_MAX_PEERS 3 /* other machines in a match: up to 4 machines in all */
 /* Unacked frames an input packet can carry. Delivery runs at one packet's
  * worth per round trip (net.c send_inputs), so 28 holds 60 Hz to ~460 ms.
@@ -289,7 +289,7 @@ typedef struct Ready {
  * Indexed by machine number; machine 0 is the host. */
 #define NET_MAX_MACHINES (NET_MAX_PEERS + 1)
 typedef struct Go {
-    uint64_t nonce[NET_MAX_MACHINES];  /* each machine's own nonce (the host's is Rules.nonce) */
+    uint64_t nonce[NET_MAX_MACHINES]; /* each machine's own nonce (the host's is Rules.nonce) */
     uint8_t tag_bind[NET_MAX_MACHINES];
     int32_t start_frame; /* the start the host settled on: guests adopt it */
     uint32_t hash;       /* go_hash() of the wire image above */
@@ -560,13 +560,13 @@ int held_put(Held* held, const void* buf, size_t len, uint64_t release_ns);
 Held* held_due(Held* held, uint64_t now);
 void tx_to(int peer, const void* buf, size_t len); /* caller holds tx_lock */
 void tx(const void* buf, size_t len);              /* to peer 0, the control peer */
-void tx_flush(void);                  /* caller holds tx_lock */
-void sim_env(uint16_t bind_port);     /* MELEE_NET_SIM_* into net.sim_* */
+void tx_flush(void);                               /* caller holds tx_lock */
+void sim_env(uint16_t bind_port);                  /* MELEE_NET_SIM_* into net.sim_* */
 void sim_reset(void);
 
 /* ---- net_reliable.c --------------------------------------------------- */
 
-void rel_service(void); /* caller holds tx_lock */
+void rel_service(void);           /* caller holds tx_lock */
 void on_rel(const Rel* r, int n); /* from peer 0 */
 void on_rel_ack(const RelAck* k);
 void on_rel_from(int peer, const Rel* r, int n);

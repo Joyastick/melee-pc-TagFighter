@@ -169,8 +169,8 @@ void net_watchdog_tick(int32_t frame) {
                 }
                 PVOID handler_data = NULL;
                 DWORD64 frame_base = 0;
-                RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, fn, &ctx, &handler_data,
-                    &frame_base, NULL);
+                RtlVirtualUnwind(
+                    UNW_FLAG_NHANDLER, base, ctx.Rip, fn, &ctx, &handler_data, &frame_base, NULL);
             }
         }
         ResumeThread(h);

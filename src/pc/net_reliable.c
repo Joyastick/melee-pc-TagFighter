@@ -66,7 +66,7 @@ typedef struct RelTx {
 /* Each peer has its own two lanes, sequence numbers and resend timers: a
  * mesh link is a two-party stop-and-wait like the original. */
 static RelTx s_rel_tx[NET_MAX_PEERS][REL_LANES]; /* under tx_lock */
-static RelMsg s_rel_rx[REL_QUEUE]; /* lane 1 messages waiting for the caller */
+static RelMsg s_rel_rx[REL_QUEUE];               /* lane 1 messages waiting for the caller */
 static int s_rel_rx_head, s_rel_rx_n;
 static uint8_t s_rel_expect[NET_MAX_PEERS][REL_LANES]; /* next lane seq accepted */
 

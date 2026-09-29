@@ -38,8 +38,8 @@ const char* group_roster_check(const GroupRoster* r) {
     return NULL;
 }
 
-bool group_from_parties(GroupRoster* out, const GroupMember* const* party, const int* size,
-    int parties) {
+bool group_from_parties(
+    GroupRoster* out, const GroupMember* const* party, const int* size, int parties) {
     if (parties != 2) {
         return false;
     }

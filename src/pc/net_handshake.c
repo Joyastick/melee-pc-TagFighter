@@ -147,10 +147,10 @@ static bool s_rules_on; /* a RULES set is in force (host or guest) */
 static bool s_rules_frozen;
 static bool s_rules_saved; /* guest: s_rules_orig holds its own values */
 static Rules s_rules_orig;
-static uint64_t s_nonce_local;    /* ours this session; 0: not drawn yet */
-static uint32_t s_nonce_session;  /* net.session s_nonce_local was drawn for */
-static uint64_t s_nonce_peer[NET_MAX_PEERS]; /* theirs, from RULES (guest) or READY (host) */
-static bool s_ready_from[NET_MAX_PEERS];     /* host: this guest's READY is in */
+static uint64_t s_nonce_local;                     /* ours this session; 0: not drawn yet */
+static uint32_t s_nonce_session;                   /* net.session s_nonce_local was drawn for */
+static uint64_t s_nonce_peer[NET_MAX_PEERS];       /* theirs, from RULES (guest) or READY (host) */
+static bool s_ready_from[NET_MAX_PEERS];           /* host: this guest's READY is in */
 static uint8_t s_group_tag_bind[NET_MAX_MACHINES]; /* group: every machine's own Tag Bind */
 static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_net_remote_tag_bind */
 /* This machine's own MeleeVS: Tag Bind, pinned at the moment it went on the
@@ -239,7 +239,8 @@ static void hs_done(void) {
  * believed the match was agreed. Same pattern as resume_send()/resume_poll()
  * in net.c -- the poll the caller already runs every frame is the retry. */
 static bool hs_send(int peer, uint8_t type, const void* wire, int len) {
-    if (group() ? net_rel_send_peer(peer, type, wire, len) : pc_net_send_reliable(type, wire, len)) {
+    if (group() ? net_rel_send_peer(peer, type, wire, len) : pc_net_send_reliable(type, wire, len))
+    {
         s_hs_tx[peer].len = 0;
         return true;
     }
@@ -247,8 +248,9 @@ static bool hs_send(int peer, uint8_t type, const void* wire, int len) {
     s_hs_tx[peer].type = type;
     s_hs_tx[peer].len = (uint8_t)len;
     memcpy(s_hs_tx[peer].wire, wire, (size_t)len);
-    pc_log_line("net: %s not queued (reliable queue full), retrying",
-        type == REL_RULES ? "RULES" : type == REL_GO ? "GO" : "READY");
+    pc_log_line("net: %s not queued (reliable queue full), retrying", type == REL_RULES ? "RULES" :
+                                                                      type == REL_GO    ? "GO" :
+                                                                                          "READY");
     return false;
 }
 
@@ -266,15 +268,17 @@ static void hs_flush(void) {
             s_hs_tx[p].len = 0; /* built for a session that has since been torn down */
             continue;
         }
-        bool sent = group() ? net_rel_send_peer(p, s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len) :
-                              pc_net_send_reliable(s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len);
+        bool sent = group() ?
+                        net_rel_send_peer(p, s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len) :
+                        pc_net_send_reliable(s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len);
         if (!sent) {
             continue;
         }
         uint8_t type = s_hs_tx[p].type;
         s_hs_tx[p].len = 0;
-        pc_log_line("net: %s queued on retry",
-            type == REL_RULES ? "RULES" : type == REL_GO ? "GO" : "READY");
+        pc_log_line("net: %s queued on retry", type == REL_RULES ? "RULES" :
+                                               type == REL_GO    ? "GO" :
+                                                                   "READY");
         if (type == REL_READY && !group()) {
             hs_done();
         }
@@ -607,7 +611,7 @@ int pc_net_partner_bind_of(int machine) {
     if (net.npeers > 1) {
         return -1;
     }
-    return machine == net.local ? pc_net_local_partner_bind() :
+    return machine == net.local  ? pc_net_local_partner_bind() :
            machine == net.remote ? pc_net_remote_partner_bind() :
                                    -1;
 }
@@ -770,10 +774,10 @@ static void on_rules(int peer, const uint8_t* payload, int len) {
     s_local_tag_bind = (uint8_t)pc_get_tag_bind(0);
     /* The host's game_mode decides Tag Battle for both sides, so ask the
      * RULES being answered, not this machine's own menu state. */
-    s_local_partner_bind = !group() && ru.game_mode == GAME_MODE_TAG_BATTLE &&
-                                   net_local_partner_present() ?
-                               (uint8_t)pc_get_tag_bind(1) :
-                               NET_NO_PARTNER;
+    s_local_partner_bind =
+        !group() && ru.game_mode == GAME_MODE_TAG_BATTLE && net_local_partner_present() ?
+            (uint8_t)pc_get_tag_bind(1) :
+            NET_NO_PARTNER;
     Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, s_local_partner_bind,
         team_for_wire(s_local_partner_bind), ru.start_frame, 0};
     if (!group()) {
@@ -953,7 +957,9 @@ static void on_go(int peer, const uint8_t* payload, int len) {
         hs_drop(LOG_READY_HASH, "GO", "hash mismatch");
         return;
     }
-    if (s_nonce_local == 0 || go.nonce[net.local] != s_nonce_local || go.nonce[0] != s_nonce_peer[peer]) {
+    if (s_nonce_local == 0 || go.nonce[net.local] != s_nonce_local ||
+        go.nonce[0] != s_nonce_peer[peer])
+    {
         hs_drop(LOG_READY_NONCE, "GO", "nonce mismatch");
         return;
     }
