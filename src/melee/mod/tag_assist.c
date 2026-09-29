@@ -14,6 +14,7 @@
 #include <melee/mn/forward.h>
 #include <melee/lb/lbaudio_ax.h>
 #include <melee/ft/fighter.h>
+#include <melee/ft/ftcamera.h>
 #include <melee/ft/ftanim.h>
 #include <melee/ft/ftcommon.h>
 #include <melee/ft/ft_0877.h>
@@ -1092,7 +1093,10 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj,
         // afterward even once it becomes point -- confirmed root cause of
         // "camera stops following me after a tag" for anyone who was ever
         // the CPU assist first.
-        Camera_80028F5C(fp->x890_cameraBox, CmSubjectState_Active);
+        // ftCamera_80076064 sets Active and re-seeds extents/position too
+        // (see TagAssist_PromoteAssistToPoint), so a stale benched box
+        // can't carry over into being point after a tag.
+        ftCamera_80076064(fp);
     }
 }
 
@@ -1959,7 +1963,12 @@ static void TagAssist_PromoteAssistToPoint(TeamState* team)
     if (newPointFp->x890_cameraBox != NULL) {
         // See TagAssist_Unbench's own comment on _Active vs _Auto -- same
         // fix applies here, since this bypasses TagAssist_Unbench entirely.
-        Camera_80028F5C(newPointFp->x890_cameraBox, CmSubjectState_Active);
+        // Also re-seed the box's extents and position, exactly as a real
+        // respawn does (ftCamera_80076064). Flipping state alone left the
+        // benched-era extents/tracking stale: over-zoomed when the two
+        // points were close, and not following upward launches, until a
+        // full respawn re-seeded it.
+        ftCamera_80076064(newPointFp);
     }
 
     // Same control handoff TagAssist_TryTag already does for every
