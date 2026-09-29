@@ -95,7 +95,8 @@ static bool s_fifo_started;
 
 static int fifo_thread(void* path) {
     char line[128];
-    long resume = 0; /* a plain file (Windows has no fifo): where the last pass stopped */
+    long resume = 0;  // NOLINT: fseek/ftell take and return long
+    /* resume: a plain file (Windows has no fifo), where the last pass stopped */
     for (;;) {
         FILE* f = fopen((const char*)path, "r"); /* blocks until a writer opens */
         if (f == NULL) {
