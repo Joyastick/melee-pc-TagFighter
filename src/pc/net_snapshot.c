@@ -610,7 +610,6 @@ static bool s_take_refused_io;   /* the last take was one of them */
 static int32_t s_oom_frame = -1;
 static bool s_oom_fired;
 
-
 /* ---- snapshot profile (MELEE_NET_SNAP_PROFILE=1) -----------------------
  * Diagnostic only: answers which parts of a snapshot ever change during a
  * fight, so a slimmer snapshot can be argued from numbers. Each take, right
@@ -632,7 +631,7 @@ typedef struct ProfRegion {
     uint8_t* ref;  /* previous take's bytes */
     size_t len;
     size_t ref_cap;
-    uint8_t* ever; /* per page: 1 once it changed */
+    uint8_t* ever;  /* per page: 1 once it changed */
     uint32_t* hits; /* per page: takes it changed in */
     size_t pages;
     unsigned takes;       /* takes compared, this anchor */
