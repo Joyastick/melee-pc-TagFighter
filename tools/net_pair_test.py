@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two-machine netplay harness for Windows: two local instances, a direct session, asserts.
 
-    tools/net_pair_test.py [--frames N] [--minutes M] [--no-match] [--loss PCT] [--delay MS]
+    tools/net_pair_test.py [--tag] [--frames N] [--minutes M] [--no-match] [--loss PCT] [--delay MS]
                            [--jitter] [--input-delay N] [--exe build-pc/melee]
                            [--disc tag_melee.iso] [--port 42100]
 
@@ -10,7 +10,10 @@ a plain file it tails (src/pc/keyboard.c) where there is no fifo, so it runs on
 Windows. Machine 0 is driven into the debug match (MELEE_DEBUG_VS=1); pass =
 both print "net: test done", exit 0, no DESYNC / peer silent / lost rollback,
 same handshake seed and start frame, and every frame's checksum agrees from
-start_frame on. --input-delay 1 forces predictions, so rollbacks. Exit code 0
+start_frame on. --tag plays a full Tag Battle 2v2 instead (MELEE_DEBUG_VS=tag2v2:
+a human point plus a CPU assist per machine, 99 stocks, untimed), with D-Pad
+Down presses mixed into the workout so assists are called and tagged in, and
+requires that calls and tags happened (checksums prove agreement). --input-delay 1 forces predictions, so rollbacks. Exit code 0
 on pass. Logs: <work>/m0.log, m1.log. Reuses tools/net_test.py's helpers.
 """
 import argparse
@@ -95,7 +98,7 @@ class Machine:
 # ("start_[FileCache] STORED"), so "done" is matched on its own and the numbers
 # only where the line came through whole.
 DONE_RX = re.compile(r"net: handshake done")
-HANDSHAKE_RX = re.compile(r"net: handshake done seed=(\d+) start_frame=(-?\d+)")
+HANDSHAKE_RX = re.compile(r"net: handshake done seed=(\d+) start_frame=(-?\d+) \(frame")  # whole line only: a cut one has a short number
 
 
 def check_group(ms):
@@ -139,11 +142,56 @@ def check_group(ms):
     return fails
 
 
+# The normal workout plus the tag input (D-Pad Down, key G): with no assist out
+# it calls one, with one out it tags it in. The pauses let the call land, the
+# point get grounded again, and the assist stay out long enough to tag.
+TAG_WORKOUT = [("Right", 240), ("G", 100), ("X", 100), ("Left", 240), ("C", 100),
+               ("Right+X", 170), ("G", 100), ("Z", 100), ("Down", 140), ("Up", 140),
+               ("Right", 300), ("G", 100), ("Left", 300)]
+
+
+class TagWorkout(nt.Workout):
+    def _run(self):
+        i = 0
+        while not self._stop.is_set():
+            key, ms = TAG_WORKOUT[i % len(TAG_WORKOUT)]
+            i += 1
+            for inst in self.insts:
+                if inst.proc.poll() is None:
+                    try:
+                        inst.key(f"{key} {ms}")
+                    except Exception:
+                        return
+            self.n += 1
+            self._stop.wait(ms / 1000 + 0.15)
+
+
+def check_tag(ms):
+    """There must have been assist calls and tags on both machines. The counts
+    are not compared: a rollback resimulates frames and logs them again, so
+    they differ between machines by design. The per-frame checksums (which
+    fold in the Tag Battle fields) are what prove the two agree."""
+    fails = []
+    counts = []
+    for m in ms:
+        t = m.text()
+        counts.append((len(re.findall(r"\[TagAssist\] call:", t)),
+                       len(re.findall(r"\[TagAssist\] tag OK:", t))))
+    print(f"net_pair_test: assist calls / tags per machine: {counts}", flush=True)
+    if any(c[0] == 0 for c in counts):
+        fails.append("no assist call was ever made")
+    if any(c[1] == 0 for c in counts):
+        fails.append("no tag ever went through")
+    return fails
+
+
 def run(args):
     n = 2
     have_keys = not args.no_match
     frames = args.frames or (int(args.minutes * 3600) + BOOT_FRAMES + (3600 if have_keys else 0))
     sim = {"MELEE_NET_EXIT_AFTER_FRAMES": str(frames)}
+    if args.tag:
+        sim["MELEE_DEBUG_VS"] = "tag2v2"
     sim["MELEE_NET_KEY"] = nt.NET_KEY  # a direct session pins its key
     if args.loss:
         sim["MELEE_NET_SIM_LOSS"] = str(args.loss)
@@ -182,7 +230,7 @@ def run(args):
                 print("net_pair_test: never got into the match", flush=True)
                 ok = False
             else:
-                workout = nt.Workout(ms)
+                workout = TagWorkout(ms) if args.tag else nt.Workout(ms)
         term = (r"net: DESYNC", r"peer silent for \d+ ms at frame \d+, leaving netplay",
                 r"net: disconnected", r"cannot roll back")
         deadline = time.time() + frames / 12.0 + 60
@@ -204,6 +252,8 @@ def run(args):
         for m in ms:
             m.kill(20)
     fails = check_group(ms) if ok else []
+    if ok and args.tag:
+        fails += check_tag(ms)
     for m in ms:
         f, line, _ = nt.summarize(m, need_match=have_keys and ok)
         print(line)
@@ -223,6 +273,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--frames", type=int, default=0, help="exit frame (default: boot + minutes)")
     p.add_argument("--minutes", type=float, default=0.5)
+    p.add_argument("--tag", action="store_true", help="a full Tag Battle 2v2 with assist calls and tags")
     p.add_argument("--no-match", action="store_true", help="menus only, no key driving")
     p.add_argument("--loss", type=int, default=0)
     p.add_argument("--delay", type=int, default=0)
