@@ -674,7 +674,8 @@ void un_802FD4C8(void)
     }
 }
 
-/// "Assist Ready" under the HUD percent of a team's benched assist. Same
+/// "Assist Ready" under the HUD percent of a team's benched assist, and
+/// "Share Stock?" under the lone point's once it has a spare stock to give. Same
 /// recipe as ifnet.c: a SIS canvas parented to the HUD camera, entry
 /// coordinates in HUD world units (origin screen centre, y down, 1 unit =
 /// 10 logical px); the glyph cell's bottom edge sits at entry y + 32.
@@ -696,8 +697,11 @@ static struct {
     HSD_GObj* gobj;
     HSD_GObj* plate_gobj;
     HSD_Text* text;
-    int entry[4];
-    bool shown[4];
+    int entry[4];       ///< "Assist Ready", under the benched assist's HUD
+    int share_entry[4]; ///< "Share Stock?", under the lone point's HUD
+    bool shown[4];      ///< either entry is up (drives the plate)
+    bool ready_shown[4];
+    bool share_shown[4];
 } s_readyHud;
 
 static void ReadyHud_DrawPlates(HSD_GObj* gobj, int pass)
@@ -724,29 +728,45 @@ static void ReadyHud_DrawPlates(HSD_GObj* gobj, int pass)
     HSD_StateInvalidate(-1);
 }
 
+/// Shows or hides one HUD text entry for port i, and on the frame it appears
+/// tints it in the port's team color (same colors as the nametag text).
+static void ReadyHud_Set(int i, int entry, bool* shownFlag, bool show)
+{
+    if (show) {
+        if (!*shownFlag) {
+            int team = Player_GetTeam(i);
+            if (team >= 0 && team < 3) {
+                HSD_SisLib_803A74F0(s_readyHud.text, entry,
+                                    (GXColor*) &s_teamTextColor[team]);
+            }
+        }
+        HSD_SisLib_803A746C(s_readyHud.text, entry,
+                            ifAll_GetPlayerHUDPosition(i)->x,
+                            READY_HUD_CELL_BOTTOM - 32.0f);
+    } else if (*shownFlag) {
+        HSD_SisLib_803A746C(s_readyHud.text, entry, READY_HUD_OFFSCREEN, 0.0f);
+    }
+    *shownFlag = show;
+}
+
 static void ReadyHud_Think(HSD_GObj* gobj)
 {
     int i;
     (void) gobj;
     for (i = 0; i < 4; i++) {
-        bool show = TagAssist_IsTagBattleOn() && !ifAll_IsHUDHidden() &&
-                    !TagAssist_IsPortCurrentlyPoint(i) &&
-                    TagAssist_IsAssistReady(i);
-        if (show) {
-            HSD_SisLib_803A746C(s_readyHud.text, s_readyHud.entry[i],
-                                ifAll_GetPlayerHUDPosition(i)->x,
-                                READY_HUD_CELL_BOTTOM - 32.0f);
-        } else if (s_readyHud.shown[i]) {
-            HSD_SisLib_803A746C(s_readyHud.text, s_readyHud.entry[i],
-                                READY_HUD_OFFSCREEN, 0.0f);
-        }
-        s_readyHud.shown[i] = show;
+        bool hud = TagAssist_IsTagBattleOn() && !ifAll_IsHUDHidden();
+        bool ready = hud && !TagAssist_IsPortCurrentlyPoint(i) &&
+                     TagAssist_IsAssistReady(i);
+        bool share = hud && TagAssist_CanShareStock(i);
+        ReadyHud_Set(i, s_readyHud.entry[i], &s_readyHud.ready_shown[i], ready);
+        ReadyHud_Set(i, s_readyHud.share_entry[i], &s_readyHud.share_shown[i],
+                     share);
+        s_readyHud.shown[i] = ready || share;
     }
 }
 
 void NameTag_ReadyHudCreate(void)
 {
-    static const GXColor green = { 120, 255, 140, 255 };
     int canvas;
     int i;
     s_readyHud.text = NULL;
@@ -764,12 +784,16 @@ void NameTag_ReadyHudCreate(void)
     s_readyHud.text->default_alignment = 1;
     for (i = 0; i < 4; i++) {
         s_readyHud.shown[i] = false;
+        s_readyHud.ready_shown[i] = false;
+        s_readyHud.share_shown[i] = false;
         s_readyHud.entry[i] = HSD_SisLib_803A6B98(
             s_readyHud.text, READY_HUD_OFFSCREEN, 0.0f, "Assist Ready");
         HSD_SisLib_803A7548(s_readyHud.text, s_readyHud.entry[i],
                             READY_HUD_SCALE, READY_HUD_SCALE);
-        HSD_SisLib_803A74F0(s_readyHud.text, s_readyHud.entry[i],
-                            (GXColor*) &green);
+        s_readyHud.share_entry[i] = HSD_SisLib_803A6B98(
+            s_readyHud.text, READY_HUD_OFFSCREEN, 0.0f, "Share Stock?");
+        HSD_SisLib_803A7548(s_readyHud.text, s_readyHud.share_entry[i],
+                            READY_HUD_SCALE, READY_HUD_SCALE);
     }
     s_readyHud.gobj = GObj_Create(HSD_GOBJ_CLASS_UI, 15, 0);
     HSD_GObj_SetupProc(s_readyHud.gobj, ReadyHud_Think, 17);

@@ -673,7 +673,7 @@ void check_for_updates_async(bool include_prereleases) {
         auto releases = parse_github_releases(body);
         if (releases.empty()) {
             g_updater_state.status = Status::UpToDate;
-            g_updater_state.message = "Melee-PC is up to date.";
+            g_updater_state.message = "MeleeVS is up to date.";
             return;
         }
 
@@ -695,7 +695,7 @@ void check_for_updates_async(bool include_prereleases) {
 
         if (!best_release) {
             g_updater_state.status = Status::UpToDate;
-            g_updater_state.message = "Melee-PC is up to date.";
+            g_updater_state.message = "MeleeVS is up to date.";
             return;
         }
 
@@ -708,7 +708,7 @@ void check_for_updates_async(bool include_prereleases) {
             g_updater_state.message = "Update available: " + best_release->tag_name;
         } else {
             g_updater_state.status = Status::UpToDate;
-            g_updater_state.message = "Melee-PC is up to date (" + current_ver + ").";
+            g_updater_state.message = "MeleeVS is up to date (" + current_ver + ").";
         }
     });
 }
