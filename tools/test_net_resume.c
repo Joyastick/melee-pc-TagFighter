@@ -386,6 +386,9 @@ struct GameSceneInfo* gm_804D6720;
  * harness never runs a match, so a default-constructed one at speed 1.0 is
  * what the tests want. */
 StartMeleeData gmVsMelee_StartData = {.rules = {.game_speed = 1.0F}};
+bool gmVs_IsGameSpeedNormal(void) {
+    return true;
+}
 PadLibData HSD_PadLibData;
 static u32 s_seed_val;
 u32* HSD_RandSeedPtr = &s_seed_val;
