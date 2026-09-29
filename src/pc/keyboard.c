@@ -95,11 +95,15 @@ static bool s_fifo_started;
 
 static int fifo_thread(void* path) {
     char line[128];
+    long resume = 0; /* a plain file (Windows has no fifo): where the last pass stopped */
     for (;;) {
         FILE* f = fopen((const char*)path, "r"); /* blocks until a writer opens */
         if (f == NULL) {
             SDL_Delay(200);
             continue;
+        }
+        if (resume > 0) {
+            fseek(f, resume, SEEK_SET);
         }
         while (fgets(line, sizeof line, f) != NULL) {
             SDL_Scancode keys[8];
@@ -133,7 +137,15 @@ static int fifo_thread(void* path) {
             SDL_UnlockMutex(s_key_mutex);
             SDL_Delay(100);
         }
+        /* ftell fails on a real fifo (nothing to resume: the reader blocks in
+         * fopen until the next writer); on a plain file it is the offset to
+         * pick up from, so the lines already run are not run again, and the
+         * pause keeps the reopen from spinning. */
+        resume = ftell(f);
         fclose(f);
+        if (resume >= 0) {
+            SDL_Delay(30);
+        }
     }
     return 0;
 }
