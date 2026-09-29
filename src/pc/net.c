@@ -109,8 +109,7 @@ static bool s_warn_src, s_warn_sess, s_warn_bad, s_warn_mac; /* one reject line 
  * and nothing unauthenticated is accepted from here on (recv_inputs). Until
  * then s_mac_quiet counts what was let through for want of one, so a pair
  * that never agrees on a key says so instead of looking protected. */
-static bool s_mac_seen;
-static int s_mac_quiet;
+/* (mac_seen and mac_quiet live in each Peer: every link is keyed apart.) */
 #define MAC_QUIET_MAX 120 /* ~2 s of a peer's traffic at 60 Hz */
 
 static unsigned s_stalls, s_advances, s_rollbacks, s_rb_lost;
@@ -1001,37 +1000,11 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
      *
      * The key is read under tx_lock: the handshake installs it on the
      * game thread while this runs on the receive thread. */
-    SDL_LockMutex(net.tx_lock);
-    bool keyed = net_key_ready();
-    bool mac_ok = keyed && net_mac_ok(buf, (size_t)body);
-    bool pinned = net_key_pinned();
-    SDL_UnlockMutex(net.tx_lock);
-    if (mac_ok) {
-        s_mac_seen = true;
-    } else if (s_mac_seen || pinned) {
-        s_rx_bad_mac++;
-        if (!s_warn_mac) {
-            s_warn_mac = true;
-            pc_log_line("net: dropped a datagram with a bad MAC (magic %c len %d) at frame %d",
-                h->magic >= 32 && h->magic < 127 ? h->magic : '?', n, atomic_load(&s_frame_pub));
-        }
-        return;
-    } else if (keyed && ++s_mac_quiet == MAC_QUIET_MAX) {
-        /* We hold a key and two seconds of the peer's traffic has gone by
-         * without one tag of it verifying. That is not the handshake leg
-         * the upgrade above allows for; it is two peers holding different
-         * keys -- a stale MELEE_NET_KEY on one side is how -- and the
-         * session is running unauthenticated. Said once, out loud,
-         * because the alternative is a session that looks protected in
-         * the log and is not. */
-        pc_log_line("net: %d datagrams from the peer and none of them authenticate; this "
-                    "session is UNAUTHENTICATED (the two sides hold different keys)",
-            MAC_QUIET_MAX);
-    }
-    wire_hdr(h);
     /* Which peer sent it. One peer: peer 0, whatever machine it claims (the
      * checks below deal with that). Several: the one that owns the machine
-     * number in the header, and the address checks then pin it. */
+     * number in the header. Read before the tag is checked because the tag
+     * is checked under that peer's key; a forged number can only pick the
+     * wrong key, which then fails. */
     int pi = 0;
     if (net.npeers > 1) {
         pi = -1;
@@ -1046,6 +1019,34 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
         }
     }
     Peer* pr = &net.peers[pi];
+    SDL_LockMutex(net.tx_lock);
+    bool keyed = net_key_ready_peer(pi);
+    bool mac_ok = keyed && net_mac_ok_peer(pi, buf, (size_t)body);
+    bool pinned = net_key_pinned();
+    SDL_UnlockMutex(net.tx_lock);
+    if (mac_ok) {
+        pr->mac_seen = true;
+    } else if (pr->mac_seen || pinned) {
+        s_rx_bad_mac++;
+        if (!s_warn_mac) {
+            s_warn_mac = true;
+            pc_log_line("net: dropped a datagram with a bad MAC (magic %c len %d) at frame %d",
+                h->magic >= 32 && h->magic < 127 ? h->magic : '?', n, atomic_load(&s_frame_pub));
+        }
+        return;
+    } else if (keyed && ++pr->mac_quiet == MAC_QUIET_MAX) {
+        /* We hold a key and two seconds of the peer's traffic has gone by
+         * without one tag of it verifying. That is not the handshake leg
+         * the upgrade above allows for; it is two peers holding different
+         * keys -- a stale MELEE_NET_KEY on one side is how -- and the
+         * session is running unauthenticated. Said once, out loud,
+         * because the alternative is a session that looks protected in
+         * the log and is not. */
+        pc_log_line("net: %d datagrams from the peer and none of them authenticate; this "
+                    "session is UNAUTHENTICATED (the two sides hold different keys)",
+            MAC_QUIET_MAX);
+    }
+    wire_hdr(h);
     bool same_addr = addr_eq(from, &pr->addr);
     /* Once pinned, unrelated traffic cannot change any session state.
      *
@@ -1250,14 +1251,10 @@ void recv_inputs(void) {
             on_ack(&net.peers[m.peer], &m.u.ack, m.rtt_us);
             break;
         case 'R':
-            if (m.peer == 0) { /* the reliable lane is the control peer's alone for now */
-                on_rel(&m.u.rel, m.len);
-            }
+            on_rel_from(m.peer, &m.u.rel, m.len);
             break;
         default: /* 'K' */
-            if (m.peer == 0) {
-                on_rel_ack(&m.u.rack);
-            }
+            on_rel_ack_from(m.peer, &m.u.rack);
             break;
         }
     }
@@ -1653,6 +1650,10 @@ bool pc_net_deterministic(void) {
     return net.active || record_active() || net.synctest;
 }
 
+int pc_net_machines(void) {
+    return net.npeers + 1;
+}
+
 int pc_net_local_player(void) {
     return net.local;
 }
@@ -1874,8 +1875,6 @@ static void session_reset(void) {
     /* A fresh session starts with no key and trusting nothing it has not
      * yet authenticated; the key arrives with the handshake. */
     net_key_clear();
-    s_mac_seen = false;
-    s_mac_quiet = 0;
     s_status = PC_NET_PEER_OK;
     s_rc = RSM_NONE;
     s_rc_sent = false;
@@ -1975,7 +1974,6 @@ void pc_net_disconnect(void) {
      * pairing secret it was derived under. */
     net_key_clear();
     pc_net_set_session_secret(NULL);
-    s_mac_seen = false;
     rules_restore();
     HSD_PadLibData.qtype = 0;
     SDL_UnlockMutex(net.tx_lock);

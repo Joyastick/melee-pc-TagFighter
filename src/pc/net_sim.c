@@ -60,7 +60,7 @@ void tx_to(int peer, const void* body, size_t body_len) {
         return; /* no sender builds one: a truncated datagram would be worse */
     }
     memcpy(stamped, body, body_len);
-    net_mac_stamp(stamped, body_len);
+    net_mac_stamp_peer(peer, stamped, body_len);
     const void* buf = stamped;
     size_t len = body_len + NET_MAC_LEN;
     uint64_t now = SDL_GetTicksNS();

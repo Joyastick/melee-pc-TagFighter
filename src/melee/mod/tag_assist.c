@@ -232,7 +232,10 @@ u32 TagAssist_ExtraBindMask(u8 controller_slot)
     if (pc_net_active()) {
         int local = pc_net_local_player();
         int remote = 1 - local;
-        if (controller_slot == pc_net_game_port(local, 0)) {
+        if (pc_net_machines() > 2) {
+            // 3-4 machines: one player each, on the port of its machine number.
+            bind = pc_net_tag_bind_of(controller_slot);
+        } else if (controller_slot == pc_net_game_port(local, 0)) {
             bind = pc_net_local_tag_bind();
         } else if (controller_slot == pc_net_game_port(local, 1)) {
             bind = pc_net_local_partner_bind();

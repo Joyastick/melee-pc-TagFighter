@@ -62,10 +62,17 @@ typedef struct RelTx {
     int resends;
 } RelTx;
 
-static RelTx s_rel_tx[REL_LANES];  /* under tx_lock */
+/* Each peer has its own two lanes, sequence numbers and resend timers: a
+ * mesh link is a two-party stop-and-wait like the original. */
+static RelTx s_rel_tx[NET_MAX_PEERS][REL_LANES]; /* under tx_lock */
 static RelMsg s_rel_rx[REL_QUEUE]; /* lane 1 messages waiting for the caller */
 static int s_rel_rx_head, s_rel_rx_n;
-static uint8_t s_rel_expect[REL_LANES]; /* next lane seq accepted */
+static uint8_t s_rel_expect[NET_MAX_PEERS][REL_LANES]; /* next lane seq accepted */
+
+/* Peers in the session; a fixture that never set it still has one. */
+static int peers_n(void) {
+    return net.npeers > 0 ? net.npeers : 1;
+}
 static bool s_rel_unexpected_logged;
 
 static int lane_of(uint8_t type) {
@@ -106,44 +113,80 @@ static bool log_resend(unsigned n) {
 
 /* Send or resend each lane's message in flight (caller holds tx_lock). */
 void rel_service(void) {
-    if (s_rel_tx[0].n == 0 && s_rel_tx[1].n == 0) {
-        return;
-    }
     uint64_t now = SDL_GetTicksNS();
-    for (int lane = 0; lane < REL_LANES; lane++) {
-        RelTx* t = &s_rel_tx[lane];
-        if (t->n == 0 || (t->sent_ns != 0 && now - t->sent_ns < REL_RESEND_NS)) {
+    for (int p = 0; p < peers_n(); p++) {
+        if (s_rel_tx[p][0].n == 0 && s_rel_tx[p][1].n == 0) {
             continue;
         }
-        const RelMsg* m = &t->q[t->head];
-        Rel r = {hdr('R'), (uint8_t)(lane << 7 | t->seq), m->type, m->len, {0}};
-        memcpy(r.payload, m->payload, m->len);
-        wire_rel(&r);
-        tx(&r, offsetof(Rel, payload) + m->len);
-        if (t->sent_ns != 0) {
-            t->resends++;
-            if (log_resend((unsigned)t->resends)) {
-                pc_log_line("net: reliable seq %u type %02x len %u resend #%d", r.seq, m->type,
-                    m->len, t->resends);
+        for (int lane = 0; lane < REL_LANES; lane++) {
+            RelTx* t = &s_rel_tx[p][lane];
+            if (t->n == 0 || (t->sent_ns != 0 && now - t->sent_ns < REL_RESEND_NS)) {
+                continue;
             }
+            const RelMsg* m = &t->q[t->head];
+            Rel r = {hdr('R'), (uint8_t)(lane << 7 | t->seq), m->type, m->len, {0}};
+            memcpy(r.payload, m->payload, m->len);
+            wire_rel(&r);
+            tx_to(p, &r, offsetof(Rel, payload) + m->len);
+            if (t->sent_ns != 0) {
+                t->resends++;
+                if (log_resend((unsigned)t->resends)) {
+                    pc_log_line("net: reliable seq %u type %02x len %u resend #%d to machine %d",
+                        r.seq, m->type, m->len, t->resends, p);
+                }
+            }
+            t->sent_ns = now;
         }
-        t->sent_ns = now;
     }
 }
 
+/* Room for `type` in peer p's lane (caller holds tx_lock). */
+static bool rel_room(int p, uint8_t type) {
+    const RelTx* t = &s_rel_tx[p][lane_of(type)];
+    return t->n < REL_QUEUE && (!rel_low_priority(type) || low_queued(t) < REL_LOW_QUEUE);
+}
+
+static void rel_enqueue(int p, uint8_t type, const void* payload, int len) {
+    RelTx* t = &s_rel_tx[p][lane_of(type)];
+    RelMsg* m = &t->q[(t->head + t->n++) % REL_QUEUE];
+    m->type = type;
+    m->len = (uint16_t)len;
+    if (len > 0) {
+        memcpy(m->payload, payload, (size_t)len);
+    }
+}
+
+/* To one peer only (the handshake talks to each machine on its own). */
+bool net_rel_send_peer(int peer, uint8_t type, const void* payload, int len) {
+    if (!net.active || len < 0 || len > REL_MAX || (len > 0 && payload == NULL) || peer < 0 ||
+        peer >= peers_n())
+    {
+        return false;
+    }
+    SDL_LockMutex(net.tx_lock);
+    bool ok = rel_room(peer, type);
+    if (ok) {
+        rel_enqueue(peer, type, payload, len);
+        rel_service();
+    }
+    SDL_UnlockMutex(net.tx_lock);
+    return ok;
+}
+
+/* To every peer, or to none: the caller retries a refusal, and a message
+ * some peers already hold would reach them twice. */
 bool pc_net_send_reliable(uint8_t type, const void* payload, int len) {
     if (!net.active || len < 0 || len > REL_MAX || (len > 0 && payload == NULL)) {
         return false;
     }
-    RelTx* t = &s_rel_tx[lane_of(type)];
     SDL_LockMutex(net.tx_lock);
-    bool ok = t->n < REL_QUEUE && (!rel_low_priority(type) || low_queued(t) < REL_LOW_QUEUE);
+    bool ok = true;
+    for (int p = 0; p < peers_n(); p++) {
+        ok = ok && rel_room(p, type);
+    }
     if (ok) {
-        RelMsg* m = &t->q[(t->head + t->n++) % REL_QUEUE];
-        m->type = type;
-        m->len = (uint16_t)len;
-        if (len > 0) {
-            memcpy(m->payload, payload, (size_t)len);
+        for (int p = 0; p < peers_n(); p++) {
+            rel_enqueue(p, type, payload, len);
         }
         rel_service();
     }
@@ -164,21 +207,29 @@ int pc_net_recv_reliable(uint8_t* type, void* payload, int max) {
     return n;
 }
 
-void on_rel(const Rel* r, int n) {
+void on_rel_from(int peer, const Rel* r, int n) {
     if (r->len > REL_MAX || n < (int)(offsetof(Rel, payload) + r->len)) {
         return;
     }
     int lane = r->seq >> 7;
-    int d = seq_diff(r->seq & REL_SEQ_MASK, s_rel_expect[lane]);
+    int d = seq_diff(r->seq & REL_SEQ_MASK, s_rel_expect[peer][lane]);
     if (d == 0) {
+        /* Resume, the delay pick and the scene hand-off are decisions of the
+         * control link (peer 0) until they are made per peer. */
         if (lane == 0) {
-            handshake_msg(r->type, r->payload, r->len);
+            handshake_msg_from(peer, r->type, r->payload, r->len);
         } else if (r->type == REL_RESUME) {
-            net_resume_rel(r->payload, r->len);
+            if (peer == 0) {
+                net_resume_rel(r->payload, r->len);
+            }
         } else if (r->type == REL_DELAY) {
-            net_delay_rel(r->payload, r->len);
+            if (peer == 0) {
+                net_delay_rel(r->payload, r->len);
+            }
         } else if (r->type == REL_SCENE) {
-            net_scene_rel(r->payload, r->len);
+            if (peer == 0) {
+                net_scene_rel(r->payload, r->len);
+            }
         } else if (r->type == REL_CHAT) {
             pc_net_chat_receive(r->payload, r->len);
         } else if (s_rel_rx_n < REL_QUEUE) {
@@ -189,23 +240,27 @@ void on_rel(const Rel* r, int n) {
         } else {
             return; /* caller is not draining: no ack, the peer resends later */
         }
-        s_rel_expect[lane] = (s_rel_expect[lane] + 1) & REL_SEQ_MASK;
+        s_rel_expect[peer][lane] = (s_rel_expect[peer][lane] + 1) & REL_SEQ_MASK;
     } else if (d < -REL_REACK || d > 0) {
         if (!s_rel_unexpected_logged) {
             s_rel_unexpected_logged = true;
             pc_log_line("net: reliable seq %u unexpected (expect %u)", r->seq,
-                lane << 7 | s_rel_expect[lane]);
+                lane << 7 | s_rel_expect[peer][lane]);
         }
         return;
     }
     RelAck k = {hdr('K'), r->seq};
     SDL_LockMutex(net.tx_lock);
-    tx(&k, sizeof k);
+    tx_to(peer, &k, sizeof k);
     SDL_UnlockMutex(net.tx_lock);
 }
 
-void on_rel_ack(const RelAck* k) {
-    RelTx* t = &s_rel_tx[k->seq >> 7];
+void on_rel(const Rel* r, int n) {
+    on_rel_from(0, r, n);
+}
+
+void on_rel_ack_from(int peer, const RelAck* k) {
+    RelTx* t = &s_rel_tx[peer][k->seq >> 7];
     SDL_LockMutex(net.tx_lock);
     if (t->n > 0 && (k->seq & REL_SEQ_MASK) == t->seq) {
         t->head = (t->head + 1) % REL_QUEUE;
@@ -218,13 +273,20 @@ void on_rel_ack(const RelAck* k) {
     SDL_UnlockMutex(net.tx_lock);
 }
 
+void on_rel_ack(const RelAck* k) {
+    on_rel_ack_from(0, k);
+}
+
 /* Session start: every queue empty, sequence numbers from 0 (timer parked). */
 void rel_reset(void) {
     pc_net_chat_reset();
-    for (int lane = 0; lane < REL_LANES; lane++) {
-        s_rel_tx[lane].head = s_rel_tx[lane].n = s_rel_tx[lane].resends = 0;
-        s_rel_tx[lane].seq = s_rel_expect[lane] = 0;
-        s_rel_tx[lane].sent_ns = 0;
+    for (int p = 0; p < NET_MAX_PEERS; p++) {
+        for (int lane = 0; lane < REL_LANES; lane++) {
+            RelTx* t = &s_rel_tx[p][lane];
+            t->head = t->n = t->resends = 0;
+            t->seq = s_rel_expect[p][lane] = 0;
+            t->sent_ns = 0;
+        }
     }
     s_rel_rx_head = s_rel_rx_n = 0;
     s_rel_unexpected_logged = false;

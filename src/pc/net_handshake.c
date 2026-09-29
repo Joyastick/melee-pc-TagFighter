@@ -115,6 +115,21 @@ static bool csprng(void* out, size_t n) {
 }
 #endif
 
+/* 3 or 4 machines (net.npeers > 1): the same exchange runs between the host
+ * (machine 0) and each guest, then one more message, GO, carries every
+ * machine's nonce and Tag Bind from the host to each guest so the guests can
+ * key their links to each other. A group match is always the plain layout
+ * with no couch partners: four ports, one player each. With one peer none of
+ * this runs and the exchange is exactly the two-machine one above. */
+static bool group(void) {
+    return net.npeers > 1;
+}
+
+/* Peers to talk to: a fixture that never set net.npeers still has one. */
+static int npeers_n(void) {
+    return net.npeers > 0 ? net.npeers : 1;
+}
+
 #define HS_TIMEOUT_MS 15000
 #define HS_LEAD_FRAMES 120 /* the floor: 2 s for RULES out and READY back */
 #define HS_LEAD_MAX 200    /* inside rules_invalid's RING * 4 with room for tick skew */
@@ -134,7 +149,9 @@ static bool s_rules_saved; /* guest: s_rules_orig holds its own values */
 static Rules s_rules_orig;
 static uint64_t s_nonce_local;    /* ours this session; 0: not drawn yet */
 static uint32_t s_nonce_session;  /* net.session s_nonce_local was drawn for */
-static uint64_t s_nonce_peer;     /* theirs, from RULES (guest) or READY (host) */
+static uint64_t s_nonce_peer[NET_MAX_PEERS]; /* theirs, from RULES (guest) or READY (host) */
+static bool s_ready_from[NET_MAX_PEERS];     /* host: this guest's READY is in */
+static uint8_t s_group_tag_bind[NET_MAX_MACHINES]; /* group: every machine's own Tag Bind */
 static uint8_t s_remote_tag_bind; /* the peer's own MeleeVS: Tag Bind, see pc_net_remote_tag_bind */
 /* This machine's own MeleeVS: Tag Bind, pinned at the moment it went on the
  * wire (RULES.tag_bind for the host, Ready.tag_bind for the guest) - see
@@ -195,7 +212,7 @@ static struct {
     uint8_t type;
     uint8_t len; /* 0: nothing pending */
     uint8_t wire[sizeof(Rules)];
-} s_hs_tx;
+} s_hs_tx[NET_MAX_PEERS]; /* one slot per peer: a host talks to each guest on its own */
 
 uint32_t pc_net_seed(void) {
     return net.seed;
@@ -221,40 +238,46 @@ static void hs_done(void) {
  * host never heard about: it waited out its 15 s timeout while this side
  * believed the match was agreed. Same pattern as resume_send()/resume_poll()
  * in net.c -- the poll the caller already runs every frame is the retry. */
-static bool hs_send(uint8_t type, const void* wire, int len) {
-    if (pc_net_send_reliable(type, wire, len)) {
-        s_hs_tx.len = 0;
+static bool hs_send(int peer, uint8_t type, const void* wire, int len) {
+    if (group() ? net_rel_send_peer(peer, type, wire, len) : pc_net_send_reliable(type, wire, len)) {
+        s_hs_tx[peer].len = 0;
         return true;
     }
-    s_hs_tx.session = net.session;
-    s_hs_tx.type = type;
-    s_hs_tx.len = (uint8_t)len;
-    memcpy(s_hs_tx.wire, wire, (size_t)len);
+    s_hs_tx[peer].session = net.session;
+    s_hs_tx[peer].type = type;
+    s_hs_tx[peer].len = (uint8_t)len;
+    memcpy(s_hs_tx[peer].wire, wire, (size_t)len);
     pc_log_line("net: %s not queued (reliable queue full), retrying",
-        type == REL_RULES ? "RULES" : "READY");
+        type == REL_RULES ? "RULES" : type == REL_GO ? "GO" : "READY");
     return false;
 }
 
 /* Retry whatever hs_send() could not queue; called from hs_poll() while the
  * handshake is pending, so the handshake timeout bounds the retries. A READY
  * that goes out here is what completes the guest's handshake, which is why
- * hs_done() is reached from here rather than from on_rules(). */
+ * hs_done() is reached from here rather than from on_rules() (in a group
+ * match the guest is done at GO, not at READY). */
 static void hs_flush(void) {
-    if (s_hs_tx.len == 0) {
-        return;
-    }
-    if (s_hs_tx.session != net.session) {
-        s_hs_tx.len = 0; /* built for a session that has since been torn down */
-        return;
-    }
-    if (!pc_net_send_reliable(s_hs_tx.type, s_hs_tx.wire, s_hs_tx.len)) {
-        return;
-    }
-    uint8_t type = s_hs_tx.type;
-    s_hs_tx.len = 0;
-    pc_log_line("net: %s queued on retry", type == REL_RULES ? "RULES" : "READY");
-    if (type == REL_READY) {
-        hs_done();
+    for (int p = 0; p < npeers_n(); p++) {
+        if (s_hs_tx[p].len == 0) {
+            continue;
+        }
+        if (s_hs_tx[p].session != net.session) {
+            s_hs_tx[p].len = 0; /* built for a session that has since been torn down */
+            continue;
+        }
+        bool sent = group() ? net_rel_send_peer(p, s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len) :
+                              pc_net_send_reliable(s_hs_tx[p].type, s_hs_tx[p].wire, s_hs_tx[p].len);
+        if (!sent) {
+            continue;
+        }
+        uint8_t type = s_hs_tx[p].type;
+        s_hs_tx[p].len = 0;
+        pc_log_line("net: %s queued on retry",
+            type == REL_RULES ? "RULES" : type == REL_GO ? "GO" : "READY");
+        if (type == REL_READY && !group()) {
+            hs_done();
+        }
     }
 }
 
@@ -362,7 +385,7 @@ static void rules_capture_own(Rules* ru) {
      * human's real controller from physical port 0, whichever net-session
      * port (0 or 1) matchmaking assigns this peer. */
     ru->tag_bind = (uint8_t)pc_get_tag_bind(0);
-    ru->partner_bind = local_partner_now();
+    ru->partner_bind = group() ? NET_NO_PARTNER : local_partner_now();
     ru->layout = NET_LAYOUT_DIRECT;
 }
 
@@ -370,8 +393,8 @@ static void rules_capture_own(Rules* ru) {
  * its team, and for Matchmaking the fixed ruleset. */
 static void rules_capture(Rules* ru) {
     rules_capture_own(ru);
-    ru->layout =
-        s_want_matchmade && TagAssist_IsTagBattleOn() ? NET_LAYOUT_MATCHMADE : NET_LAYOUT_DIRECT;
+    ru->layout = s_want_matchmade && TagAssist_IsTagBattleOn() && !group() ? NET_LAYOUT_MATCHMADE :
+                                                                             NET_LAYOUT_DIRECT;
     ru->team = team_for_wire(ru->partner_bind);
     if (ru->layout == NET_LAYOUT_MATCHMADE) {
         matchmade_rules(ru);
@@ -407,10 +430,13 @@ static void rules_apply(const Rules* ru, bool from_peer) {
          * guest's symmetric way, from Ready.tag_bind in on_ready below. */
         s_remote_tag_bind = ru->tag_bind;
         s_remote_partner_bind = ru->partner_bind;
+        s_group_tag_bind[0] = ru->tag_bind; /* the host is machine 0 */
     }
     /* The host's layout and team, whichever side is applying them. */
     s_layout = ru->layout;
-    s_team[net.hs_host ? net.local : net.remote] = ru->team;
+    if (!group()) {
+        s_team[net.hs_host ? net.local : net.remote] = ru->team;
+    }
     pc_log_line("net: RULES %s mode=%u time=%u stock=%u handicap=%u dmg=%u stage_sel=%u ff=%u "
                 "pause=%u sd=%u items=%u/%016llx stages=%08x frozen=%u unlock_all=1 game_mode=%u",
         from_peer ? "applied" : "in force", ru->game.mode, ru->game.time_limit,
@@ -489,14 +515,17 @@ void rules_restore(void) {
     /* The session is over; its nonces must never be reused, anything it
      * still had to send dies with it, and the next one gets a fresh log
      * budget for each refusal class. */
-    s_nonce_local = s_nonce_peer = 0;
+    s_nonce_local = 0;
+    memset(s_nonce_peer, 0, sizeof s_nonce_peer);
+    memset(s_ready_from, 0, sizeof s_ready_from);
+    memset(s_group_tag_bind, 0, sizeof s_group_tag_bind);
     s_remote_tag_bind = 0;
     s_local_tag_bind = 0;
     s_remote_partner_bind = NET_NO_PARTNER;
     s_local_partner_bind = NET_NO_PARTNER;
     s_layout = NET_LAYOUT_DIRECT;
     memset(s_team, 0, sizeof s_team);
-    s_hs_tx.len = 0;
+    memset(s_hs_tx, 0, sizeof s_hs_tx);
     s_hs_logged = 0;
     s_direct_idle_ns = 0;
 }
@@ -526,6 +555,21 @@ int pc_net_local_tag_bind(void) {
 
 int pc_net_local_partner_bind(void) {
     return s_rules_on && s_local_partner_bind != NET_NO_PARTNER ? s_local_partner_bind : -1;
+}
+
+/* Machine `machine`'s own Tag Bind as pinned for the session: ours, the
+ * peer's in a two-machine match, or the one GO / READY carried in a group. */
+int pc_net_tag_bind_of(int machine) {
+    if (!s_rules_on) {
+        return 0;
+    }
+    if (machine == net.local) {
+        return s_local_tag_bind;
+    }
+    if (group()) {
+        return machine >= 0 && machine < NET_MAX_MACHINES ? s_group_tag_bind[machine] : 0;
+    }
+    return s_remote_tag_bind;
 }
 
 int pc_net_remote_partner_bind(void) {
@@ -667,7 +711,11 @@ static uint64_t nonce_local(void) {
     return s_nonce_local;
 }
 
-static void on_rules(const uint8_t* payload, int len) {
+static void on_rules(int peer, const uint8_t* payload, int len) {
+    if (group() && net.peers[peer].machine != 0) {
+        hs_drop(LOG_RULES_HOST, "RULES", "not from the host"); /* only machine 0 hosts */
+        return;
+    }
     if (net.hs_host) {
         hs_drop(LOG_RULES_HOST, "RULES", "we host");
         return;
@@ -684,8 +732,8 @@ static void on_rules(const uint8_t* payload, int len) {
          * sequence, net_reliable.c), so this is a second, distinct RULES:
          * either the host changed its mind too late or someone injected it.
          * Logged once and dropped; the rules in force do not move. */
-        hs_drop(ru.nonce == s_nonce_peer ? LOG_RULES_DUP : LOG_RULES_CONFLICT, "RULES",
-            ru.nonce == s_nonce_peer ? "already applied" : "conflicting nonce after done");
+        hs_drop(ru.nonce == s_nonce_peer[peer] ? LOG_RULES_DUP : LOG_RULES_CONFLICT, "RULES",
+            ru.nonce == s_nonce_peer[peer] ? "already applied" : "conflicting nonce after done");
         return;
     }
     const char* bad = rules_invalid(&ru);
@@ -722,19 +770,22 @@ static void on_rules(const uint8_t* payload, int len) {
     s_local_tag_bind = (uint8_t)pc_get_tag_bind(0);
     /* The host's game_mode decides Tag Battle for both sides, so ask the
      * RULES being answered, not this machine's own menu state. */
-    s_local_partner_bind = ru.game_mode == GAME_MODE_TAG_BATTLE && net_local_partner_present() ?
+    s_local_partner_bind = !group() && ru.game_mode == GAME_MODE_TAG_BATTLE &&
+                                   net_local_partner_present() ?
                                (uint8_t)pc_get_tag_bind(1) :
                                NET_NO_PARTNER;
     Ready rd = {nonce_local(), ru.nonce, unlock_mine, s_local_tag_bind, s_local_partner_bind,
         team_for_wire(s_local_partner_bind), ru.start_frame, 0};
-    s_team[net.local] = rd.team;
+    if (!group()) {
+        s_team[net.local] = rd.team;
+    }
     if (rd.nonce == 0) {
         hs_drop(LOG_RULES_NONCE, "RULES", "no random source");
         unlock_restore();
         return;
     }
     rd.hash = ready_hash(rd, net.session);
-    s_nonce_peer = ru.nonce;
+    s_nonce_peer[peer] = ru.nonce;
     net.seed = ru.seed;
     net.start_frame = ru.start_frame;
     seed_apply();
@@ -746,22 +797,24 @@ static void on_rules(const uint8_t* payload, int len) {
      * does verify (recv_inputs). Under tx_lock because the 4 ms timer stamps
      * its resends with this key on its own thread. */
     SDL_LockMutex(net.tx_lock);
-    net_key_session(ru.nonce, rd.nonce);
+    net_key_session_peer(peer, ru.nonce, rd.nonce);
     SDL_UnlockMutex(net.tx_lock);
     rules_apply(&ru, true);
     wire_ready(&rd);
-    if (!hs_send(REL_READY, &rd, sizeof rd)) {
+    if (!hs_send(peer, REL_READY, &rd, sizeof rd)) {
         return; /* hs_poll() retries it, and finishes the handshake when it goes out */
     }
-    hs_done();
+    if (!group()) {
+        hs_done(); /* a group guest waits for GO: it does not know the others' nonces yet */
+    }
 }
 
-static void on_ready(const uint8_t* payload, int len) {
+static void on_ready(int peer, const uint8_t* payload, int len) {
     if (!net.hs_host) {
         hs_drop(LOG_READY_GUEST, "READY", "we are the guest");
         return;
     }
-    if (net.hs == HS_DONE) {
+    if (net.hs == HS_DONE || (group() && s_ready_from[peer])) {
         hs_drop(LOG_READY_DONE, "READY", "already done");
         return;
     }
@@ -810,10 +863,12 @@ static void on_ready(const uint8_t* payload, int len) {
         pc_log_line("net: READY took the earlier start_frame=%d", rd.start_frame);
         net.start_frame = rd.start_frame;
     }
-    s_nonce_peer = rd.nonce;
+    s_nonce_peer[peer] = rd.nonce;
     /* Authenticated like unlock_hash above, so a bad value is a real
      * disagreement: fail hard rather than wait out the timeout. */
-    if (rd.partner_bind != NET_NO_PARTNER && (rd.partner_bind > 11 || !TagAssist_IsTagBattleOn())) {
+    if (rd.partner_bind != NET_NO_PARTNER &&
+        (rd.partner_bind > 11 || !TagAssist_IsTagBattleOn() || group()))
+    {
         pc_log_line("net: READY rejected: partner_bind %u out of range", rd.partner_bind);
         net.hs = HS_FAILED;
         return;
@@ -823,26 +878,115 @@ static void on_ready(const uint8_t* payload, int len) {
         net.hs = HS_FAILED;
         return;
     }
-    s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
-    s_remote_partner_bind = rd.partner_bind;
-    s_team[net.remote] = rd.team;
+    if (rd.tag_bind > 11) {
+        pc_log_line("net: READY rejected: tag_bind %u out of range", rd.tag_bind);
+        net.hs = HS_FAILED;
+        return;
+    }
+    if (group()) {
+        s_group_tag_bind[net.peers[peer].machine] = rd.tag_bind;
+    } else {
+        s_remote_tag_bind = rd.tag_bind; /* the host learning the guest's own bind */
+        s_remote_partner_bind = rd.partner_bind;
+        s_team[net.remote] = rd.team;
+    }
     /* This side's turn: the READY just authenticated is what carries the
      * guest's nonce, so from here both peers hold the same three values and
      * derive the same key without another message. Under tx_lock, like the
      * guest's install above. */
     SDL_LockMutex(net.tx_lock);
-    net_key_session(s_nonce_local, rd.nonce);
+    net_key_session_peer(peer, s_nonce_local, rd.nonce);
     SDL_UnlockMutex(net.tx_lock);
+    if (!group()) {
+        hs_done();
+        return;
+    }
+    s_ready_from[peer] = true;
+    for (int i = 0; i < net.npeers; i++) {
+        if (!s_ready_from[i]) {
+            return; /* still waiting on another guest */
+        }
+    }
+    /* Everyone is in. Tell each guest what the others answered so they can
+     * key their own links, then the host is done: its start_frame stands. */
+    Go go = {{0}, {0}, net.start_frame, 0};
+    go.nonce[0] = s_nonce_local;
+    go.tag_bind[0] = s_local_tag_bind;
+    s_group_tag_bind[net.local] = s_local_tag_bind;
+    for (int i = 0; i < net.npeers; i++) {
+        int m = net.peers[i].machine;
+        go.nonce[m] = s_nonce_peer[i];
+        go.tag_bind[m] = s_group_tag_bind[m];
+    }
+    go.hash = go_hash(go, net.session);
+    Go w = go;
+    wire_go(&w);
+    for (int i = 0; i < net.npeers; i++) {
+        hs_send(i, REL_GO, &w, sizeof w);
+    }
+    hs_done();
+}
+
+/* Guest of a 3-4 machine match: the host's word that every guest is in. The
+ * MAC of the link it arrived on already vouches for it (GO travels under the
+ * host's key); the hash and our own nonce echoed back keep a replay from an
+ * earlier session out. From it we key our links to the other guests, in the
+ * order both ends agree on (lower machine number first). */
+static void on_go(int peer, const uint8_t* payload, int len) {
+    if (!group() || net.hs_host || net.hs != HS_PENDING || net.peers[peer].machine != 0) {
+        hs_drop(LOG_READY_IDLE, "GO", "not expected");
+        return;
+    }
+    if (len != (int)sizeof(Go)) {
+        hs_drop(LOG_READY_LEN, "GO", "wrong length");
+        return;
+    }
+    Go go;
+    memcpy(&go, payload, sizeof go);
+    wire_go(&go);
+    if (go.hash != go_hash(go, net.session)) {
+        hs_drop(LOG_READY_HASH, "GO", "hash mismatch");
+        return;
+    }
+    if (s_nonce_local == 0 || go.nonce[net.local] != s_nonce_local || go.nonce[0] != s_nonce_peer[peer]) {
+        hs_drop(LOG_READY_NONCE, "GO", "nonce mismatch");
+        return;
+    }
+    for (int i = 0; i < NET_MAX_MACHINES; i++) {
+        if (go.tag_bind[i] > 11) {
+            hs_drop(LOG_READY_HASH, "GO", "tag_bind out of range");
+            return;
+        }
+    }
+    SDL_LockMutex(net.tx_lock);
+    for (int i = 0; i < net.npeers; i++) {
+        int m = net.peers[i].machine;
+        if (m == 0) {
+            continue; /* the host link was keyed by RULES/READY */
+        }
+        int lo = m < net.local ? m : net.local, hi = m < net.local ? net.local : m;
+        net_key_session_peer(i, go.nonce[lo], go.nonce[hi]);
+        s_nonce_peer[i] = go.nonce[m];
+    }
+    SDL_UnlockMutex(net.tx_lock);
+    memcpy(s_group_tag_bind, go.tag_bind, sizeof s_group_tag_bind);
+    net.start_frame = go.start_frame;
     hs_done();
 }
 
 /* Reliable types below 0x10: the match handshake. */
-void handshake_msg(uint8_t type, const uint8_t* payload, int len) {
+void handshake_msg_from(int peer, uint8_t type, const uint8_t* payload, int len) {
     if (type == REL_RULES) {
-        on_rules(payload, len);
+        on_rules(peer, payload, len);
     } else if (type == REL_READY) {
-        on_ready(payload, len);
+        on_ready(peer, payload, len);
+    } else if (type == REL_GO) {
+        on_go(peer, payload, len);
     }
+}
+
+void handshake_msg(uint8_t type, const uint8_t* payload, int len) {
+    handshake_msg_from(0, type, payload, len);
 }
 
 /* Frames from sending RULES to the start. A fixed 120 was a deadline the
@@ -852,7 +996,7 @@ void handshake_msg(uint8_t type, const uint8_t* payload, int len) {
  * either; 30 more cover the ready barrier behind them. */
 static int32_t hs_lead(void) {
     int32_t rtt_frames = (int32_t)((net.ping_us + 16666) / 16667);
-    int32_t lead = 3 * rtt_frames + 30;
+    int32_t lead = 3 * rtt_frames + 30 + (group() ? 30 : 0); /* GO is one more leg */
     return lead < HS_LEAD_FRAMES ? HS_LEAD_FRAMES : lead > HS_LEAD_MAX ? HS_LEAD_MAX : lead;
 }
 
@@ -862,7 +1006,13 @@ static bool hs_send_rules(void) {
     s_hs_rules.hash = rules_hash(s_hs_rules, net.session);
     Rules w = s_hs_rules;
     wire_rules(&w);
-    return hs_send(REL_RULES, &w, sizeof w);
+    bool all = true;
+    for (int p = 0; p < npeers_n(); p++) {
+        if (!group() || !s_ready_from[p]) { /* a guest already in keeps the start it answered */
+            all = hs_send(p, REL_RULES, &w, sizeof w) && all;
+        }
+    }
+    return all;
 }
 
 /* Host: the start went by with no READY, so the RULES out there can only be

@@ -26,6 +26,7 @@
 #define s_remote_ring (net.peers[0].remote_ring)
 #define s_last_acked (net.peers[0].last_acked)
 #define s_heard (net.peers[0].heard)
+#define s_mac_seen (net.peers[0].mac_seen)
 #define s_last_rx_ns (net.peers[0].last_rx_ns)
 
 #include <stdarg.h>

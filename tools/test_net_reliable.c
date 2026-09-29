@@ -42,11 +42,13 @@ Hdr hdr(uint8_t magic) {
 void wire_rel(Rel* r) {
     (void)r;
 }
-void tx(const void* buf, size_t len) {
+void tx_to(int peer, const void* buf, size_t len) {
+    (void)peer;
     memcpy(s_out, buf, len);
     s_out_len = len;
 }
-void handshake_msg(uint8_t type, const uint8_t* p, int len) {
+void handshake_msg_from(int peer, uint8_t type, const uint8_t* p, int len) {
+    (void)peer;
     (void)type;
     (void)p;
     (void)len;

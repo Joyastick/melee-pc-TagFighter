@@ -56,6 +56,7 @@ bool pc_net_pure_load(const char* filename); /* served from memory, no barrier *
 bool pc_net_scene_hold(void);
 /* Controller port the local player drives (0 = P1/host, 1 = P2/guest). */
 int pc_net_local_player(void);
+int pc_net_machines(void); /* machines in the match: 2 to 4 (peers + us) */
 
 /* Frame of the tick being simulated (-1 before the first); identical on both
  * peers, so a scene change scheduled for a given frame lands in sync. */
@@ -106,6 +107,7 @@ bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
  * pc_net_rules's fields, each peer keeps their own. 0 (Off) before the
  * handshake completes or when netplay is inactive. */
 int pc_net_remote_tag_bind(void);
+int pc_net_tag_bind_of(int machine); /* any machine's pinned Tag Bind */
 
 /* This machine's own MeleeVS: Tag Bind index, pinned at the moment it went
  * on the wire (Rules.tag_bind if we're the host, Ready.tag_bind if we're

@@ -118,6 +118,7 @@ static inline void sock_startup(void) {}
 /* ---- constants -------------------------------------------------------- */
 
 #define RING 64 /* frames of history kept per side; power of two */
+#define NET_MAX_PEERS 3 /* other machines in a match: up to 4 machines in all */
 /* Unacked frames an input packet can carry. Delivery runs at one packet's
  * worth per round trip (net.c send_inputs), so 28 holds 60 Hz to ~460 ms.
  * Upstream melee-pc uses 32 with its pads delta-coded on the wire; ours go
@@ -212,6 +213,7 @@ typedef struct Ack {
 #define REL_MAX 256
 #define REL_RULES 0x01  /* host -> guest {seed, start_frame, nonce} (net_handshake.c) */
 #define REL_READY 0x02  /* guest -> host {nonce, echo} (net_handshake.c) */
+#define REL_GO 0x03     /* host -> each guest of a 3-4 machine match {nonces, binds} */
 #define REL_RESUME 0x12 /* net.c's resume exchange, dispatched by on_rel */
 #define REL_DELAY 0x13  /* the host's input-delay pick, dispatched by on_rel */
 #define REL_CHAT 0x15   /* fixed quick-chat phrase, consumed before caller queue */
@@ -280,6 +282,19 @@ typedef struct Ready {
     uint32_t hash;        /* ready_hash() of the wire image above */
 } __attribute__((packed)) Ready;
 
+/* Payload of the GO message (net_handshake.c): a 3 or 4 machine match only.
+ * Once every guest has answered READY the host tells each of them what the
+ * others answered, so guests can key their links to each other (the host is
+ * the only machine that has met everyone) and know every machine's Tag Bind.
+ * Indexed by machine number; machine 0 is the host. */
+#define NET_MAX_MACHINES (NET_MAX_PEERS + 1)
+typedef struct Go {
+    uint64_t nonce[NET_MAX_MACHINES];  /* each machine's own nonce (the host's is Rules.nonce) */
+    uint8_t tag_bind[NET_MAX_MACHINES];
+    int32_t start_frame; /* the start the host settled on: guests adopt it */
+    uint32_t hash;       /* go_hash() of the wire image above */
+} __attribute__((packed)) Go;
+
 /* Payload of the RESUME message (reliable REL_RESUME, net.c): what the
  * sender still holds after an interruption. Every field is 32-bit, so the
  * big-endian conversion is one loop over the image. */
@@ -318,6 +333,7 @@ _Static_assert(sizeof(RelAck) == 8 && sizeof(Bye) == 8, "wire layout");
 _Static_assert(sizeof(PcNetTeam) == 9, "wire layout");
 _Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 35, "wire layout");
 _Static_assert(sizeof(Ready) == 39, "wire layout");
+_Static_assert(sizeof(Go) == 32 + 4 + 4 + 4, "wire layout");
 _Static_assert(sizeof(Resume) == 20 && sizeof(Resume) % 4 == 0, "wire layout");
 _Static_assert(sizeof(DelayMsg) == 8, "wire layout");
 _Static_assert(sizeof(SceneMsg) == 8, "wire layout");
@@ -379,7 +395,6 @@ enum { SYNC_ON, SYNC_OFF, SYNC_LEGACY };
 /* One remote machine of a match: where it is, what we hold of its input, and
  * the receive-side dedup and checksum state that goes with it. A match is
  * 1 to NET_MAX_PEERS of these (mesh: every machine talks to every other). */
-#define NET_MAX_PEERS 3
 typedef struct Peer {
     struct sockaddr_storage addr;
     socklen_t addr_len;
@@ -400,6 +415,8 @@ typedef struct Peer {
     uint16_t rx_seq_top;  /* highest seq seen */
     uint64_t rx_seq_bits; /* bit k: (top-k) received; bit 0 = top */
     int machine;          /* its machine number, the Hdr.player it sends with */
+    bool mac_seen;        /* a tag from it has verified: nothing untagged is taken again */
+    int mac_quiet;        /* datagrams let through for want of a verifying tag */
     uint32_t ping_us;     /* smoothed round trip to it */
     uint16_t tx_seq;      /* next tx seq to it (tx_lock) */
     struct {
@@ -494,6 +511,7 @@ void wire_ack(Ack* a);
 void wire_rel(Rel* r);
 void wire_rules(Rules* ru);
 void wire_ready(Ready* rd);
+void wire_go(Go* go);
 /* Handshake hashes: FNV over the payload's wire image with the session id
  * folded in, so a payload captured from one session cannot validate in
  * another. Rules' image carries the host nonce and Ready's carries both, so
@@ -501,6 +519,7 @@ void wire_ready(Ready* rd);
  * the guest's nonce because it does not exist yet when RULES is sent. */
 uint32_t rules_hash(Rules ru, uint32_t session);
 uint32_t ready_hash(Ready rd, uint32_t session);
+uint32_t go_hash(Go go, uint32_t session);
 
 /* Per-session datagram authentication. The key is BLAKE2b over the session
  * id and both handshake nonces, which is the one thing in the session an
@@ -511,10 +530,12 @@ uint32_t ready_hash(Ready rd, uint32_t session);
  * secret instead, for the direct MELEE_NET sessions that run no handshake;
  * a pinned key is never replaced by a derived one, so a session cannot rekey
  * mid-flight and lose the datagrams that straddle the change. */
-void net_key_session(uint64_t host_nonce, uint64_t guest_nonce);
+void net_key_session(uint64_t host_nonce, uint64_t guest_nonce); /* peer 0's link */
+void net_key_session_peer(int peer, uint64_t host_nonce, uint64_t guest_nonce);
 void net_key_direct(const char* secret);
 void net_key_clear(void);
 bool net_key_ready(void);
+bool net_key_ready_peer(int peer);
 /* True when the key came from MELEE_NET_KEY rather than the handshake. Both
  * peers then hold it from connect, so there is no leg of a handshake to wait
  * out and an unauthenticated datagram is a forgery from the first one. */
@@ -522,10 +543,12 @@ bool net_key_pinned(void);
 /* Write the tag for the len bytes at buf into buf[len..len+NET_MAC_LEN); the
  * caller owns that room. Zeros while no key exists. */
 void net_mac_stamp(void* buf, size_t len);
+void net_mac_stamp_peer(int peer, void* buf, size_t len);
 /* True when the tag after the len bytes at buf is this session's. False
  * whenever no key exists: the caller decides what an unauthenticated
  * datagram means at that point in the session. */
 bool net_mac_ok(const void* buf, size_t len);
+bool net_mac_ok_peer(int peer, const void* buf, size_t len);
 Hdr hdr(uint8_t magic);
 bool addr_eq(const struct sockaddr_storage* a, const struct sockaddr_storage* b);
 /* net_lan.c; text form of a datagram source, for logs and getaddrinfo(). */
@@ -544,13 +567,17 @@ void sim_reset(void);
 /* ---- net_reliable.c --------------------------------------------------- */
 
 void rel_service(void); /* caller holds tx_lock */
-void on_rel(const Rel* r, int n);
+void on_rel(const Rel* r, int n); /* from peer 0 */
 void on_rel_ack(const RelAck* k);
+void on_rel_from(int peer, const Rel* r, int n);
+void on_rel_ack_from(int peer, const RelAck* k);
+bool net_rel_send_peer(int peer, uint8_t type, const void* payload, int len);
 void rel_reset(void);
 
 /* ---- net_handshake.c -------------------------------------------------- */
 
-void handshake_msg(uint8_t type, const uint8_t* payload, int len);
+void handshake_msg(uint8_t type, const uint8_t* payload, int len); /* from peer 0 */
+void handshake_msg_from(int peer, uint8_t type, const uint8_t* payload, int len);
 void rules_restore(void);
 void handshake_direct(void);
 
