@@ -33,6 +33,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import net_test as nt  # noqa: E402
+import net_pair_test as npt  # noqa: E402  (TagWorkout, check_tag)
 
 BOOT_FRAMES = 2400  # the session is up from boot; the handshake needs the game's rules filled in
 
@@ -107,11 +108,11 @@ class Machine:
 # ("start_[FileCache] STORED"), so "done" is matched on its own and the numbers
 # only where the line came through whole.
 DONE_RX = re.compile(r"net: handshake done")
-HANDSHAKE_RX = re.compile(r"net: handshake done seed=(\d+) start_frame=(-?\d+)")
+HANDSHAKE_RX = re.compile(r"net: handshake done seed=(\d+) start_frame=(-?\d+) \(frame")  # whole line only: a cut one has a short number
 GROUP_RX = re.compile(r"net: group of (\d+) machines, we are machine (\d+)")
 
 
-def check_group(ms):
+def check_group(ms, loss=0):
     """Cross-instance assertions: everyone joined the same group, agreed on
     the seed and start frame, and simulated identical frames."""
     fails = []
@@ -151,7 +152,7 @@ def check_group(ms):
     # its sender had the key can land after the receiver verified a tagged one)
     for m in ms:
         bad = max([int(x) for x in re.findall(r"bad_mac (\d+)", m.text())] or [0])
-        if bad > 10:
+        if bad > 10 + 6 * loss:  # loss widens the key handover, which drops a few more at the start
             fails.append(f"{m.name}: {bad} datagrams dropped for a bad MAC")
     return fails
 
@@ -196,6 +197,8 @@ def run(args):
         sim["MELEE_NET_SIM_DELAY_MS"] = str(args.delay)
     if args.jitter:
         sim["MELEE_NET_SIM_JITTER_MS"] = "20"
+    if args.tag:  # a Tag Battle: 2v2 by machine (ports 0,1 vs 2,3), assists called and tagged
+        sim["MELEE_DEBUG_VS"] = "tag2v2"
     if args.stocks:  # a stock match: someone loses the last stock and GAME! ends it
         sim["MELEE_DEBUG_VS_STOCKS"] = str(args.stocks)
     if args.css:  # the real menus instead of the debug match shortcut
@@ -233,14 +236,14 @@ def run(args):
                 print("net_group_test: never got through CSS and SSS into the match", flush=True)
                 ok = False
             else:
-                workout = nt.Workout(ms)
+                workout = npt.TagWorkout(ms) if args.tag else nt.Workout(ms)
         elif have_keys:
             if not nt.press_until(ms, "Return", 9, nt.SCENE_FILE["match"], tries=40, each=8.0,
                                   on=(ms[0],)) or not nt.wait_match(ms, 150):
                 print("net_group_test: never got into the match", flush=True)
                 ok = False
             else:
-                workout = nt.Workout(ms)
+                workout = npt.TagWorkout(ms) if args.tag else nt.Workout(ms)
         term = (r"net: DESYNC", r"peer silent for \d+ ms at frame \d+, leaving netplay",
                 r"net: disconnected", r"cannot roll back")
         deadline = time.time() + frames / 12.0 + 60
@@ -264,7 +267,9 @@ def run(args):
             print(f"net_group_test: workout wrote {workout.done()} key lines", flush=True)
         for m in ms:
             m.kill(20)
-    fails = check_group(ms) if ok else []
+    fails = check_group(ms, args.loss) if ok else []
+    if ok and args.tag:
+        fails += npt.check_tag(ms)
     for m in ms:
         f, line, _ = nt.summarize(m, need_match=have_keys and ok)
         print(line)
@@ -286,6 +291,8 @@ def main():
     p.add_argument("--frames", type=int, default=0, help="exit frame (default: boot + minutes)")
     p.add_argument("--minutes", type=float, default=0.5)
     p.add_argument("--no-match", action="store_true", help="menus only, no key driving")
+    p.add_argument("--tag", action="store_true",
+                   help="a Tag Battle with assist calls and tags (needs 3 or 4 machines: teams 0,1 vs 2,3)")
     p.add_argument("--stocks", type=int, default=0,
                    help="debug match with N stocks each, so it ends on GAME! (match-end path)")
     p.add_argument("--css", action="store_true",

@@ -260,12 +260,34 @@ void onEnterDebugVs(GameModeState* state)
         }
         start->rules.is_teams = 1; // same forcing mncharsel.c does entering from the main menu
         TagAssist_EnterForcedOn();
+        {
+            /* MELEE_DEBUG_VS_PLAYERS=3|4 (tools/net_group_test.py --tag): one human
+             * per machine on the port of its machine number, teams 0,1 vs 2,3
+             * (the group layout, net_group.h). With 3 machines port 3 stays the
+             * CPU assist behind the lone human of team B. */
+            int humans = getenv("MELEE_DEBUG_VS_PLAYERS") != NULL ?
+                             atoi(getenv("MELEE_DEBUG_VS_PLAYERS")) :
+                             0;
+            if (two_v_two && humans > 2) {
+                start->players[2].ckind = CKind_Fox;
+                start->players[2].slot_type = Gm_PKind_Human;
+                if (humans > 3) {
+                    start->players[3].slot_type = Gm_PKind_Human;
+                }
+                TagAssist_CssSyncPortTeam(0, 0);
+                TagAssist_CssSyncPortTeam(1, 0);
+                TagAssist_CssSyncPortTeam(2, 1);
+                TagAssist_CssSyncPortTeam(3, 1);
+                goto teams_synced;
+            }
+        }
         TagAssist_CssSyncPortTeam(0, 0);
         TagAssist_CssSyncPortTeam(2, 0);
         TagAssist_CssSyncPortTeam(1, 1);
         if (two_v_two) {
             TagAssist_CssSyncPortTeam(3, 1);
         }
+    teams_synced:;
     }
     /* MELEE_DEBUG_VS_STOCKS=<n>: a stock match instead of an untimed time
      * one, so a run can end on GAME! with stocks the replay (src/pc/slp.c)
