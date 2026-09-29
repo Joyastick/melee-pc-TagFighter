@@ -24,6 +24,15 @@ const std::string& get_app_version() {
     return version;
 }
 
+const std::string& get_display_version() {
+#ifdef MELEE_VERSION_LABEL
+    static const std::string version = MELEE_VERSION_LABEL;
+    return version;
+#else
+    return get_app_version();
+#endif
+}
+
 const std::string& get_upstream_pc_version() {
     static const std::string version = MELEE_UPSTREAM_PC_VERSION;
     return version;
