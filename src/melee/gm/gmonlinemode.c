@@ -26,6 +26,7 @@
 #include <sysdolphin/baselib/random.h>
 #ifdef TARGET_PC
 #include "pc/net.h"
+#include "pc/net_dht.h"
 #include "pc/net_lan.h"
 #include "pc/net_identity.h"
 #include "pc/net_match.h"
@@ -1548,9 +1549,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 /* The pairing server saw this router change ports per
                  * destination: say why no match may ever connect, unless
                  * the router forwards our port (net_upnp.c). */
-                snprintf(view.message, sizeof view.message, "%s",
-                         pc_upnp_mapped(NULL) ? "Searching... Strict NAT, port forwarded (UPnP)" :
-                                                "Searching... Strict NAT: matches may fail");
+                if (pc_upnp_mapped(NULL))
+                    snprintf(view.message, sizeof view.message,
+                             "Searching... Strict NAT, port forwarded (UPnP)");
+                else
+                    snprintf(view.message, sizeof view.message,
+                             "Strict NAT: enable router UPnP or forward UDP %u",
+                             (unsigned) pc_dht_port());
             } else {
                 snprintf(view.message, sizeof view.message, "%s", why ? why : "Searching for an opponent...");
             }
