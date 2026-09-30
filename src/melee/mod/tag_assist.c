@@ -32,6 +32,7 @@
 #include <sysdolphin/baselib/random.h>
 
 #include <melee/ft/kinds/ftCommon/forward.h>
+#include <melee/ft/kinds/ftCommon/ftCo_Attack100.h>
 #include <melee/ft/kinds/ftCommon/ftCo_Fall.h>
 
 /// Each of these declares that character's move-Enter function(s) --
@@ -852,6 +853,8 @@ static Fighter_GObj* TagAssist_GetIceClimberPartner(Fighter_GObj* gobj)
     return Player_GetEntityAtIndex(fp->player_id, 1);
 }
 
+static void TagAssist_ReleaseGrab(Fighter_GObj* gobj);
+
 /// Puts the assist into a genuinely inert dormant state: no CPU AI
 /// decision-making at all (x221F_b3, which skips Fighter_8006ABA0's call
 /// into ftCo_800B3900 outright -- see the module comment for why this,
@@ -868,6 +871,7 @@ static Fighter_GObj* TagAssist_GetIceClimberPartner(Fighter_GObj* gobj)
 static void TagAssist_SetBenched(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
+    TagAssist_ReleaseGrab(gobj);
     Fighter_GObj* partner = TagAssist_GetIceClimberPartner(gobj);
     if (partner != NULL) {
         TagAssist_SetBenched(partner);
@@ -1339,6 +1343,30 @@ static bool TagAssist_IsInDeathSequence(Fighter_GObj* gobj)
 /// it leads into) would hand a free escape from air dodge's own core
 /// risk/reward, the same way tagging out of hitstun would -- so it's
 /// treated as "can't act" too, even though the player chose to start it.
+/// True while the fighter is the GRABBER in an ordinary grab: reaching (Catch,
+/// CatchPull, CatchDash), holding (CatchWait, CatchAttack), the release
+/// (CatchCut) or mid-throw (Throw*). Benching or cancelling a fighter out of
+/// one of these strands the victim: they stay held in a Capture state with
+/// nobody left to throw or release them.
+static bool TagAssist_IsGrabbing(Fighter* fp)
+{
+    return fp->motion_id >= ftCo_MS_Catch && fp->motion_id <= ftCo_MS_ThrowLw;
+}
+
+/// Lets go of whoever `gobj` is still holding, the way retail's own grab
+/// release does (ftCo_800DA698 puts the grabber in CatchCut and the victim in
+/// CaptureCut), so the victim is free before the grabber is benched or has
+/// its motion overwritten. A no-op unless it is actually holding someone.
+static void TagAssist_ReleaseGrab(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    if (fp->victim_gobj != NULL && fp->motion_id >= ftCo_MS_Catch &&
+        fp->motion_id <= ftCo_MS_CatchAttack)
+    {
+        ftCo_800DA698(gobj, true);
+    }
+}
+
 static bool TagAssist_CantAct(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
@@ -1365,6 +1393,13 @@ static bool TagAssist_CantAct(Fighter_GObj* gobj)
         return true;
     }
     sAirDodgeChain[slot] = false;
+
+    // Mid-grab as the grabber: tagging in must not cancel it out of the grab
+    // and the auto-bench must wait it out (TagAssist_UpdateTimer releases the
+    // victim itself if the wait runs out), or the victim is left stuck held.
+    if (TagAssist_IsGrabbing(fp)) {
+        return true;
+    }
 
     // Held by an ordinary grab -- every one of these is the victim's own
     // "being carried/damaged/struggling" motion ID for a given grab type,
@@ -1535,6 +1570,9 @@ static void TagAssist_UpdateTimer(TeamState* team)
         team->despawn_grace--;
         return;
     }
+    // Still holding someone once the wait is up: let go first, since the Wait
+    // baseline below would drop the grab without ever releasing the victim.
+    TagAssist_ReleaseGrab(team->assist);
     Fighter_ChangeMotionState(team->assist, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f,
                               NULL);
     TagAssist_SpawnDespawnEffect(team->assist);
