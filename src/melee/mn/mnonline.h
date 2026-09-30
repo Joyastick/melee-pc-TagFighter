@@ -15,6 +15,9 @@ void mnOnline_Think(HSD_GObj*);
 /* Literal label / bottom-bar text for PC-only entries; NULL = stock. */
 const char* mnOnline_Label(MenuKind, int selection);
 const char* mnOnline_Description(MenuKind, int selection);
+/* The page name for a MELEE VS page's banner (the banner texture has none of
+ * its own), NULL for every other kind. */
+const char* mnOnline_Title(MenuKind);
 
 /* One-shot description override set by the think proc (A on a stub). */
 const char* mnOnline_TakeNotice(void);

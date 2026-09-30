@@ -29,6 +29,10 @@ typedef struct _MainMenuPanelData {
     /* 0x0001 */ MenuKind8 prev_menu;
     /* 0x0002 */ u8 x2;
     /* 0x0003 */ MenuState8 state;
+#ifdef TARGET_PC
+    HSD_Text* pc_title;      /* the page name drawn over the banner (mnonline.h) */
+    MenuKind8 pc_title_kind; /* the kind it was made for */
+#endif
 } MainMenuPanelData;
 
 typedef struct _MenuFlow {

@@ -1005,6 +1005,71 @@ StaticModelDesc MenMainCursorIs_Top;
 StaticModelDesc MenMainConSs_Top;
 StaticModelDesc MenMainCursorSs_Top;
 
+#ifdef TARGET_PC
+/* The banner's title is one textured plane per menu kind, shown by the panel
+ * model's own animation, and MELEE VS has no plane of its own. Its pages hide
+ * the planes (jobjs 0x52-0x56 of the panel, found by hiding jobjs until the
+ * "Main Menu" text went) and draw the page name as text where they were. The
+ * model never hides them itself (its animation fades the ones not in use), so
+ * a page that comes back to a kind with its own plane clears the hidden flag
+ * on all five again. The text is made when a page comes in and freed then. */
+#define PC_TITLE_FIRST 0x52
+#define PC_TITLE_LAST 0x56
+
+static void mn_UpdatePcTitle(HSD_JObj* root, MainMenuPanelData* data)
+{
+    static const GXColor title_color = { 0xC8, 0xD0, 0xF0, 0xFF };
+    const float title_size = 0.045f;
+    const char* title = mnOnline_Title(data->cur_menu);
+    HSD_JObj* anchor = NULL;
+    int i;
+
+    if (title == NULL) {
+        if (data->pc_title != NULL) {
+            HSD_SisLib_803A5CC4(data->pc_title);
+            data->pc_title = NULL;
+            for (i = PC_TITLE_FIRST; i <= PC_TITLE_LAST; i++) {
+                HSD_JObj* plane = NULL;
+                lb_80011E24(root, &plane, i, -1);
+                if (plane != NULL) {
+                    HSD_JObjClearFlagsAll(plane, JOBJ_HIDDEN);
+                }
+            }
+        }
+        return;
+    }
+    for (i = PC_TITLE_FIRST; i <= PC_TITLE_LAST; i++) {
+        HSD_JObj* plane = NULL;
+        lb_80011E24(root, &plane, i, -1);
+        if (plane != NULL) {
+            HSD_JObjSetFlagsAll(plane, JOBJ_HIDDEN);
+            if (i == PC_TITLE_LAST) {
+                anchor = plane;
+            }
+        }
+    }
+    if (data->pc_title != NULL && data->pc_title_kind != data->cur_menu) {
+        HSD_SisLib_803A5CC4(data->pc_title);
+        data->pc_title = NULL;
+    }
+    if (data->pc_title == NULL && anchor != NULL) {
+        HSD_Text* text = HSD_SisLib_803A6754(0, mn_804D6BB4);
+        Vec3 pos;
+        data->pc_title = text;
+        data->pc_title_kind = data->cur_menu;
+        text->default_kerning = 1;
+        text->font_size.x = title_size;
+        text->font_size.y = title_size;
+        HSD_SisLib_803A6B98(text, 0.0f, 0.0f, "%s", title);
+        lb_8000B1CC(anchor, NULL, &pos);
+        text->pos_x = pos.x;
+        text->pos_y = -pos.y - 16.0f * title_size;
+        text->pos_z = pos.z;
+        HSD_SisLib_803A74F0(text, 0, (GXColor*) &title_color);
+    }
+}
+#endif
+
 void fn_80229BF4(HSD_GObj* gobj)
 {
     f32 temp_f1;
@@ -1018,6 +1083,9 @@ void fn_80229BF4(HSD_GObj* gobj)
     data = gobj->user_data;
     lb_80011E24(temp_r28, &sp20, 4, -1);
     lb_80011E24(temp_r28, &sp1C, 0x29, -1);
+#ifdef TARGET_PC
+    mn_UpdatePcTitle(temp_r28, data);
+#endif
     if (data->cur_menu != mn_804A04F0.cur_menu) {
         data->prev_menu = data->cur_menu;
         data->cur_menu = mn_804A04F0.cur_menu;
@@ -1086,6 +1154,10 @@ HSD_GObj* mn_80229DC0(void)
     HSD_JObjAnimAll(sp8);
     user_data = HSD_MemAlloc(sizeof(*user_data));
     HSD_ASSERTREPORT(0x427, user_data, "Can't get user_data.\n");
+#ifdef TARGET_PC
+    user_data->pc_title = NULL;
+    user_data->pc_title_kind = 0;
+#endif
     GObj_InitUserData(temp_r31, 0, mn_8022EB04, user_data);
     tmp = mn_804A04F0.cur_menu;
     user_data->cur_menu = tmp;

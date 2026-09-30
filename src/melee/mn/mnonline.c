@@ -225,6 +225,22 @@ const char* mnOnline_Description(MenuKind kind, int selection)
     }
 }
 
+const char* mnOnline_Title(MenuKind kind)
+{
+    switch (kind) {
+    case MENU_KIND_MV_ROOT:
+        return "MELEE VS";
+    case MENU_KIND_MV_ONLINE:
+        return "ONLINE";
+    case MENU_KIND_MV_PARTY:
+        return "PARTY";
+    case MENU_KIND_MV_CREDITS:
+        return "CREDITS";
+    default:
+        return NULL;
+    }
+}
+
 const char* mnOnline_TakeNotice(void)
 {
     const char* s = notice;
