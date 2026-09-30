@@ -22,6 +22,8 @@ typedef struct Join {
     char host_suffix[8];
     uint32_t lan_ip;
     uint16_t lan_port;
+    uint32_t pub_ip; /* what the sender believes its public endpoint is (0 = unknown) */
+    uint16_t pub_port;
     char name[8]; /* the label of the sender's connect code */
     uint8_t sig[64];
 } Join;
@@ -127,6 +129,12 @@ int group_lobby_count(const GroupLobby* l) {
     return l->host ? l->roster.n : 0;
 }
 
+/* A source address that only exists behind a router (host order). */
+static bool private_ip(uint32_t ip) {
+    return (ip >> 24) == 10 || (ip >> 24) == 127 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 ||
+           (ip >> 16) == 0xA9FE || (ip >> 22) == (0x64400000u >> 22);
+}
+
 static int member_of(const GroupLobby* l, const uint8_t key[32]) {
     for (int i = 0; i < l->roster.n; i++) {
         if (memcmp(l->roster.m[i].key, key, 32) == 0) {
@@ -147,6 +155,8 @@ static void send_join(GroupLobby* l) {
     memcpy(j.host_suffix, l->host_suffix, 8);
     j.lan_ip = l->self.lan_ip;
     j.lan_port = l->self.lan_port;
+    j.pub_ip = l->self.pub_ip;
+    j.pub_port = l->self.pub_port;
     memcpy(j.name, l->self.name, 8);
     SIGN(l, &j);
     l->send(l->ctx, l->host_ip, l->host_port, &j, (int)sizeof j);
@@ -266,8 +276,13 @@ bool group_lobby_receive(GroupLobby* l, const void* data, int len, uint32_t src_
             memcpy(l->roster.m[i].key, j.key, 32);
         }
         if (l->state == GL_COLLECTING) { /* endpoints only move before the roster is out */
-            l->roster.m[i].pub_ip = src_ip;
-            l->roster.m[i].pub_port = src_port;
+            /* Seen from outside, the source is its public endpoint. A guest on
+             * our own network is seen at its LAN address, which is no use to
+             * anyone else, so take the public one it reports (it can only
+             * misdirect itself). */
+            bool lan_src = private_ip(src_ip) && j.pub_ip != 0;
+            l->roster.m[i].pub_ip = lan_src ? j.pub_ip : src_ip;
+            l->roster.m[i].pub_port = lan_src ? j.pub_port : src_port;
             l->roster.m[i].lan_ip = j.lan_ip;
             l->roster.m[i].lan_port = j.lan_port;
             group_name_clean(l->roster.m[i].name, j.name);

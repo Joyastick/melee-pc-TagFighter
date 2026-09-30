@@ -48,7 +48,23 @@ bool pc_net_party_partner(char label[10], int* fighter, bool* partner_is_point);
 void pc_net_party_set_pick(int fighter); /* our own fighter, sent to the partner */
 void pc_net_party_toggle_point(void);
 void pc_net_party_leave(void);
-void pc_net_party_poll(void); /* every frame, from anywhere: keeps the link alive */
+void pc_net_party_poll(void);
+/* Party Matchmaking. The machine that starts the search is the party's
+ * leader and queues alone (the pairing server needs no change: it sees an
+ * ordinary two-player search, on a topic of its own so a party is only
+ * matched with another party). When the two leaders have paired, they swap
+ * their parties, each sends the agreed roster to its partner, and all four
+ * machines open one mesh session (group_connect). The partner is brought
+ * into the lobby scene by pc_net_party_go_pending() and joins with
+ * pc_net_match_party_follow(). */
+bool pc_net_match_party_search(void);
+bool pc_net_party_partner_searching(void);
+bool pc_net_party_go_pending(void);
+bool pc_net_match_party_follow(void);
+/* The agreed party match while its session is up: our machine number, each
+ * machine's fighter (a CharacterKind, machine order = team A's two, then B's)
+ * and which of each team's two machines starts on point (0 or 1). */
+bool pc_net_party_match(int* local, int fighter[4], int point[2]); /* every frame, from anywhere: keeps the link alive */
 /* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
  * machine once the roster is out); false when not known yet. */
 bool pc_net_match_group_member(int i, char out[18]);

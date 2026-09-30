@@ -61,6 +61,8 @@ enum {
 };
 
 static bool awaiting_rank_result;
+static bool party_queue;  /* this lobby is a party leader's Matchmaking search */
+static bool party_follow; /* this lobby joins the match our leader found */
 static void onEnterLobby(GameModeState*);
 static void onEnterCss(GameModeState*);
 static void onExitCss(GameModeState*);
@@ -310,7 +312,7 @@ void onEnterLobby(UNUSED GameModeState* state)
     awaiting_rank_result = online_kind == ONLINE_KIND_RANKED &&
         (pc_rank_session_set_complete() ||
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
-    if (!awaiting_rank_result && !after_match) {
+    if (!awaiting_rank_result && !after_match && !party_follow) {
         if (pc_net_active()) {
             pc_log_line("lobby: entering the lobby scene drops the active session");
         }
@@ -698,7 +700,8 @@ static bool internetLobby(void) {
  * to Fox/Falco for a missing pick. */
 static bool matchmadeMode(void)
 {
-    return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn();
+    return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn() && !party_queue &&
+           !party_follow;
 }
 
 static PcNetTeam matchmadeLocalTeam(void)
@@ -806,6 +809,11 @@ static void teamLine(char* out, size_t size, const char* label, const PcNetTeam*
  * is joining a Matchmaking game (and with which team) before it connects. */
 static void startMatch(enum PcNetMatchMode mode, const char* code)
 {
+    if (mode == PC_MATCH_UNRANKED && party_queue) {
+        pc_net_set_matchmade(false, NULL);
+        pc_net_match_party_search();
+        return;
+    }
     if (mode == PC_MATCH_UNRANKED && matchmadeMode()) {
         PcNetTeam team = matchmadeLocalTeam();
         pc_net_set_matchmade(true, &team);
@@ -825,6 +833,7 @@ static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
  * player 1 on 3+4 in blue), point from each team's choice, each fighter in
  * its team color's costume the way a vanilla team battle dresses it, and a
  * stage picked from the shared seed. */
+static void matchmadeTail(u32 seed);
 static void matchmadeBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
@@ -851,6 +860,42 @@ static void matchmadeBuild(u32 seed)
         }
         TagAssist_SetExplicitPoint((u8) m, pc_net_game_port(m, team->point));
     }
+    matchmadeTail(seed);
+}
+
+/* A party match: four machines, one fighter each, on the port of their machine
+ * number (teams are machines 0-1 and 2-3), point as each party agreed. */
+static void matchmadePartyBuild(u32 seed)
+{
+    StartMeleeData* start = &online_vs.start;
+    int local, fighter[4], point[2];
+    am_leaver = -1;
+    start->rules.is_teams = 1;
+    for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+        start->players[i].slot_type = Gm_PKind_NA;
+    }
+    if (!pc_net_party_match(&local, fighter, point)) {
+        return;
+    }
+    for (int m = 0; m < 4; m++) {
+        int team = m / 2;
+        PlayerInitData* p = &start->players[pc_net_game_port(m, 0)];
+        p->ckind = fighter[m];
+        p->color = team == 0 ? gm_80169264((u8) fighter[m]) : gm_801692BC((u8) fighter[m]);
+        p->sub_color = 0;
+        p->slot_type = Gm_PKind_Human;
+        p->team = (u8) team;
+        TagAssist_CssSyncPortTeam(pc_net_game_port(m, 0), (u8) team);
+    }
+    for (int team = 0; team < 2; team++) {
+        TagAssist_SetExplicitPoint((u8) team, pc_net_game_port(team * 2 + point[team], 0));
+    }
+    matchmadeTail(seed);
+}
+
+static void matchmadeTail(u32 seed)
+{
+    StartMeleeData* start = &online_vs.start;
     {
         u32 h = seed * 2654435761u;
         start->rules.stkind = matchmade_stages[(h >> 16) % ARRAY_SIZE(matchmade_stages)];
@@ -913,6 +958,14 @@ static bool direct_group;
  * group on, until the link is made (the lobby then goes back to the menu). */
 static bool party_link;
 static int party_done_frames;
+void gmOnline_SetPartyQueue(bool value)
+{
+    party_queue = value;
+}
+void gmOnline_SetPartyFollow(bool value)
+{
+    party_follow = value;
+}
 void gmOnline_SetPartyLink(bool value)
 {
     party_link = value;
@@ -1271,8 +1324,13 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
                (online_kind != ONLINE_KIND_RANKED ||
                                   pc_net_match_publication(NULL) == 0)) {
         if (pc_net_peer_status() == PC_NET_PEER_OK) {
-            startMatch(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
-                               PC_MATCH_RANKED, NULL);
+            if (party_follow) {
+                pc_net_set_matchmade(false, NULL);
+                pc_net_match_party_follow();
+            } else {
+                startMatch(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
+                                   PC_MATCH_RANKED, NULL);
+            }
         }
     } else if (!internetLobby()) {
         pc_net_match_stop(); /* free the port the online menu's DHT node holds */
@@ -1285,6 +1343,8 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
 void gm_Scene_OnlineLobby_OnExit(UNUSED void* unused)
 {
     party_link = false;
+    party_queue = false;
+    party_follow = false;
     mnOnlineLobby_Destroy();
 }
 
@@ -1428,6 +1488,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" :
                      rematch_direct ? "REMATCH" :
                      party_link ? "PARTY LINK" :
+                     (party_queue || party_follow) ? "PARTY MATCHMAKING" :
                      direct_group ? "DIRECT GROUP" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
@@ -1706,7 +1767,15 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
                 *HSD_RandSeedPtr = pc_net_match_seed();
-                if (pc_net_matchmade()) {
+                int party_local, party_fighter[4], party_point[2];
+                if (pc_net_party_match(&party_local, party_fighter, party_point)) {
+                    matchmadePartyBuild(pc_net_match_seed());
+                    am_game = 0;
+                    rematch_direct = false;
+                    gm_SetNextGameModeStateId(state_vs);
+                    pc_log_line("lobby: entering party match at frame %d, seed %u", pc_net_frame(),
+                                pc_net_match_seed());
+                } else if (pc_net_matchmade()) {
                     /* Matchmaking: no CSS/SSS, straight into the match. */
                     matchmadeBuild(pc_net_match_seed());
                     am_game = 0;
@@ -1750,7 +1819,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             sfxBack();
             rematch_direct = false;
             pc_net_peer_status_clear();
-            pc_net_match_stop();
+            if (party_queue || party_follow) {
+                pc_net_match_idle(); /* the party link outlives the search */
+            } else {
+                pc_net_match_stop();
+            }
             gm_ChangeGameModeAfterCurrentScene(GM_MENU);
             gm_801A4B60();
         }

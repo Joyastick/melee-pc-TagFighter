@@ -57,7 +57,7 @@ def screenshot(path):
 
 
 class Game:
-    def __init__(self, out, exe, disc, extra_env=None, port="42200"):
+    def __init__(self, out, exe, disc, extra_env=None, port="42200", cache_seed=None):
         os.makedirs(out, exist_ok=True)
         self.out = out
         self.keys = os.path.join(out, "keys.txt")
@@ -79,6 +79,10 @@ class Game:
             "MELEE_NET_PORT": port,
         })
         env.update(extra_env or {})
+        if cache_seed and os.path.isdir(cache_seed) and not os.path.isdir(env["MELEE_CACHE_DIR"]):
+            # a cold shader-pipeline cache takes minutes to build and starves
+            # every other instance on the machine; start from a warm one
+            shutil.copytree(cache_seed, env["MELEE_CACHE_DIR"])
         os.makedirs(env["MELEE_CACHE_DIR"], exist_ok=True)
         self.log = open(self.log_path, "wb")
         self.proc = subprocess.Popen([exe, "--no-card", disc], env=env, stdout=self.log,

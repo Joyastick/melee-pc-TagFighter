@@ -151,7 +151,12 @@ static void build_party_text(void)
         snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
     }
     snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s", saved ? you : "NOT SET");
-    snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "FIND MATCH");
+    bool mate_searching = false;
+#ifdef TARGET_PC
+    mate_searching = pc_net_party_partner_searching();
+#endif
+    snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "%s",
+             mate_searching ? "SEARCHING..." : "FIND MATCH");
 }
 
 bool mnOnline_ReturnFromLocal(int* kind, int* selection)
@@ -391,14 +396,24 @@ static void confirmMeleeVs(void)
 #endif
             notice = "Link a partner first.";
             break;
-        default: /* partner fighter, search */
+        case PARTY_SEARCH:
             sfxForward();
 #ifdef TARGET_PC
-            if (pc_net_party_linked()) {
-                notice = "Searching as a party arrives next.";
-                break;
+            if (!pc_net_party_linked()) {
+                notice = "Link a partner first.";
+            } else if (gmOnline_SavedFighter() < 0) {
+                notice = "Pick your fighter first (YOU).";
+            } else if (pc_net_party_partner_searching()) {
+                notice = "Your partner is already searching.";
+            } else {
+                tagSetup();
+                gmOnline_SetPartyQueue(true);
+                enterOnline(ONLINE_KIND_UNRANKED);
             }
 #endif
+            break;
+        default: /* partner fighter */
+            sfxForward();
             notice = "Link a partner first.";
             break;
         }
@@ -443,6 +458,13 @@ void mnOnline_Think(HSD_GObj* gp)
      * Direct/Unranked/Ranked start searching with a populated routing table.
      * The lobby takes it over (or closes it for LAN) on entry. */
     pc_net_match_warm();
+    if (pc_net_party_go_pending()) {
+        /* Our party's leader found a match: join it. */
+        tagSetup();
+        gmOnline_SetPartyFollow(true);
+        enterOnline(ONLINE_KIND_UNRANKED);
+        return;
+    }
 #endif
 
     mn_804A04F0.buttons = buttons;

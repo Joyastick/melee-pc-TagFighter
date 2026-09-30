@@ -41,6 +41,10 @@ const char* gmOnline_FighterName(int ckind);
 /* The next Direct-style lobby scene links a party partner instead of
  * starting a match (the Party page's PARTNER row). */
 void gmOnline_SetPartyLink(bool value);
+/* The next lobby scene searches Matchmaking as a linked party (the leader), or
+ * joins the match our party's leader found (the partner). */
+void gmOnline_SetPartyQueue(bool value);
+void gmOnline_SetPartyFollow(bool value);
 /* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
  * to the menu (set when MATCHMAKING had no saved team to queue with). */
 void gmOnline_SetTeamSelectThenSearch(bool value);
