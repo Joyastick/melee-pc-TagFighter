@@ -91,7 +91,7 @@ def main():
         for name in ("a0", "b0"):  # A accepts (X)
             games[name].key("X@100")
         for name, g in games.items():
-            if not wait_for(g, "party match, we are machine", 120):
+            if not wait_for(g, "team match, we are machine", 120):
                 fails.append(name + " never connected")
         for name, g in games.items():
             if not wait_for(g, "entering party match", 120):

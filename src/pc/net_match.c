@@ -1752,7 +1752,11 @@ static void party_match_poll(uint64_t now) {
         }
         pm.desc_built = true;
     }
-    if (!pm.have_theirs || now - pm.got_at < 1500) {
+    /* now was read before this poll's datagrams, which stamp got_at: never
+     * let the difference wrap (it skipped the wait and left our partner with
+     * no word of the match). */
+    now = SDL_GetTicks();
+    if (!pm.have_theirs || (now > pm.got_at && now - pm.got_at < 1500) || now <= pm.got_at) {
         if (now >= pm.next_send) {
             pm_info_send();
             if (pm.desc_built && party_search)
