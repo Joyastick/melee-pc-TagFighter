@@ -894,6 +894,10 @@ static char direct_entry[DIRECT_CODE_SLOTS + 1];
 static int direct_cursor;
 static bool direct_editing;   /* on the code page */
 static bool direct_code_edit; /* X pressed: the D-pad changes the code */
+/* Y on the code page: the same code entry starts a 3-4 machine group (the
+ * host leaves the code empty, the others enter its code) instead of a 2
+ * player match. The host presses START once everyone is in. */
+static bool direct_group;
 static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
 /* Recent opponents under "YOU": outside code editing, up/down walks them
@@ -1225,6 +1229,7 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
     mnOnlineLobby_Create();
 #ifdef TARGET_PC
     direct_editing = false;
+    direct_group = false;
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         /* offline: the first frame goes straight on to the CSS */
     } else if (online_kind == ONLINE_KIND_PROFILE) {
@@ -1397,7 +1402,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                      online_kind == ONLINE_KIND_UNRANKED ?
                          (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" :
-                     rematch_direct ? "REMATCH" : "DIRECT CONNECT";
+                     rematch_direct ? "REMATCH" :
+                     direct_group ? "DIRECT GROUP" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
         view.players[0].ping_ms = -1;
@@ -1425,6 +1431,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 } else if (direct_contact_count > 0 &&
                            (repeat & (PAD_ANY_UP | PAD_ANY_DOWN))) {
                     directContactStep((repeat & PAD_ANY_DOWN) ? 1 : -1);
+                    sfxMove();
+                } else if (input & HSD_PAD_Y) {
+                    direct_group = !direct_group;
                     sfxMove();
                 }
             } else if (input & (HSD_PAD_X | HSD_PAD_B | PAD_CANCEL)) {
@@ -1489,6 +1498,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                                  direct_contacts[i].last_played);
             }
             view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        direct_group ? (direct_entry[0] ? "START: join group    Y: 2 players    X: edit    B: back" :
+                                                          "START: host group    Y: 2 players    X: edit    B: back") :
                         direct_contact_count > 0 ?
                             (direct_entry[0] ? "START: connect    UP/DOWN: recent    X: edit    B: back" :
                                                "START: host    UP/DOWN: recent    X: edit    B: back") :
@@ -1528,8 +1539,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     pc_log_line("lobby: direct connect %s '%s'",
                                 direct_entry[0] ? "dialing" : "hosting as",
                                 direct_entry[0] ? direct_entry : pc_net_match_local_code());
-                    startMatch(PC_MATCH_DIRECT,
-                                       direct_entry[0] ? direct_entry : NULL);
+                    if (direct_group) {
+                        pc_net_set_matchmade(false, NULL);
+                        pc_net_match_group_start(direct_entry[0] ? direct_entry : NULL);
+                    } else {
+                        startMatch(PC_MATCH_DIRECT,
+                                           direct_entry[0] ? direct_entry : NULL);
+                    }
                 }
             }
         } else if (awaiting_rank_result && pc_net_match_publication(NULL) == 0) {
@@ -1613,6 +1629,30 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 } else {
                     snprintf(view.message, sizeof view.message, "Accepted. Waiting for opponent... (%d)", left);
                     view.hint = "B: back";
+                }
+            }
+            if (direct_group && online_kind == ONLINE_KIND_DIRECT && state == PC_MATCH_SEARCH &&
+                reason == PC_NET_PEER_OK) {
+                if (direct_entry[0]) {
+                    snprintf(view.message, sizeof view.message, "Joining the group...");
+                } else {
+                    int count = pc_net_match_group_count();
+                    for (int i = 1; i < count && i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
+                        snprintf(view.players[i].name, sizeof view.players[i].name, "PLAYER %d", i + 1);
+                        view.players[i].ping_ms = -1;
+                    }
+                    view.player_count = count > 0 ? count : 1;
+                    if (count >= 2) {
+                        view.phase = LOBBY_PHASE_FOUND;
+                        snprintf(view.message, sizeof view.message, "%d players in.", count);
+                        view.hint = "START: begin the match    B: back";
+                        if (input & HSD_PAD_START) {
+                            sfxForward();
+                            pc_net_match_group_begin();
+                        }
+                    } else {
+                        snprintf(view.message, sizeof view.message, "Waiting for players to join your code...");
+                    }
                 }
             }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
