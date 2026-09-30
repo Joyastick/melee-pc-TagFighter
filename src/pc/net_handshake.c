@@ -553,11 +553,21 @@ int pc_net_remote_tag_bind(void) {
  * live read before a session exists (s_local_tag_bind is only ever pinned
  * once RULES/READY actually go on the wire), matching what a live read
  * would have returned anyway with nothing to disagree with yet. */
+static bool s_glay_on;
+static int s_glay_port[NET_MAX_MACHINES];
+static bool s_glay_slot1[NET_MAX_MACHINES];
+static int s_glay_partner[NET_MAX_MACHINES];
+
 int pc_net_local_tag_bind(void) {
     return s_rules_on ? s_local_tag_bind : pc_get_tag_bind(0);
 }
 
 int pc_net_local_partner_bind(void) {
+    if (net.npeers > 1) {
+        return s_glay_on && net.local >= 0 && net.local < NET_MAX_MACHINES ?
+                   s_glay_partner[net.local] :
+                   -1;
+    }
     return s_rules_on && s_local_partner_bind != NET_NO_PARTNER ? s_local_partner_bind : -1;
 }
 
@@ -597,10 +607,36 @@ const PcNetTeam* pc_net_team(int machine) {
     return pc_net_matchmade() && machine >= 0 && machine < 2 ? &s_team[machine] : NULL;
 }
 
+void pc_net_set_group_layout(int machines, const int port0[], const bool slot1[],
+    const int partner_bind[]) {
+    for (int m = 0; m < NET_MAX_MACHINES; m++) {
+        bool ok = m < machines;
+        s_glay_port[m] = ok ? port0[m] : m;
+        s_glay_slot1[m] = ok && slot1[m];
+        s_glay_partner[m] = ok ? partner_bind[m] : -1;
+    }
+    s_glay_on = true;
+}
+
+void pc_net_clear_group_layout(void) {
+    s_glay_on = false;
+}
+
+void pc_net_local_team(PcNetTeam* out, int* partner_bind) {
+    uint8_t pb = local_partner_now();
+    *out = team_for_wire(pb);
+    *partner_bind = pb == NET_NO_PARTNER ? -1 : (int)pb;
+}
+
 /* A match of 3 or 4 machines seats one player per machine, on the port of
- * its machine number and with no couch partner (four ports, no room). */
+ * its machine number and with no couch partner (four ports, no room), unless
+ * its teams were settled beforehand (pc_net_set_group_layout). */
 int pc_net_game_port(int machine, int slot) {
     if (net.npeers > 1) {
+        if (s_glay_on && machine >= 0 && machine < NET_MAX_MACHINES) {
+            return slot == 0 ? s_glay_port[machine] :
+                   s_glay_slot1[machine] ? s_glay_port[machine] + 1 : -1;
+        }
         return slot == 0 ? machine : -1;
     }
     return pc_net_matchmade() ? machine * 2 + slot : machine + 2 * slot;
@@ -609,7 +645,8 @@ int pc_net_game_port(int machine, int slot) {
 /* The couch partner's Tag Bind on `machine`, or negative when it has none. */
 int pc_net_partner_bind_of(int machine) {
     if (net.npeers > 1) {
-        return -1;
+        return s_glay_on && machine >= 0 && machine < NET_MAX_MACHINES ? s_glay_partner[machine] :
+                                                                          -1;
     }
     return machine == net.local  ? pc_net_local_partner_bind() :
            machine == net.remote ? pc_net_remote_partner_bind() :

@@ -2196,6 +2196,7 @@ static void session_reset(void) {
 }
 
 void pc_net_disconnect(void) {
+    pc_net_clear_group_layout();
     if (net.sock == SOCK_INVALID) {
         return;
     }

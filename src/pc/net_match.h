@@ -64,7 +64,16 @@ bool pc_net_match_party_follow(void);
 /* The agreed party match while its session is up: our machine number, each
  * machine's fighter (a CharacterKind, machine order = team A's two, then B's)
  * and which of each team's two machines starts on point (0 or 1). */
-bool pc_net_party_match(int* local, int fighter[4], int point[2]);
+typedef struct PcNetGroupMatch {
+    int machines; /* 3 or 4 */
+    int local;    /* our machine number: team A's machines first */
+    int team_size[2]; /* machines per team: 2 is a party, 1 a solo or couch team */
+    int fighter[4];   /* team A's two fighters, then B's; a party's are its machines' */
+    int point[2];     /* which of each team's two fighters starts on point */
+    bool human1[2];   /* a team of one: its second fighter is a couch player, else a CPU */
+    int cpu_level[2]; /* ... at this level */
+} PcNetGroupMatch;
+bool pc_net_group_match(PcNetGroupMatch* out);
 /* After a party match: link with our teammate again (their endpoint from the
  * roster, no lobby), so the Party page shows them once both are back in the
  * menus. False when there was no party match. */
@@ -81,7 +90,9 @@ bool pc_net_match_party_rematch(int fighter);
  * opponents', two fighters (a CharacterKind, -1 unknown) and which of them
  * starts on point (0 or 1). From the party link while searching, from the
  * opposing party once swapped, from the match once there is one. */
-bool pc_net_party_team(bool ours, int fighter[2], int* point); /* every frame, from anywhere: keeps the link alive */
+bool pc_net_party_team(bool ours, int fighter[2], int* point, int* second);
+/* `second` is what the team's second fighter is: 0 a CPU assist, 1 a couch
+ * player, 2 a teammate on another machine. */ /* every frame, from anywhere: keeps the link alive */
 /* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
  * machine once the roster is out); false when not known yet. */
 bool pc_net_match_group_member(int i, char out[18]);

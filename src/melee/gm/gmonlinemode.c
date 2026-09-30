@@ -69,6 +69,9 @@ static bool party_follow; /* this lobby joins the match our leader found */
  * pad, REMATCH or BACK TO PARTY, and its cursor. */
 enum { PAM_SAME_REMATCH, PAM_CHANGE_REMATCH, PAM_SAME_SEARCH, PAM_CHANGE_SEARCH, PAM_MENU };
 static int pam_my_fighter;     /* our fighter in the last party match */
+static int pam_machines = 4;   /* machines in it */
+static bool pam_solo;          /* our team is one machine (solo or couch) */
+static bool pam_mixed;         /* ... or the other one is */
 static bool party_after_css;   /* the party pick CSS was opened from the after-match lobby */
 static bool party_queue_pending;   /* the leader searches once that CSS is done */
 static bool party_rematch_pending; /* ... or all four meet again */
@@ -79,8 +82,8 @@ static int pam_pick[4];
 static int pam_cursor[4];
 static bool partyMatchActive(void)
 {
-    int local, fighter[4], point[2];
-    return pc_net_party_match(&local, fighter, point);
+    PcNetGroupMatch gmatch;
+    return pc_net_group_match(&gmatch);
 }
 static void onEnterLobby(GameModeState*);
 static void onEnterCss(GameModeState*);
@@ -889,7 +892,7 @@ static void teamLine(char* out, size_t size, const char* label, const PcNetTeam*
 
 /* "Your team: Kirby (point) + Fox" for a party's two fighters. */
 static void partyTeamLine(char* out, size_t size, const char* label, const int f[2], int point,
-                          bool first_is_you)
+                          bool first_is_you, int second)
 {
     if (f[0] < 0) {
         out[0] = '\0';
@@ -902,8 +905,9 @@ static void partyTeamLine(char* out, size_t size, const char* label, const int f
         snprintf(out, size, "%s: %s%s", label, gmOnline_FighterName(f[0]), you);
         return;
     }
-    snprintf(out, size, "%s: %s%s + %s%s", label, gmOnline_FighterName(f[0]), you,
-             gmOnline_FighterName(f[1]), point == 1 ? " (point)" : "");
+    snprintf(out, size, "%s: %s%s + %s%s%s", label, gmOnline_FighterName(f[0]), you,
+             gmOnline_FighterName(f[1]), point == 1 ? " (point)" : "",
+             second == 0 ? " CPU" : second == 1 ? " (Couch)" : "");
 }
 
 /* Every search starts here, so the netcode always knows whether this side
@@ -967,34 +971,73 @@ static void matchmadeBuild(u32 seed)
 
 /* A party match: four machines, one fighter each, on the port of their machine
  * number (teams are machines 0-1 and 2-3), point as each party agreed. */
+/* One fighter of a team match on its game port, on its team's colour. */
+static void partyPort(StartMeleeData* start, int port, int ckind, int team, bool human,
+                      int cpu_level)
+{
+    PlayerInitData* p = &start->players[port];
+    p->ckind = ckind;
+    p->color = team == 0 ? gm_80169264((u8) ckind) : gm_801692BC((u8) ckind);
+    p->sub_color = 0;
+    p->slot_type = human ? Gm_PKind_Human : Gm_PKind_Cpu;
+    if (!human) {
+        p->cpu_level = (u8) cpu_level;
+    }
+    p->team = (u8) team;
+    TagAssist_CssSyncPortTeam(port, (u8) team);
+}
+
+/* A team match of three or four machines: a party is one fighter per machine
+ * on the port its team gives it; a solo or couch team is one machine holding
+ * both of its team's ports (the second a CPU assist or a couch player). Point
+ * as each team agreed. */
 static void matchmadePartyBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
-    int local, fighter[4], point[2];
+    PcNetGroupMatch gmatch;
     am_leaver = -1;
     start->rules.is_teams = 1;
     for (int i = 0; i < GM_MAX_PLAYERS; i++) {
         start->players[i].slot_type = Gm_PKind_NA;
     }
-    if (!pc_net_party_match(&local, fighter, point)) {
+    if (!pc_net_group_match(&gmatch)) {
         return;
     }
-    pam_local = local;
-    pam_my_fighter = fighter[local];
+    int myteam = gmatch.local < gmatch.team_size[0] ? 0 : 1;
+    pam_local = gmatch.local;
+    pam_machines = gmatch.machines;
+    pam_solo = gmatch.team_size[myteam] == 1;
+    pam_mixed = gmatch.team_size[0] == 1 || gmatch.team_size[1] == 1;
+    pam_my_fighter = gmatch.fighter[myteam * 2 + (gmatch.local - (myteam == 0 ? 0 : gmatch.team_size[0]))];
     pam_active = true;
-    for (int m = 0; m < 4; m++) {
-        int team = m / 2;
-        PlayerInitData* p = &start->players[pc_net_game_port(m, 0)];
-        p->ckind = fighter[m];
-        p->color = team == 0 ? gm_80169264((u8) fighter[m]) : gm_801692BC((u8) fighter[m]);
-        p->sub_color = 0;
-        p->slot_type = Gm_PKind_Human;
-        p->team = (u8) team;
-        TagAssist_CssSyncPortTeam(pc_net_game_port(m, 0), (u8) team);
-    }
     for (int team = 0; team < 2; team++) {
-        TagAssist_SetExplicitPoint((u8) team, pc_net_game_port(team * 2 + point[team], 0));
+        int first = team == 0 ? 0 : gmatch.team_size[0];
+        int point_port;
+        if (gmatch.team_size[team] == 2) {
+            for (int k = 0; k < 2; k++) {
+                partyPort(start, pc_net_game_port(first + k, 0), gmatch.fighter[team * 2 + k],
+                          team, true, 0);
+            }
+            point_port = pc_net_game_port(first + gmatch.point[team], 0);
+        } else {
+            int p0 = pc_net_game_port(first, 0), p1 = pc_net_game_port(first, 1);
+            partyPort(start, p0, gmatch.fighter[team * 2], team, true, 0);
+            partyPort(start, p1, gmatch.fighter[team * 2 + 1], team, gmatch.human1[team],
+                      gmatch.cpu_level[team]);
+            point_port = gmatch.point[team] ? p1 : p0;
+        }
+        TagAssist_SetExplicitPoint((u8) team, point_port);
     }
+    pc_log_line("online: team match of %d machines (teams of %d and %d), ports: %s %s %s %s",
+                gmatch.machines, gmatch.team_size[0], gmatch.team_size[1],
+                start->players[0].slot_type == Gm_PKind_Human ? "human" :
+                start->players[0].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[1].slot_type == Gm_PKind_Human ? "human" :
+                start->players[1].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[2].slot_type == Gm_PKind_Human ? "human" :
+                start->players[2].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[3].slot_type == Gm_PKind_Human ? "human" :
+                start->players[3].slot_type == Gm_PKind_Cpu   ? "cpu" : "-");
     matchmadeTail(seed);
 }
 
@@ -1210,12 +1253,12 @@ static void partyAfterFollow(int pick)
     bool leader = pc_net_party_is_leader();
     after_match = false;
     pam_active = false;
-    pc_net_party_restore();
+    pc_net_party_restore(); /* a solo or couch team has no teammate to link with */
     switch (pick) {
     case PAM_SAME_REMATCH:
     case PAM_SAME_SEARCH:
         if (leader) {
-            party_queue = true;
+            party_queue = !pam_solo; /* a solo team searches as itself */
             online_kind = ONLINE_KIND_UNRANKED;
             startMatch(PC_MATCH_UNRANKED, NULL);
             return;
@@ -1223,7 +1266,11 @@ static void partyAfterFollow(int pick)
         break;
     case PAM_CHANGE_REMATCH:
     case PAM_CHANGE_SEARCH:
-        partyAfterChange(false);
+        if (pam_solo) {
+            afterMatchTeamSelect(false); /* the regular team select, then search */
+        } else {
+            partyAfterChange(false);
+        }
         return;
     default:
         break;
@@ -1290,17 +1337,20 @@ static void partyAfterFrame(OnlineLobbyView* view)
         am_leave_frame = 0;
         return;
     }
-    for (int m = 0; m < 4; m++) {
+    for (int m = 0; m < pam_machines; m++) {
         u8 port = (u8) pc_net_game_port(m, 0);
         u64 rep = gm_801A36C0(port);
         u64 trg = gm_GetButtonsTriggered(port);
         int before = pam_pick[m];
         if (pam_pick[m] < 0) {
-            if (rep & PAD_ANY_UP) {
-                pam_cursor[m] = (pam_cursor[m] + 3) % 4;
-                if (m == pam_local) sfxMove();
-            } else if (rep & PAD_ANY_DOWN) {
-                pam_cursor[m] = (pam_cursor[m] + 1) % 4;
+            if (rep & (PAD_ANY_UP | PAD_ANY_DOWN)) {
+                int step = (rep & PAD_ANY_UP) ? 3 : 1;
+                pam_cursor[m] = (pam_cursor[m] + step) % 4;
+                if (pam_mixed && pam_cursor[m] == PAM_CHANGE_REMATCH) {
+                    /* a fighter change needs every machine to come back, which
+                     * only a party match can do */
+                    pam_cursor[m] = (pam_cursor[m] + step) % 4;
+                }
                 if (m == pam_local) sfxMove();
             } else if (trg & HSD_PAD_A) {
                 pam_pick[m] = pam_cursor[m];
@@ -1318,13 +1368,14 @@ static void partyAfterFrame(OnlineLobbyView* view)
     int picked = 0, leavers = 0, change = 0;
     for (int i = 0; i < 4; i++) {
         int n = 0;
-        for (int m = 0; m < 4; m++) {
+        for (int m = 0; m < pam_machines; m++) {
             n += pam_pick[m] == i;
         }
-        snprintf(tag[i], sizeof tag[i], "%s%d/4", pam_pick[pam_local] == i ? "YOU " : "", n);
+        snprintf(tag[i], sizeof tag[i], "%s%d/%d", pam_pick[pam_local] == i ? "YOU " : "", n,
+                 pam_machines);
         view->menu_tag[i] = tag[i];
     }
-    for (int m = 0; m < 4; m++) {
+    for (int m = 0; m < pam_machines; m++) {
         picked += pam_pick[m] >= 0;
         leavers += pam_pick[m] >= PAM_SAME_SEARCH;
         change += pam_pick[m] == PAM_CHANGE_REMATCH;
@@ -1333,8 +1384,8 @@ static void partyAfterFrame(OnlineLobbyView* view)
                             pam_pick[pam_local] :
                             pam_cursor[pam_local];
     snprintf(view->message, sizeof view->message, "%s",
-             pam_pick[pam_local] < 0 ? "A rematch needs all four players" :
-             picked < 4              ? "Waiting for the others..." : "");
+             pam_pick[pam_local] < 0 ? "A rematch needs every player" :
+             picked < pam_machines   ? "Waiting for the others..." : "");
     view->hint = pam_pick[pam_local] < 0 ? "D-PAD: choose    A: confirm    B: back to party" :
                                            "B: change your pick";
     if (leavers > 0) {
@@ -1344,7 +1395,7 @@ static void partyAfterFrame(OnlineLobbyView* view)
         am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
         return;
     }
-    if (picked < 4) {
+    if (picked < pam_machines) {
         return;
     }
     if (change == 0) {
@@ -2084,8 +2135,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
                 *HSD_RandSeedPtr = pc_net_match_seed();
-                int party_local, party_fighter[4], party_point[2];
-                if (pc_net_party_match(&party_local, party_fighter, party_point)) {
+                PcNetGroupMatch party_match;
+                if (pc_net_group_match(&party_match)) {
                     matchmadePartyBuild(pc_net_match_seed());
                     am_game = 0;
                     rematch_direct = false;
@@ -2128,12 +2179,14 @@ void gm_Scene_OnlineLobby_OnFrame(void)
         }
         if (party_queue || party_follow || party_rematch_view || pam_active) {
             /* A party: its fighters and who is point, not the Matchmaking team. */
-            int f[2], point;
-            if (pc_net_party_team(true, f, &point)) {
-                partyTeamLine(view.team[0], sizeof view.team[0], "Your team", f, point, true);
+            int f[2], point, second;
+            if (pc_net_party_team(true, f, &point, &second)) {
+                partyTeamLine(view.team[0], sizeof view.team[0], "Your team", f, point, true,
+                              second);
             }
-            if (pc_net_party_team(false, f, &point)) {
-                partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false);
+            if (pc_net_party_team(false, f, &point, &second)) {
+                partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false,
+                              second);
             }
         }
         if (matchmadeMode()) {
@@ -2145,6 +2198,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 pc_net_matchmade() ? pc_net_team(pc_net_match_is_host() ? 1 : 0) : NULL;
             if (theirs != NULL) {
                 teamLine(view.team[1], sizeof view.team[1], "Opponent", theirs);
+            } else {
+                /* a party found us: its two fighters, from the team swap */
+                int f[2], point, second;
+                if (pc_net_party_team(false, f, &point, &second)) {
+                    partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false,
+                                  second);
+                }
             }
         }
         mnOnlineLobby_Update(&view);
