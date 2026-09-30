@@ -1114,6 +1114,118 @@ static void TagAssist_Unbench(Fighter_GObj* gobj, Fighter_GObj* nearGobj,
     }
 }
 
+/// True while `fp` is the VICTIM of a grab: the motion IDs are each grab
+/// type's own "being carried/damaged/struggling" states, as opposed to the
+/// grabber's Catch*/Throw* animations (TagAssist_IsGrabbing) or the
+/// post-release Thrown* flight. Motion-ID-based on purpose: grab_timer is
+/// not reliably reset by every exit path, so a stale positive leftover gave
+/// false positives on later, unrelated states.
+static bool TagAssist_IsHeld(Fighter* fp)
+{
+    FtMotionId id = fp->motion_id;
+    return (
+        (id >= ftCo_MS_CapturePulledHi && id <= ftCo_MS_CaptureFoot) ||
+        (id >= ftCo_MS_CaptureCaptain && id <= ftCo_MS_CaptureWaitKoopa) ||
+        (id >= ftCo_MS_CaptureKoopaAir && id <= ftCo_MS_CaptureWaitKoopaAir) ||
+        (id >= ftCo_MS_CaptureKirby && id <= ftCo_MS_CaptureWaitKirby) ||
+        (id >= ftCo_MS_CaptureMewtwo && id <= ftCo_MS_CaptureMewtwoAir) ||
+        (id >= ftCo_MS_CaptureMasterHand && id <= ftCo_MS_CaptureWaitMasterHand) ||
+        (id >= ftCo_MS_CaptureKirbyYoshi && id <= ftCo_MS_KirbyYoshiEgg) ||
+        (id >= ftCo_MS_CaptureCrazyHand && id <= ftCo_MS_CaptureWaitCrazyHand)
+    );
+}
+
+/// True while `fp` has no real control: held by a grab, in hitstun, frozen,
+/// asleep or bound, in shield-break stagger, buried, knocked down and hit
+/// again, or flying after a throw. Air dodge and being the grabber are NOT
+/// in here (TagAssist_CantAct adds them): a point in either can still call
+/// its assist, see TagAssist_TryCallAssist.
+static bool TagAssist_IsUncontrollable(Fighter* fp)
+{
+    FtMotionId id = fp->motion_id;
+    // Held by an ordinary grab -- every one of these is the victim's own
+    // "being carried/damaged/struggling" motion ID for a given grab type,
+    // as opposed to the grabber's own Catch*/Throw* animations (never
+    // checked here) or the post-release Thrown* flight (its own check
+    // below). Deliberately motion-ID-based rather than checking
+    // fp->grab_timer directly: grab_timer is the mashable countdown these
+    // states count down, but it isn't reliably reset back to 0 by every
+    // exit path (e.g. getting hit out of a grab rather than mashing free),
+    // so a stale positive leftover from an earlier, already-finished grab
+    // was incorrectly blocking cancellation/benching on a LATER, unrelated
+    // state -- confirmed via a taunt reported as "stuck" with no grab in
+    // sight. Checking the actual current motion ID avoids that entirely.
+    if (TagAssist_IsHeld(fp)) {
+        return true;
+    }
+    // Ordinary knockback hitstun, ground or air, every character.
+    if ((id >= ftCo_MS_DamageHi1 && id <= ftCo_MS_DamageFlyRoll) ||
+        id == ftCo_MS_DamageFall)
+    {
+        return true;
+    }
+    // Screw-attack-style spin hitstun (DK's Up Special, etc).
+    if (id == ftCo_MS_DamageScrew || id == ftCo_MS_DamageScrewAir) {
+        return true;
+    }
+    // Frozen solid by any freezer effect. DamageIceJump is the mash-to-
+    // break-free wiggle -- still no real directional/attack control.
+    if (id == ftCo_MS_DamageIce || id == ftCo_MS_DamageIceJump) {
+        return true;
+    }
+    // Shield break stagger through the dizzy stumble afterward
+    // (ShieldBreakFly..Furafura is one contiguous block in ftCommon's
+    // table) -- can only be hit, no player input does anything.
+    if (id >= ftCo_MS_ShieldBreakFly && id <= ftCo_MS_Furafura) {
+        return true;
+    }
+    // Asleep outright, or bound by a Sing-style effect (DamageSong/
+    // DamageSongWait/DamageSongRv/DamageBind, contiguous).
+    if (id == ftCo_MS_Sleep ||
+        (id >= ftCo_MS_DamageSong && id <= ftCo_MS_DamageBind))
+    {
+        return true;
+    }
+    // Buried in the ground (DK Down Special, a grounded Yoshi/DK-style
+    // pound, etc) -- mashable, but no directional/attack control while
+    // stuck.
+    if (id >= ftCo_MS_Bury && id <= ftCo_MS_BuryJump) {
+        return true;
+    }
+    // Knocked down and hit again before ever reaching the actionable
+    // get-up-option Wait state -- DownBound* is the initial floor bounce,
+    // DownDamage* is a second hit while still floored. Deliberately NOT
+    // DownWait/DownStand/DownAttack/DownFoward/DownBack/DownSpot: those are
+    // the player's own already-chosen get-up option, not a stuck state.
+    if (id == ftCo_MS_DownBoundU || id == ftCo_MS_DownDamageU ||
+        id == ftCo_MS_DownBoundD || id == ftCo_MS_DownDamageD)
+    {
+        return true;
+    }
+    // Being thrown through the air after a grab releases -- the Capture*
+    // check above already covers the HELD portion of every grab, but the
+    // actual post-release Thrown* flight is its own separate motion ID,
+    // and there's still no control during it.
+    if ((id >= ftCo_MS_ThrownF && id <= ftCo_MS_ThrownlwWomen) ||
+        (id >= ftCo_MS_ThrownFF && id <= ftCo_MS_ThrownFLw) ||
+        (id >= ftCo_MS_ThrownKoopaF && id <= ftCo_MS_ThrownKoopaB) ||
+        (id >= ftCo_MS_ThrownKoopaAirF && id <= ftCo_MS_ThrownKoopaAirB) ||
+        (id >= ftCo_MS_ThrownKirbyStar && id <= ftCo_MS_ThrownKirby) ||
+        (id >= ftCo_MS_ThrownMewtwo && id <= ftCo_MS_ThrownMewtwoAir) ||
+        id == ftCo_MS_ThrownMasterHand || id == ftCo_MS_ThrownCrazyHand)
+    {
+        return true;
+    }
+    // Retail's own capture-tracking treats these two as still "captured"
+    // even once capture_timer has already hit 0 (see ftCo_800C7434.c's own
+    // capture_timer == 0 && motion_id != ftCo_MS_CaptureLeadead check) --
+    // a Ganondorf-family/Likelike-item capture edge case.
+    if (id == ftCo_MS_CaptureLeadead || id == ftCo_MS_CaptureLikelike) {
+        return true;
+    }
+    return false;
+}
+
 static void TagAssist_TryCallAssist(TeamState* team)
 {
     Fighter* pointFp = GET_FIGHTER(team->point);
@@ -1147,6 +1259,9 @@ static void TagAssist_TryCallAssist(TeamState* team)
     }
     if (sFrameCounter < team->ready_frame) {
         return; // see TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
+    }
+    if (TagAssist_IsUncontrollable(pointFp)) {
+        return; // no calling an assist out of a grab or hitstun
     }
 
     pointGrounded = pointFp->ground_or_air == GA_Ground;
@@ -1423,95 +1538,7 @@ static bool TagAssist_CantAct(Fighter_GObj* gobj)
         return true;
     }
 
-    // Held by an ordinary grab -- every one of these is the victim's own
-    // "being carried/damaged/struggling" motion ID for a given grab type,
-    // as opposed to the grabber's own Catch*/Throw* animations (never
-    // checked here) or the post-release Thrown* flight (its own check
-    // below). Deliberately motion-ID-based rather than checking
-    // fp->grab_timer directly: grab_timer is the mashable countdown these
-    // states count down, but it isn't reliably reset back to 0 by every
-    // exit path (e.g. getting hit out of a grab rather than mashing free),
-    // so a stale positive leftover from an earlier, already-finished grab
-    // was incorrectly blocking cancellation/benching on a LATER, unrelated
-    // state -- confirmed via a taunt reported as "stuck" with no grab in
-    // sight. Checking the actual current motion ID avoids that entirely.
-    if ((id >= ftCo_MS_CapturePulledHi && id <= ftCo_MS_CaptureFoot) ||
-        (id >= ftCo_MS_CaptureCaptain && id <= ftCo_MS_CaptureWaitKoopa) ||
-        (id >= ftCo_MS_CaptureKoopaAir && id <= ftCo_MS_CaptureWaitKoopaAir) ||
-        (id >= ftCo_MS_CaptureKirby && id <= ftCo_MS_CaptureWaitKirby) ||
-        (id >= ftCo_MS_CaptureMewtwo && id <= ftCo_MS_CaptureMewtwoAir) ||
-        (id >= ftCo_MS_CaptureMasterHand && id <= ftCo_MS_CaptureWaitMasterHand) ||
-        (id >= ftCo_MS_CaptureKirbyYoshi && id <= ftCo_MS_KirbyYoshiEgg) ||
-        (id >= ftCo_MS_CaptureCrazyHand && id <= ftCo_MS_CaptureWaitCrazyHand))
-    {
-        return true;
-    }
-    // Ordinary knockback hitstun, ground or air, every character.
-    if ((id >= ftCo_MS_DamageHi1 && id <= ftCo_MS_DamageFlyRoll) ||
-        id == ftCo_MS_DamageFall)
-    {
-        return true;
-    }
-    // Screw-attack-style spin hitstun (DK's Up Special, etc).
-    if (id == ftCo_MS_DamageScrew || id == ftCo_MS_DamageScrewAir) {
-        return true;
-    }
-    // Frozen solid by any freezer effect. DamageIceJump is the mash-to-
-    // break-free wiggle -- still no real directional/attack control.
-    if (id == ftCo_MS_DamageIce || id == ftCo_MS_DamageIceJump) {
-        return true;
-    }
-    // Shield break stagger through the dizzy stumble afterward
-    // (ShieldBreakFly..Furafura is one contiguous block in ftCommon's
-    // table) -- can only be hit, no player input does anything.
-    if (id >= ftCo_MS_ShieldBreakFly && id <= ftCo_MS_Furafura) {
-        return true;
-    }
-    // Asleep outright, or bound by a Sing-style effect (DamageSong/
-    // DamageSongWait/DamageSongRv/DamageBind, contiguous).
-    if (id == ftCo_MS_Sleep ||
-        (id >= ftCo_MS_DamageSong && id <= ftCo_MS_DamageBind))
-    {
-        return true;
-    }
-    // Buried in the ground (DK Down Special, a grounded Yoshi/DK-style
-    // pound, etc) -- mashable, but no directional/attack control while
-    // stuck.
-    if (id >= ftCo_MS_Bury && id <= ftCo_MS_BuryJump) {
-        return true;
-    }
-    // Knocked down and hit again before ever reaching the actionable
-    // get-up-option Wait state -- DownBound* is the initial floor bounce,
-    // DownDamage* is a second hit while still floored. Deliberately NOT
-    // DownWait/DownStand/DownAttack/DownFoward/DownBack/DownSpot: those are
-    // the player's own already-chosen get-up option, not a stuck state.
-    if (id == ftCo_MS_DownBoundU || id == ftCo_MS_DownDamageU ||
-        id == ftCo_MS_DownBoundD || id == ftCo_MS_DownDamageD)
-    {
-        return true;
-    }
-    // Being thrown through the air after a grab releases -- the Capture*
-    // check above already covers the HELD portion of every grab, but the
-    // actual post-release Thrown* flight is its own separate motion ID,
-    // and there's still no control during it.
-    if ((id >= ftCo_MS_ThrownF && id <= ftCo_MS_ThrownlwWomen) ||
-        (id >= ftCo_MS_ThrownFF && id <= ftCo_MS_ThrownFLw) ||
-        (id >= ftCo_MS_ThrownKoopaF && id <= ftCo_MS_ThrownKoopaB) ||
-        (id >= ftCo_MS_ThrownKoopaAirF && id <= ftCo_MS_ThrownKoopaAirB) ||
-        (id >= ftCo_MS_ThrownKirbyStar && id <= ftCo_MS_ThrownKirby) ||
-        (id >= ftCo_MS_ThrownMewtwo && id <= ftCo_MS_ThrownMewtwoAir) ||
-        id == ftCo_MS_ThrownMasterHand || id == ftCo_MS_ThrownCrazyHand)
-    {
-        return true;
-    }
-    // Retail's own capture-tracking treats these two as still "captured"
-    // even once capture_timer has already hit 0 (see ftCo_800C7434.c's own
-    // capture_timer == 0 && motion_id != ftCo_MS_CaptureLeadead check) --
-    // a Ganondorf-family/Likelike-item capture edge case.
-    if (id == ftCo_MS_CaptureLeadead || id == ftCo_MS_CaptureLikelike) {
-        return true;
-    }
-    return false;
+    return TagAssist_IsUncontrollable(fp);
 }
 
 /// True once the assist's death/respawn sequence has reached the "angel
