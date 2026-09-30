@@ -888,19 +888,22 @@ static void teamLine(char* out, size_t size, const char* label, const PcNetTeam*
 }
 
 /* "Your team: Kirby (point) + Fox" for a party's two fighters. */
-static void partyTeamLine(char* out, size_t size, const char* label, const int f[2], int point)
+static void partyTeamLine(char* out, size_t size, const char* label, const int f[2], int point,
+                          bool first_is_you)
 {
     if (f[0] < 0) {
         out[0] = '\0';
         return;
     }
+    /* "Your team: Kirby (you, point) + Fox": which fighter is ours, and who is point */
+    const char* you = first_is_you ? (point == 0 ? " (you, point)" : " (you)") :
+                                     (point == 0 ? " (point)" : "");
     if (f[1] < 0) {
-        snprintf(out, size, "%s: %s", label, gmOnline_FighterName(f[0]));
+        snprintf(out, size, "%s: %s%s", label, gmOnline_FighterName(f[0]), you);
         return;
     }
-    snprintf(out, size, "%s: %s%s + %s%s", label, gmOnline_FighterName(f[0]),
-             point == 0 ? " (point)" : "", gmOnline_FighterName(f[1]),
-             point == 1 ? " (point)" : "");
+    snprintf(out, size, "%s: %s%s + %s%s", label, gmOnline_FighterName(f[0]), you,
+             gmOnline_FighterName(f[1]), point == 1 ? " (point)" : "");
 }
 
 /* Every search starts here, so the netcode always knows whether this side
@@ -1791,14 +1794,14 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {
         bool choosing = after_match;
         memset(&view, 0, sizeof view);
-        view.title = online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
+        view.title = party_rematch_view ? "PARTY REMATCH" :
+                     (party_queue || party_follow) ? "PARTY MATCHMAKING" :
+                     online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
                      online_kind == ONLINE_KIND_UNRANKED ?
                          (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" :
                      rematch_direct ? "REMATCH" :
                      party_link ? "PARTY LINK" :
-                     party_rematch_view ? "PARTY REMATCH" :
-                     (party_queue || party_follow) ? "PARTY MATCHMAKING" :
                      direct_group ? "DIRECT GROUP" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
@@ -2127,10 +2130,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             /* A party: its fighters and who is point, not the Matchmaking team. */
             int f[2], point;
             if (pc_net_party_team(true, f, &point)) {
-                partyTeamLine(view.team[0], sizeof view.team[0], "Your team", f, point);
+                partyTeamLine(view.team[0], sizeof view.team[0], "Your team", f, point, true);
             }
             if (pc_net_party_team(false, f, &point)) {
-                partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point);
+                partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false);
             }
         }
         if (matchmadeMode()) {
