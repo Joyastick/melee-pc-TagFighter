@@ -68,7 +68,20 @@ bool pc_net_party_match(int* local, int fighter[4], int point[2]);
 /* After a party match: link with our teammate again (their endpoint from the
  * roster, no lobby), so the Party page shows them once both are back in the
  * menus. False when there was no party match. */
-bool pc_net_party_restore(void); /* every frame, from anywhere: keeps the link alive */
+bool pc_net_party_restore(void);
+/* The machines of the last party match (even numbers are the teams' leaders). */
+bool pc_net_party_is_leader(void);
+/* Rematch with the same four machines after the session ended, each with the
+ * fighter it now has: every machine tells the other three it is ready (over the
+ * DHT socket, to the endpoints the last roster named), and when all four have
+ * heard each other they open the session again on a fresh seed. Runs as a
+ * search (PC_MATCH_SEARCH), then connects like any match. */
+bool pc_net_match_party_rematch(int fighter);
+/* The party teams as a lobby shows them: ours (ourselves first) or the
+ * opponents', two fighters (a CharacterKind, -1 unknown) and which of them
+ * starts on point (0 or 1). From the party link while searching, from the
+ * opposing party once swapped, from the match once there is one. */
+bool pc_net_party_team(bool ours, int fighter[2], int* point); /* every frame, from anywhere: keeps the link alive */
 /* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
  * machine once the roster is out); false when not known yet. */
 bool pc_net_match_group_member(int i, char out[18]);

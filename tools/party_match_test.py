@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from menu_shot import Game, ROOT  # noqa: E402
 from party_link_test import wait_for, walk  # noqa: E402
 
+PICKS = {"a0": "10", "a1": "11", "b0": "12", "b1": "13"}  # what each picks in the party CSS
 PORTS = {"a0": "42311", "a1": "42312", "b0": "42313", "b1": "42314"}
 
 
@@ -29,8 +30,17 @@ def start(out, exe, disc, name, target, cache):
     os.makedirs(os.path.join(d, "id"), exist_ok=True)
     return Game(d, exe, disc, port=PORTS[name], extra_env={
         "MELEE_IDENTITY_DIR": os.path.join(d, "id"), "MELEE_DIRECT_TARGET": target,
-        "MELEE_PARTY_TEST_AFTER": "1"},
+        "MELEE_PARTY_TEST_AFTER": "1", "MELEE_PARTY_TEST_PICK": PICKS[name]},
         cache_seed=cache)
+
+
+def wait_for_count(game, text, n, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if game.text().count(text) >= n:
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def to_link(game):
@@ -88,14 +98,42 @@ def main():
                 fails.append(name + " never entered the fight")
         if not fails:
             # The fight is skipped (MELEE_PARTY_TEST_AFTER): all four are in the
-            # after-match lobby. One machine picks BACK TO PARTY, which ends it
-            # for all four (keys sent to the others would land on the Party page).
+            # after-match lobby. Round 1: everyone picks CHANGE FIGHTER - REMATCH,
+            # picks a different fighter in the party CSS, and all four meet again.
             time.sleep(10)
-            games["a0"].key("Down@100")
-            time.sleep(0.5)
-            games["a0"].key("X@100")
+            for g in games.values():
+                g.key("Down@100")
+                g.key("X@100")
             for name, g in games.items():
-                if not wait_for(g, "after match: party leaves", 60):
+                if not wait_for(g, "party rematch with a fighter change", 60):
+                    fails.append(name + " never started the fighter change")
+            time.sleep(14)  # the CSS loads
+            first = re.findall(r"matchmade match on stage \d+: (.*)", games["a0"].text())[-1]
+            for name, g in games.items():
+                want = g.text().count("party pick saved") + 1
+                g.key("X@150")
+                time.sleep(1)
+                for _ in range(5):  # Start until the pick is saved (input is slow under load)
+                    g.key("Return@150")
+                    if wait_for_count(g, "party pick saved", want, 6):
+                        break
+            for name, g in games.items():
+                end = time.time() + 240
+                while time.time() < end and g.text().count("entering party match") < 2:
+                    time.sleep(1)
+                if g.text().count("entering party match") < 2:
+                    fails.append(name + " never reached the second fight")
+            if not fails:
+                line = re.findall(r"matchmade match on stage \d+: (.*)", games["a0"].text())[-1]
+                picks = re.findall(r"P\d (\d+)/", line)
+                print("second fight fighters", picks, "first", first, flush=True)
+                if sorted(picks) != sorted(PICKS.values()):
+                    fails.append("the fighters are not the ones picked: " + line)
+            # Round 2: one machine backs out (B), which ends it for all four.
+            time.sleep(10)
+            games["a0"].key("Z@100")
+            for name, g in games.items():
+                if not wait_for(g, "after match: party, no rematch", 60):
                     fails.append(name + " never left the after-match lobby")
             for name, g in games.items():  # back on the Party page, teammate linked again
                 end = time.time() + 90
