@@ -730,7 +730,7 @@ static PcNetTeam matchmadeLocalTeam(void)
 static const char* const ckind_name[CKind_Playable_Count] = {
     "C.Falcon",   "DK",    "Fox",      "Mr.G&W", "Kirby",
     "Bowser",     "Link",  "Luigi",    "Mario",  "Marth",
-    "Mewtwo",     "Ness",  "Peach",    "Pikachu", "Ice Climbers",
+    "Mewtwo",     "Ness",  "Peach",    "Pikachu", "Icies",
     "Jigglypuff", "Samus", "Yoshi",    "Zelda",  "Sheik",
     "Falco",      "Y.Link", "Dr.Mario", "Roy",   "Pichu",
     "Ganondorf",
