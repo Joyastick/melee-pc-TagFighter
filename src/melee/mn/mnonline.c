@@ -92,9 +92,9 @@ static char party_text[5][40];
 static const char* const party_descriptions[] = {
     "Who you are teaming up with (not linked yet).",
     "Your fighter. A opens TEAM SELECT.",
-    "The fighter your partner picked.",
+    "The fighter your partner picked (MATE).",
     "Who starts on point. You and your partner can both swap it.",
-    "Queue for Matchmaking as a duo with your partner.",
+    "Search Matchmaking as a duo with your partner.",
 };
 
 static bool is_mv(int kind)
@@ -131,11 +131,11 @@ static void build_party_text(void)
     bool mate_human;
     int point;
     bool saved = gmOnline_SavedTeamText(you, mate, sizeof you, &mate_human, &point);
-    snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: NOT LINKED");
+    snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: NONE");
     snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s", saved ? you : "NOT SET");
-    snprintf(party_text[PARTY_MATE], sizeof party_text[0], "PARTNER FIGHTER: -");
+    snprintf(party_text[PARTY_MATE], sizeof party_text[0], "MATE: -");
     snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
-    snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "SEARCH MATCHMAKING");
+    snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "FIND MATCH");
 }
 
 bool mnOnline_ReturnFromLocal(int* kind, int* selection)
