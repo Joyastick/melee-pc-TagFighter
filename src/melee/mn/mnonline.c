@@ -92,9 +92,9 @@ static char party_text[5][40];
 static const char* const party_descriptions[] = {
     "Who you are teaming up with (not linked yet).",
     "Your fighter. A opens TEAM SELECT.",
-    "Your partner's fighter. A opens TEAM SELECT.",
-    "Who starts on point. A swaps it.",
-    "Queue for Matchmaking with this team.",
+    "The fighter your partner picked.",
+    "Who starts on point. You and your partner can both swap it.",
+    "Queue for Matchmaking as a duo with your partner.",
 };
 
 static bool is_mv(int kind)
@@ -122,18 +122,19 @@ static int row_count(MenuKind kind)
     }
 }
 
+/* A party is two players on two machines, so there is no CPU assist here. No
+ * partner can be linked yet (the lobby is not wired in), so the rest of the
+ * page waits on PARTNER. */
 static void build_party_text(void)
 {
     char you[24], mate[24];
     bool mate_human;
     int point;
     bool saved = gmOnline_SavedTeamText(you, mate, sizeof you, &mate_human, &point);
-    snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: %s", "NOT LINKED");
+    snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: NOT LINKED");
     snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s", saved ? you : "NOT SET");
-    snprintf(party_text[PARTY_MATE], sizeof party_text[0], "%s: %s",
-             saved && !mate_human ? "CPU ASSIST" : "PARTNER", saved ? mate : "NOT SET");
-    snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: %s",
-             !saved || !mate_human || point == 0 ? "YOU" : "PARTNER");
+    snprintf(party_text[PARTY_MATE], sizeof party_text[0], "PARTNER FIGHTER: -");
+    snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
     snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "SEARCH MATCHMAKING");
 }
 
@@ -349,16 +350,11 @@ static void confirmMeleeVs(void)
             notice = "Linking a partner arrives with the party lobby.";
             break;
         case PARTY_YOU:
-        case PARTY_MATE:
             enterTeamSelect();
             break;
-        case PARTY_POINT:
+        default: /* partner fighter, point, search: all need a linked partner */
             sfxForward();
-            gmOnline_TogglePoint();
-            sGeneration++;
-            break;
-        case PARTY_SEARCH:
-            enterMatchmaking();
+            notice = "Link a partner first.";
             break;
         }
         break;
