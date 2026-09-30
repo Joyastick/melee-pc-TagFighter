@@ -39,6 +39,10 @@ void pc_net_peer_status_clear(void) {}
 bool pc_net_matchmade(void) {
     return false; /* ranked never uses the matchmade layout */
 }
+bool pc_net_group_match(PcNetGroupMatch* out) {
+    (void)out;
+    return false; /* ranked is never a 3-4 machine team match */
+}
 unsigned pc_rank_session_stocks(void) {
     return tiebreak ? 1 : 4;
 }

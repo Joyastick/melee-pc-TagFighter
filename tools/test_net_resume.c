@@ -1351,7 +1351,7 @@ static void case_desync_checks_every_reported_frame(void) {
     assert(confirmed_frame() == HAVE + 8);
     check_desync();
     assert(net.desync_reported);
-    assert(logged("net: DESYNC at frame 195 (local 00000bad remote 00000195)"));
+    assert(logged("net: DESYNC at frame 195 against machine 0 (local 00000bad remote 00000195)"));
     assert(logged_count("net: DESYNC") == 1);
     pc_net_disconnect();
 

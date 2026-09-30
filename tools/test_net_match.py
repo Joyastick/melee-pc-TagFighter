@@ -68,7 +68,7 @@ def run():
             "net_identity", "net_rank", "net_rank_store", "net_rank_session",
             "libm/pc_rank_exp", "libm/pc_rank_sqrt")]
         sources += [ROOT / name for name in (
-            "src/pc/net_rendezvous.c",
+            "src/pc/net_rendezvous.c", "src/pc/net_group.c", "src/pc/net_group_lobby.c",
             "extern/dht/sha1.c", "extern/monocypher/monocypher.c",
             "extern/monocypher/monocypher-ed25519.c")]
         subprocess.run([

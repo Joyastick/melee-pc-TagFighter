@@ -655,7 +655,7 @@ int pc_net_partner_bind_of(int machine) {
 }
 
 bool pc_net_port_human(int port) {
-    for (int machine = 0; machine <= net.npeers; machine++) {
+    for (int machine = 0; machine <= npeers_n(); machine++) {
         if (port == pc_net_game_port(machine, 0)) {
             return true;
         }

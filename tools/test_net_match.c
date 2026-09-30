@@ -109,6 +109,32 @@ char* SDL_GetPrefPath(const char* org, const char* app) {
 void SDL_free(void* p) {
     free(p);
 }
+char* SDL_strdup(const char* s) {
+    return strdup(s);
+}
+/* the 3-4 machine team matches (net_group.c, net_group_lobby.c, net_handshake.c) are not
+ * exercised here: only what net_match.c links against */
+bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
+    const uint16_t* ports, uint32_t seed) {
+    (void)socket;
+    (void)local;
+    (void)machines;
+    (void)ips;
+    (void)ports;
+    (void)seed;
+    return false;
+}
+void pc_net_set_group_layout(
+    int machines, const int port0[], const bool slot1[], const int partner_bind[]) {
+    (void)machines;
+    (void)port0;
+    (void)slot1;
+    (void)partner_bind;
+}
+void pc_net_local_team(PcNetTeam* out, int* partner_bind) {
+    memset(out, 0, sizeof *out);
+    *partner_bind = -1;
+}
 uint64_t SDL_GetTicks(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
