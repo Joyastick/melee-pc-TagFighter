@@ -725,13 +725,14 @@ static PcNetTeam matchmadeLocalTeam(void)
     return team;
 }
 
-/* Character names for the lobby's team lines, in CharacterKind order. */
+/* Character names for the lobby's team lines and the Party page, in
+ * CharacterKind order; the long ones are short forms so they fit a row. */
 static const char* const ckind_name[CKind_Playable_Count] = {
-    "Captain Falcon", "Donkey Kong", "Fox",        "Mr. Game & Watch", "Kirby",
-    "Bowser",         "Link",        "Luigi",      "Mario",            "Marth",
-    "Mewtwo",         "Ness",        "Peach",      "Pikachu",          "Ice Climbers",
-    "Jigglypuff",     "Samus",       "Yoshi",      "Zelda",            "Sheik",
-    "Falco",          "Young Link",  "Dr. Mario",  "Roy",              "Pichu",
+    "C.Falcon",   "DK",    "Fox",      "Mr.G&W", "Kirby",
+    "Bowser",     "Link",  "Luigi",    "Mario",  "Marth",
+    "Mewtwo",     "Ness",  "Peach",    "Pikachu", "Ice Climbers",
+    "Jigglypuff", "Samus", "Yoshi",    "Zelda",  "Sheik",
+    "Falco",      "Y.Link", "Dr.Mario", "Roy",   "Pichu",
     "Ganondorf",
 };
 
