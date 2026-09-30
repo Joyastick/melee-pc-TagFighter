@@ -19,12 +19,19 @@ const char* mnOnline_Description(MenuKind, int selection);
 /* One-shot description override set by the think proc (A on a stub). */
 const char* mnOnline_TakeNotice(void);
 
-/* MELEE VS's own submenu reuses MENU_KIND_ONLINE's rendering wholesale
- * (same banner, same preview animations) with a different row set (Local /
- * Direct / Unranked instead of LAN / Direct / Ranked / Unranked / Profile).
- * true selects the Tag Battle row set and Back target; mn_8022D594 sets it
- * before entering MENU_KIND_ONLINE from either VS row, so it never carries
- * over from an earlier visit through the other row. */
-void mnOnline_SetEnteredFromTagBattle(bool value);
+/* MELEE VS lives on the main menu; its pages are MENU_KIND_MV_* (LOCAL /
+ * ONLINE / CREDITS, then LAN / DIRECT / PARTY / TEAM SELECT / MATCHMAKING, the
+ * Duo Party page and the credits) and all run mnOnline_Think. */
+
+/* gmmenumode.c, choosing where the menu comes back to. ReturnFromLocal: a
+ * scene the MELEE VS page launched with LOCAL returns to that page (true,
+ * with the kind and row). ReturnMenu: the page and row that launched an
+ * online scene of this OnlineKind. */
+bool mnOnline_ReturnFromLocal(int* kind, int* selection);
+void mnOnline_ReturnMenu(int online_kind, int* kind, int* selection);
+
+/* Changes whenever a row's text changes under the cursor. A label is built
+ * once, so a menu view redraws its labels when this is not the value it saw. */
+unsigned mnOnline_LabelGeneration(void);
 
 #endif

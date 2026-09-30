@@ -20,6 +20,7 @@ typedef struct _MainMenuData {
 #ifdef TARGET_PC
     /* SIS text over slots whose matanim label is hidden (mnonline.h) */
     HSD_Text* pc_label[7];
+    unsigned pc_label_gen; /* mnOnline_LabelGeneration() the labels were built for */
 #endif
 } MainMenuData;
 

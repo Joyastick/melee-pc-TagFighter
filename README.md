@@ -67,13 +67,13 @@ MeleeVS has its own entry in the main menu, so a normal VS Mode or Team
 Battle match plays exactly like vanilla Melee and is unaffected by any of
 this.
 
-**Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
-ONLINE). This drops straight into character select - its own two-tone
+**Start a Tag Battle**: Main Menu → **MELEE VS** (the last entry). It opens
+LOCAL, ONLINE and CREDITS; **LOCAL** drops straight into character select - its own two-tone
 "MeleeVS" title replaces the usual mode banner - with all 4 doors already
 open and paired up 2v2 - ports 1 and 3 on Red, ports 2 and 4 on Blue, each
 Human if a controller is plugged into that port or CPU otherwise - so you can
 go straight to picking characters instead of opening doors one at a time.
-Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
+Playing a plain VS Mode entry (Melee, Tournament, Special Melee) instead
 leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
 
 **Pick your team**: each door's team-color button cycles between Red and Blue
@@ -156,7 +156,7 @@ first if a mapping below goes stale.
 ## Online Tag Battle (in progress)
 
 Online Tag Battle is under active development: 2-player matches work over LAN,
-Direct Connect, and Matchmaking (MELEE VS → MATCHMAKING). Matchmaking uses its
+Direct Connect, and Matchmaking (MELEE VS → ONLINE → MATCHMAKING). Matchmaking uses its
 own pool, so you are only matched with other MeleeVS players in Tag Battle,
 never with a plain VS Unranked search. Both players need the same MeleeVS
 build and the same disc image. Ranked has no Tag Battle entry. For how

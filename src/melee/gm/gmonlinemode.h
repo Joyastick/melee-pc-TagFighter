@@ -29,6 +29,11 @@ OnlineKind gmOnline_GetKind(void);
 bool gmOnline_IsTeamSelect(void);
 /* A Matchmaking team has been saved by TEAM SELECT. */
 bool gmOnline_HasSavedTeam(void);
+/* The saved team for the Duo Party page: both fighters' names, whether the
+ * partner is a second player, and who starts on point (0 you, 1 partner).
+ * False, with empty names, when none is saved. */
+bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, int* point);
+void gmOnline_TogglePoint(void); /* swap point, for a team with a second player */
 /* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
  * to the menu (set when MATCHMAKING had no saved team to queue with). */
 void gmOnline_SetTeamSelectThenSearch(bool value);

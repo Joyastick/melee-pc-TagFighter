@@ -735,6 +735,38 @@ static const char* const ckind_name[CKind_Playable_Count] = {
     "Ganondorf",
 };
 
+/* The saved Matchmaking team as the Duo Party page shows it: both fighters'
+ * names ("" when none is saved), whether the partner is a second player, and
+ * which fighter starts on point. */
+bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, int* point)
+{
+    PcNetTeam team;
+    if (!loadSavedTeam(&team)) {
+        snprintf(you, (size_t) size, "%s", "");
+        snprintf(mate, (size_t) size, "%s", "");
+        *mate_human = false;
+        *point = 0;
+        return false;
+    }
+    snprintf(you, (size_t) size, "%s", ckind_name[team.fighter[0].ckind]);
+    snprintf(mate, (size_t) size, "%s", ckind_name[team.fighter[1].ckind]);
+    *mate_human = team.fighter[1].human != 0;
+    *point = team.point;
+    return true;
+}
+
+/* Swap who starts on point. Only a team with a second player has the choice:
+ * a human+CPU team always starts with the human. */
+void gmOnline_TogglePoint(void)
+{
+    PcNetTeam team;
+    if (!loadSavedTeam(&team) || !team.fighter[1].human) {
+        return;
+    }
+    team.point = team.point ? 0 : 1;
+    pc_set_meleevs_team((const uint8_t*) &team);
+}
+
 /* "Your team: Fox (point) + Falco CPU": both fighters, which starts on
  * point, and whether the partner is a CPU or a second player on the same
  * machine ("(Couch)", a couch duo). */

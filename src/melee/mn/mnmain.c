@@ -101,7 +101,7 @@ static u16 mn_803EAE7C[] = {
     0x2, 0x3, 0x4, 0x9, 0xB, 0xC, 0xD, 0x0,
 };
 #ifdef TARGET_PC
-#define MENU_KIND_TABLE_LEN (MENU_KIND_ONLINE + 1)
+#define MENU_KIND_TABLE_LEN (MENU_KIND_MV_CREDITS + 1)
 #else
 #define MENU_KIND_TABLE_LEN 0x22
 #endif
@@ -283,6 +283,26 @@ static AnimLoopSettings mn_803EAE8C[MENU_KIND_TABLE_LEN][3] = {
         { 450, 499, 450 },
         { 500, 599, 500 },
     },
+    { /* MENU_KIND_MV_ROOT */
+        { 400, 449, 400 },
+        { 450, 499, 450 },
+        { 500, 599, 500 },
+    },
+    { /* MENU_KIND_MV_ONLINE */
+        { 400, 449, 400 },
+        { 450, 499, 450 },
+        { 500, 599, 500 },
+    },
+    { /* MENU_KIND_MV_PARTY */
+        { 400, 449, 400 },
+        { 450, 499, 450 },
+        { 500, 599, 500 },
+    },
+    { /* MENU_KIND_MV_CREDITS */
+        { 400, 449, 400 },
+        { 450, 499, 450 },
+        { 500, 599, 500 },
+    },
 #endif
 };
 
@@ -309,7 +329,11 @@ static AnimLoopSettings mn_803EB3FC[] = { { 0, 49, 20 },
                                           { 50, 99, 70 },
                                           { 100, 149, 120 },
                                           { 150, 199, 170 },
-                                          { 200, 249, 220 } };
+                                          { 200, 249, 220 },
+#ifdef TARGET_PC
+                                          { 700, 749, 720 }, /* SEL_MAIN_MELEEVS: the Melee CSS preview */
+#endif
+};
 
 static AnimLoopSettings mn_803EB438 = { 3550, 3599, 3570 };
 
@@ -325,7 +349,6 @@ static AnimLoopSettings mn_803EB48C[] = {
     { 850, 899, 870 }, { 900, 949, 920 },
 #ifdef TARGET_PC
     { 700, 749, 720 }, /* SEL_VS_ONLINE: reuse the Melee preview */
-    { 700, 749, 720 }, /* SEL_VS_TAG_BATTLE: reuse the Melee preview */
 #endif
 };
 
@@ -379,11 +402,14 @@ static AnimLoopSettings mn_803EB5E8[] = {
     { 2900, 2949, 2920 },
 };
 
-static u16 mn_803EB660[] = { 0x81, 0x82, 0x83, 0x84, 0x85, 0x00 };
+static u16 mn_803EB660[] = { 0x81, 0x82, 0x83, 0x84, 0x85, 0x00,
+#ifdef TARGET_PC
+    0x00, /* SEL_MAIN_MELEEVS: no label texture, mnonline.c draws it */
+#endif
+};
 static u16 mn_803EB66C[] = { 0x86, 0x87, 0x88, 0x89, 0x8A, 0x00 };
 static u16 mn_803EB678[] = { 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x00,
 #ifdef TARGET_PC
-    0x00, /* SEL_VS_TAG_BATTLE: no label texture, same as SEL_VS_ONLINE */
 #endif
 };
 static u16 mn_803EB684[] = { 0x9A, 0x9B, 0x9C, 0x9D, 0x9D, 0x9E };
@@ -411,7 +437,11 @@ MenuKindData mn_803EB6B0[MENU_KIND_TABLE_LEN] = {
         mn_803EB3FC,
         0,
         mn_803EB660,
+#ifdef TARGET_PC
+        0x06, /* + SEL_MAIN_MELEEVS */
+#else
         0x05,
+#endif
         mn_8022DB10,
     },
     {
@@ -426,7 +456,7 @@ MenuKindData mn_803EB6B0[MENU_KIND_TABLE_LEN] = {
         40,
         mn_803EB678,
 #ifdef TARGET_PC
-        0x07, /* + SEL_VS_ONLINE, + SEL_VS_TAG_BATTLE */
+        0x06, /* + SEL_VS_ONLINE */
 #else
         0x05,
 #endif
@@ -657,6 +687,34 @@ MenuKindData mn_803EB6B0[MENU_KIND_TABLE_LEN] = {
         ARRAY_SIZE(mn_OnlinePreview),
         mnOnline_Think,
     },
+    { /* MENU_KIND_MV_ROOT: LOCAL, ONLINE, CREDITS */
+        mn_OnlinePreview,
+        40,
+        NULL,
+        3,
+        mnOnline_Think,
+    },
+    { /* MENU_KIND_MV_ONLINE: LAN, DIRECT, PARTY, TEAM SELECT, MATCHMAKING */
+        mn_OnlinePreview,
+        40,
+        NULL,
+        5,
+        mnOnline_Think,
+    },
+    { /* MENU_KIND_MV_PARTY: partner, two fighters, point, search */
+        mn_OnlinePreview,
+        40,
+        NULL,
+        5,
+        mnOnline_Think,
+    },
+    { /* MENU_KIND_MV_CREDITS: text rows */
+        mn_OnlinePreview,
+        40,
+        NULL,
+        5,
+        mnOnline_Think,
+    },
 #endif
 };
 
@@ -857,6 +915,16 @@ static void mn_UpdatePcLabels(MainMenuData* data, bool alive)
     const float label_size = 0.033f;
     int i;
 
+    if (data->pc_label_gen != mnOnline_LabelGeneration()) {
+        /* a row's text changed: draw every label afresh */
+        data->pc_label_gen = mnOnline_LabelGeneration();
+        for (i = 0; i < (int) ARRAY_SIZE(data->pc_label); i++) {
+            if (data->pc_label[i] != NULL) {
+                HSD_SisLib_803A5CC4(data->pc_label[i]);
+                data->pc_label[i] = NULL;
+            }
+        }
+    }
     if (alive && data->description != NULL) {
         const char* notice = mnOnline_TakeNotice();
         if (notice != NULL) {
@@ -1844,6 +1912,11 @@ GXColor* mn_8022BFBC(int arg0)
 int mn_8022C010(int menu_kind, int selection)
 {
     if (menu_kind == MENU_KIND_MAIN) {
+#ifdef TARGET_PC
+        if (selection == SEL_MAIN_MELEEVS) {
+            return 1; /* the VS colour: it opens where VS MODE used to */
+        }
+#endif
         return selection;
     }
     switch (menu_kind) {
@@ -1866,6 +1939,10 @@ int mn_8022C010(int menu_kind, int selection)
     case MENU_KIND_NAME_ENTRY:
 #ifdef TARGET_PC
     case MENU_KIND_ONLINE:
+    case MENU_KIND_MV_ROOT:
+    case MENU_KIND_MV_ONLINE:
+    case MENU_KIND_MV_PARTY:
+    case MENU_KIND_MV_CREDITS:
 #endif
         return 1;
     case MENU_KIND_TOY:
@@ -2635,7 +2712,6 @@ void mn_8022D594(HSD_GObj* gp)
         case SEL_VS_ONLINE:
             sfxForward();
             TagAssist_LeaveTagBattle();
-            mnOnline_SetEnteredFromTagBattle(false);
             mn_80229894(MENU_KIND_ONLINE, SEL_ONLINE_LAN, 1);
             break;
 #endif
@@ -2665,17 +2741,6 @@ void mn_8022D594(HSD_GObj* gp)
             mnName_8023AC40();
             HSD_GObjFree(gp);
             break;
-#ifdef TARGET_PC
-        case SEL_VS_TAG_BATTLE:
-            /* Opens its own submenu (Local / Direct / Matchmaking) inside
-             * MENU_KIND_ONLINE - see mnOnline_SetEnteredFromTagBattle.
-             * SEL_TAG_LOCAL there is exactly this row's old direct-to-GM_VS
-             * body. */
-            sfxForward();
-            mnOnline_SetEnteredFromTagBattle(true);
-            mn_80229894(MENU_KIND_ONLINE, SEL_TAG_LOCAL, 1);
-            break;
-#endif
         }
     } else if (buttons & MenuInput_Back) {
         sfxBack();
@@ -2857,6 +2922,12 @@ void mn_8022DB10(HSD_GObj* gp)
             menu_kind = MENU_KIND_DATA;
             hovered_selection = 0;
             break;
+#ifdef TARGET_PC
+        case SEL_MAIN_MELEEVS:
+            menu_kind = MENU_KIND_MV_ROOT; /* LOCAL / ONLINE / CREDITS */
+            hovered_selection = 0;
+            break;
+#endif
         }
         mn_804D6BC8.cooldown = 5;
         *prev_menu_ptr = mf->cur_menu;
