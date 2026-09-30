@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 enum PcNetMatchMode { PC_MATCH_DIRECT, PC_MATCH_UNRANKED, PC_MATCH_RANKED };
-enum PcNetMatchState { PC_MATCH_SEARCH, PC_MATCH_CONNECT, PC_MATCH_READY, PC_MATCH_FAIL };
+/* PC_MATCH_PARTY: a party link (pc_net_match_party_start) is made; the search itself is over. */
+enum PcNetMatchState { PC_MATCH_SEARCH, PC_MATCH_CONNECT, PC_MATCH_READY, PC_MATCH_FAIL, PC_MATCH_PARTY };
 #define PC_NET_CONTACTS_MAX 16
 typedef struct PcNetContact {
     char code[18];       /* NAME#SUFFIX as last seen */
@@ -32,6 +33,22 @@ bool pc_net_match_start(enum PcNetMatchMode mode, const char* target_code);
 bool pc_net_match_group_start(const char* host_code);
 int pc_net_match_group_count(void);
 bool pc_net_match_group_begin(void);
+/* A party link: the same lobby as a group, but with two machines that then
+ * stay linked over the DHT socket (no game session) to agree on their
+ * fighters and who is point, before they queue for Matchmaking together.
+ * The host passes NULL and starts the lobby's roster on its own once the
+ * partner is in; the search state ends at PC_MATCH_PARTY. The link lasts
+ * until pc_net_party_leave, the partner goes silent, or the DHT node is
+ * stopped (leaving the Online menus). */
+bool pc_net_match_party_start(const char* host_code);
+bool pc_net_party_linked(void);
+/* The partner as a short label (its code's name, else its suffix), its
+ * fighter (a CharacterKind, -1 unknown) and whether it is point. */
+bool pc_net_party_partner(char label[10], int* fighter, bool* partner_is_point);
+void pc_net_party_set_pick(int fighter); /* our own fighter, sent to the partner */
+void pc_net_party_toggle_point(void);
+void pc_net_party_leave(void);
+void pc_net_party_poll(void); /* every frame, from anywhere: keeps the link alive */
 /* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
  * machine once the roster is out); false when not known yet. */
 bool pc_net_match_group_member(int i, char out[18]);

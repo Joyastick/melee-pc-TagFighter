@@ -34,6 +34,13 @@ bool gmOnline_HasSavedTeam(void);
  * False, with empty names, when none is saved. */
 bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, int* point);
 void gmOnline_TogglePoint(void); /* swap point, for a team with a second player */
+/* The saved team's first fighter (a CharacterKind, -1 when none is saved) and
+ * a fighter's short name for menu rows. */
+int gmOnline_SavedFighter(void);
+const char* gmOnline_FighterName(int ckind);
+/* The next Direct-style lobby scene links a party partner instead of
+ * starting a match (the Party page's PARTNER row). */
+void gmOnline_SetPartyLink(bool value);
 /* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
  * to the menu (set when MATCHMAKING had no saved team to queue with). */
 void gmOnline_SetTeamSelectThenSearch(bool value);

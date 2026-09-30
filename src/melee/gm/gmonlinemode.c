@@ -756,6 +756,17 @@ bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, i
     return true;
 }
 
+int gmOnline_SavedFighter(void)
+{
+    PcNetTeam team;
+    return loadSavedTeam(&team) ? team.fighter[0].ckind : -1;
+}
+
+const char* gmOnline_FighterName(int ckind)
+{
+    return ckind >= 0 && ckind < CKind_Playable_Count ? ckind_name[ckind] : "-";
+}
+
 /* Swap who starts on point. Only a team with a second player has the choice:
  * a human+CPU team always starts with the human. */
 void gmOnline_TogglePoint(void)
@@ -898,6 +909,14 @@ static bool direct_code_edit; /* X pressed: the D-pad changes the code */
  * host leaves the code empty, the others enter its code) instead of a 2
  * player match. The host presses START once everyone is in. */
 static bool direct_group;
+/* The Party page sent us here to link a partner: the same screen with the
+ * group on, until the link is made (the lobby then goes back to the menu). */
+static bool party_link;
+static int party_done_frames;
+void gmOnline_SetPartyLink(bool value)
+{
+    party_link = value;
+}
 static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
 /* Recent opponents under "YOU": outside code editing, up/down walks them
@@ -1140,7 +1159,10 @@ static void afterMatchFrame(OnlineLobbyView* view)
 
 static void directEntryBegin(void)
 {
-    snprintf(direct_entry, sizeof direct_entry, "%s", pc_get_net_target());
+    /* MELEE_DIRECT_TARGET (test tooling; set-but-empty means "host") beats
+     * the saved code, so instances sharing one config can take both sides. */
+    const char* forced = getenv("MELEE_DIRECT_TARGET");
+    snprintf(direct_entry, sizeof direct_entry, "%s", forced ? forced : pc_get_net_target());
     direct_cursor = (int) strlen(direct_entry);
     if (direct_cursor >= DIRECT_CODE_SLOTS) {
         direct_cursor = DIRECT_CODE_SLOTS - 1;
@@ -1229,7 +1251,8 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
     mnOnlineLobby_Create();
 #ifdef TARGET_PC
     direct_editing = false;
-    direct_group = false;
+    direct_group = party_link;
+    party_done_frames = 0;
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         /* offline: the first frame goes straight on to the CSS */
     } else if (online_kind == ONLINE_KIND_PROFILE) {
@@ -1261,6 +1284,7 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
 
 void gm_Scene_OnlineLobby_OnExit(UNUSED void* unused)
 {
+    party_link = false;
     mnOnlineLobby_Destroy();
 }
 
@@ -1403,6 +1427,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                          (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" :
                      rematch_direct ? "REMATCH" :
+                     party_link ? "PARTY LINK" :
                      direct_group ? "DIRECT GROUP" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
@@ -1432,7 +1457,7 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                            (repeat & (PAD_ANY_UP | PAD_ANY_DOWN))) {
                     directContactStep((repeat & PAD_ANY_DOWN) ? 1 : -1);
                     sfxMove();
-                } else if (input & HSD_PAD_Y) {
+                } else if ((input & HSD_PAD_Y) && !party_link) {
                     direct_group = !direct_group;
                     sfxMove();
                 }
@@ -1498,6 +1523,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                                  direct_contacts[i].last_played);
             }
             view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        party_link ? (direct_entry[0] ? "START: link with your partner    X: edit code    B: back" :
+                                                        "START: host a link    X: edit code    B: back") :
                         direct_group ? (direct_entry[0] ? "START: join group    Y: 2 players    X: edit    B: back" :
                                                           "START: host group    Y: 2 players    X: edit    B: back") :
                         direct_contact_count > 0 ?
@@ -1539,7 +1566,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     pc_log_line("lobby: direct connect %s '%s'",
                                 direct_entry[0] ? "dialing" : "hosting as",
                                 direct_entry[0] ? direct_entry : pc_net_match_local_code());
-                    if (direct_group) {
+                    if (party_link) {
+                        pc_net_set_matchmade(false, NULL);
+                        pc_net_match_party_start(direct_entry[0] ? direct_entry : NULL);
+                    } else if (direct_group) {
                         pc_net_set_matchmade(false, NULL);
                         pc_net_match_group_start(direct_entry[0] ? direct_entry : NULL);
                     } else {
@@ -1634,7 +1664,8 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             if (direct_group && online_kind == ONLINE_KIND_DIRECT && state == PC_MATCH_SEARCH &&
                 reason == PC_NET_PEER_OK) {
                 if (direct_entry[0]) {
-                    snprintf(view.message, sizeof view.message, "Joining the group...");
+                    snprintf(view.message, sizeof view.message, party_link ?
+                             "Linking with your partner..." : "Joining the group...");
                 } else {
                     int count = pc_net_match_group_count();
                     for (int i = 1; i < count && i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
@@ -1644,7 +1675,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                         view.players[i].ping_ms = -1;
                     }
                     view.player_count = count > 0 ? count : 1;
-                    if (count >= 2) {
+                    if (count >= 2 && party_link) {
+                        view.phase = LOBBY_PHASE_CONNECTING;
+                        snprintf(view.message, sizeof view.message, "Partner found. Linking...");
+                    } else if (count >= 2) {
                         view.phase = LOBBY_PHASE_FOUND;
                         snprintf(view.message, sizeof view.message, "%d players in.", count);
                         view.hint = "START: begin the match    B: back";
@@ -1653,8 +1687,21 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                             pc_net_match_group_begin();
                         }
                     } else {
-                        snprintf(view.message, sizeof view.message, "Waiting for players to join your code...");
+                        snprintf(view.message, sizeof view.message, party_link ?
+                                 "Waiting for your partner to enter your code..." :
+                                 "Waiting for players to join your code...");
                     }
+                }
+            }
+            if (state == PC_MATCH_PARTY) {
+                /* Linked: back to the Party page, keeping the DHT node (and
+                 * with it the link) alive. */
+                view.phase = LOBBY_PHASE_STARTING;
+                snprintf(view.message, sizeof view.message, "Linked! Back to the party page...");
+                if (++party_done_frames > 45) {
+                    sfxForward();
+                    gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+                    gm_801A4B60();
                 }
             }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {

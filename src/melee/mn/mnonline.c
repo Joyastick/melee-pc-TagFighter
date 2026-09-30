@@ -90,7 +90,7 @@ static const char* notice;
  * asked for. */
 static char party_text[5][40];
 static const char* const party_descriptions[] = {
-    "Who you are teaming up with (not linked yet).",
+    "Link with a teammate online. Select again to leave the party.",
     "Your fighter. A opens TEAM SELECT.",
     "The fighter your partner picked (MATE).",
     "Who starts on point. You and your partner can both swap it.",
@@ -122,19 +122,35 @@ static int row_count(MenuKind kind)
     }
 }
 
-/* A party is two players on two machines, so there is no CPU assist here. No
- * partner can be linked yet (the lobby is not wired in), so the rest of the
- * page waits on PARTNER. */
+/* A party is two players on two machines, so there is no CPU assist here. The
+ * rest of the page waits on PARTNER: a link made from it (the party lobby,
+ * net_match.c) shows who the partner is, their fighter, and who is point. */
 static void build_party_text(void)
 {
     char you[24], mate[24];
     bool mate_human;
     int point;
     bool saved = gmOnline_SavedTeamText(you, mate, sizeof you, &mate_human, &point);
-    snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: NONE");
+    char who[10];
+    int mate_fighter = -1;
+    bool mate_point = false;
+    bool linked = false;
+#ifdef TARGET_PC
+    pc_net_party_set_pick(gmOnline_SavedFighter());
+    linked = pc_net_party_partner(who, &mate_fighter, &mate_point);
+#endif
+    if (linked) {
+        snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "WITH: %s", who);
+        snprintf(party_text[PARTY_MATE], sizeof party_text[0], "MATE: %s",
+                 gmOnline_FighterName(mate_fighter));
+        snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: %s",
+                 mate_point ? "MATE" : "YOU");
+    } else {
+        snprintf(party_text[PARTY_PARTNER], sizeof party_text[0], "PARTNER: NONE");
+        snprintf(party_text[PARTY_MATE], sizeof party_text[0], "MATE: -");
+        snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
+    }
     snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s", saved ? you : "NOT SET");
-    snprintf(party_text[PARTY_MATE], sizeof party_text[0], "MATE: -");
-    snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
     snprintf(party_text[PARTY_SEARCH], sizeof party_text[0], "FIND MATCH");
 }
 
@@ -162,7 +178,9 @@ void mnOnline_ReturnMenu(int online_kind, int* kind, int* selection)
                                                               MVO_LAN;
         break;
     case MENU_KIND_MV_PARTY:
-        *selection = online_kind == ONLINE_KIND_UNRANKED ? PARTY_SEARCH : PARTY_YOU;
+        *selection = online_kind == ONLINE_KIND_UNRANKED ? PARTY_SEARCH :
+                     online_kind == ONLINE_KIND_DIRECT   ? PARTY_PARTNER :
+                                                           PARTY_YOU;
         break;
     default:
         *selection = online_kind == ONLINE_KIND_DIRECT ? SEL_ONLINE_DIRECT : SEL_ONLINE_LAN;
@@ -346,14 +364,41 @@ static void confirmMeleeVs(void)
     case MENU_KIND_MV_PARTY:
         switch (mn_804A04F0.hovered_selection) {
         case PARTY_PARTNER:
-            sfxForward();
-            notice = "Linking a partner arrives with the party lobby.";
+#ifdef TARGET_PC
+            if (pc_net_party_linked()) {
+                sfxBack();
+                pc_net_party_leave();
+                sGeneration++;
+                notice = "Left the party.";
+                break;
+            }
+#endif
+            tagSetup();
+            gmOnline_SetPartyLink(true);
+            enterOnline(ONLINE_KIND_DIRECT);
             break;
         case PARTY_YOU:
             enterTeamSelect();
             break;
-        default: /* partner fighter, point, search: all need a linked partner */
+        case PARTY_POINT:
             sfxForward();
+#ifdef TARGET_PC
+            if (pc_net_party_linked()) {
+                pc_net_party_toggle_point();
+                sGeneration++;
+                break;
+            }
+#endif
+            notice = "Link a partner first.";
+            break;
+        default: /* partner fighter, search */
+            sfxForward();
+#ifdef TARGET_PC
+            if (pc_net_party_linked()) {
+                notice = "Searching as a party arrives next.";
+                break;
+            }
+#endif
             notice = "Link a partner first.";
             break;
         }

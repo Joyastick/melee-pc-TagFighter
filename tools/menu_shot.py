@@ -57,7 +57,7 @@ def screenshot(path):
 
 
 class Game:
-    def __init__(self, out, exe, disc):
+    def __init__(self, out, exe, disc, extra_env=None, port="42200"):
         os.makedirs(out, exist_ok=True)
         self.out = out
         self.keys = os.path.join(out, "keys.txt")
@@ -76,8 +76,9 @@ class Game:
             "MELEE_VSYNC": "0",
             "MELEE_CACHE_DIR": os.path.join(out, "cache"),
             "MELEE_WINDOW_TITLE": "menu_shot",
-            "MELEE_NET_PORT": "42200",
+            "MELEE_NET_PORT": port,
         })
+        env.update(extra_env or {})
         os.makedirs(env["MELEE_CACHE_DIR"], exist_ok=True)
         self.log = open(self.log_path, "wb")
         self.proc = subprocess.Popen([exe, "--no-card", disc], env=env, stdout=self.log,
