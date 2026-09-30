@@ -49,6 +49,12 @@ SemVer SemVer::parse(std::string_view s) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
         s.remove_suffix(1);
 
+    // This fork's tags are MeleeVS-vX.Y.Z (see cmake/GenerateVersion.cmake).
+    constexpr std::string_view kTagPrefix = "MeleeVS-";
+    if (s.substr(0, kTagPrefix.size()) == kTagPrefix) {
+        s.remove_prefix(kTagPrefix.size());
+    }
+
     if (!s.empty() && (s.front() == 'v' || s.front() == 'V')) {
         s.remove_prefix(1);
     }
