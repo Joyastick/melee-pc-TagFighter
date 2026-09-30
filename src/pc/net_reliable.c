@@ -116,7 +116,7 @@ static bool log_resend(unsigned n) {
 void rel_service(void) {
     uint64_t now = SDL_GetTicksNS();
     for (int p = 0; p < peers_n(); p++) {
-        if (s_rel_tx[p][0].n == 0 && s_rel_tx[p][1].n == 0) {
+        if (net.peers[p].dropped || (s_rel_tx[p][0].n == 0 && s_rel_tx[p][1].n == 0)) {
             continue;
         }
         for (int lane = 0; lane < REL_LANES; lane++) {
@@ -183,11 +183,13 @@ bool pc_net_send_reliable(uint8_t type, const void* payload, int len) {
     SDL_LockMutex(net.tx_lock);
     bool ok = true;
     for (int p = 0; p < peers_n(); p++) {
-        ok = ok && rel_room(p, type);
+        ok = ok && (net.peers[p].dropped || rel_room(p, type));
     }
     if (ok) {
         for (int p = 0; p < peers_n(); p++) {
-            rel_enqueue(p, type, payload, len);
+            if (!net.peers[p].dropped) {
+                rel_enqueue(p, type, payload, len);
+            }
         }
         rel_service();
     }
@@ -236,6 +238,8 @@ void on_rel_from(int peer, const Rel* r, int n) {
             }
         } else if (r->type == REL_SCENE) {
             net_scene_rel_from(peer, r->payload, r->len);
+        } else if (r->type == REL_DROP) {
+            net_drop_rel(peer, r->payload, r->len);
         } else if (r->type == REL_CHAT) {
             pc_net_chat_receive(r->payload, r->len);
         } else if (s_rel_rx_n < REL_QUEUE) {

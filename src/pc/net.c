@@ -74,9 +74,9 @@ struct NetSession net = {.sock = SOCK_INVALID,
 /* Newest frame every peer's real input has reached: what a frame needs
  * before it can be simulated without a prediction. */
 static int32_t have_min(void) {
-    int32_t m = net.peers[0].remote_have;
-    for (int i = 1; i < net.npeers; i++) {
-        if (net.peers[i].remote_have < m) {
+    int32_t m = INT32_MAX; /* every peer dropped: nothing to wait for */
+    for (int i = 0; i < net.npeers; i++) {
+        if (!net.peers[i].dropped && net.peers[i].remote_have < m) {
             m = net.peers[i].remote_have;
         }
     }
@@ -432,6 +432,9 @@ static Uint32 SDLCALL tx_timer(void* ud, SDL_TimerID id, Uint32 interval) {
          * the adv from when the packet was built would feed the peer's phase
          * ring a sample up to a frame old (longer across a load). */
         for (int p = 0; p < net.npeers; p++) {
+            if (net.peers[p].dropped) {
+                continue;
+            }
             s_last_pkt[p].adv = (int8_t)atomic_load_explicit(&s_adv_pub[p], memory_order_relaxed);
             send_packet(p, &s_last_pkt[p]);
         }
@@ -455,6 +458,9 @@ static void send_inputs(void) {
     for (int p = 0; p < net.npeers; p++) {
         Packet* pk = &pks[p];
         memset(pk, 0, sizeof *pk);
+        if (net.peers[p].dropped) {
+            continue;
+        }
         pk->h = hdr('M');
         /* Everything this peer has not acked yet, oldest first so its
          * contiguous mark can always advance; the cap only bites when acks
@@ -515,6 +521,9 @@ static void send_inputs(void) {
     tx_flush();
     rel_service();
     for (int p = 0; p < net.npeers; p++) {
+        if (net.peers[p].dropped) {
+            continue;
+        }
         send_packet(p, &pks[p]);
         s_last_pkt[p] = pks[p];
     }
@@ -871,6 +880,14 @@ static void rx_dispatch(int p, void* buf, int n) {
         if (n != (int)sizeof(Bye) || s_rx_left || !pr->heard) {
             return;
         }
+        if (net.npeers > 1) {
+            /* One of several: recv_inputs decides whether the match goes on
+             * without it (drop_ok) or ends as it always did. */
+            pr->left = true;
+            pc_log_line("net: machine %d left (reason %d) at frame %d", pr->machine,
+                u->bye.reason, atomic_load(&s_frame_pub));
+            break;
+        }
         s_rx_left = true;
         s_rx_why = u->bye.reason <= PC_NET_PEER_RESUME ? u->bye.reason : PC_NET_PEER_LEFT;
         pc_log_line("net: peer left (reason %d) at frame %d", s_rx_why, atomic_load(&s_frame_pub));
@@ -1021,6 +1038,9 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
         }
     }
     Peer* pr = &net.peers[pi];
+    if (pr->dropped) {
+        return; /* gone for good: whatever it still sends is not part of the match */
+    }
     SDL_LockMutex(net.tx_lock);
     bool keyed = net_key_ready_peer(pi);
     bool mac_ok = keyed && net_mac_ok_peer(pi, buf, (size_t)body);
@@ -1213,6 +1233,9 @@ static uint64_t rx_heard_ns(void) {
     uint64_t t = 0;
     for (int i = 0; i < net.npeers; i++) {
         const Peer* pr = &net.peers[i];
+        if (pr->dropped) {
+            continue;
+        }
         if (!pr->heard) {
             t = 0;
             break;
@@ -1223,6 +1246,198 @@ static uint64_t rx_heard_ns(void) {
     }
     SDL_UnlockMutex(s_rx_lock);
     return t;
+}
+
+/* ---- a machine leaves a fight ------------------------------------------
+ * In a 3-4 machine fight one machine going (its BYE, or silence past the stall
+ * timeout) does not end the match for the others: its fighter stands still
+ * from an agreed frame on. Agreeing the frame is the hard part, because
+ * every survivor holds a different amount of the dead machine's input and
+ * has simulated on it. Each survivor therefore tells every other what it
+ * holds (REL_DROP: its newest frame and the last few), the agreed frame is
+ * the largest of those plus one, and a survivor that holds less fills the gap
+ * from the announcement that holds most. Frames up to it are then real on
+ * every survivor, frames from it on are neutral on every survivor, and
+ * whatever was simulated on a prediction past it rolls back. Anything that
+ * does not add up (a gap wider than the announcement, a survivor that never
+ * answers within DROP_TIMEOUT_MS, a second machine going meanwhile) ends the
+ * session as a lost peer always did. */
+#define DROP_TIMEOUT_MS 5000
+
+static bool drop_ok(void) {
+    return net.npeers >= 2 && net.hs == HS_DONE && in_fight();
+}
+
+static bool drop_in_progress(void) {
+    for (int i = 0; i < net.npeers; i++) {
+        if (net.peers[i].drop_started && !net.peers[i].dropped) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void drop_wire(DropMsg* m) {
+    m->have = (int32_t)htonl((uint32_t)m->have);
+    for (int i = 0; i < DROP_FRAMES; i++) {
+        for (int k = 0; k < NET_LOCAL_PADS; k++) {
+            m->pads[i].pad[k].button = htons(m->pads[i].pad[k].button);
+        }
+    }
+}
+
+static void drop_begin(int p) {
+    Peer* pr = &net.peers[p];
+    if (pr->dropped || pr->drop_started) {
+        return;
+    }
+    pr->drop_started = true;
+    pr->drop_ns = SDL_GetTicksNS();
+    memset(&pr->own_ann, 0, sizeof pr->own_ann);
+    memset(pr->ann_sent, 0, sizeof pr->ann_sent);
+    int n = pr->remote_have + 1 > DROP_FRAMES ? DROP_FRAMES : pr->remote_have + 1;
+    n = n < 0 ? 0 : n;
+    pr->own_ann.machine = (uint8_t)pr->machine;
+    pr->own_ann.have = pr->remote_have;
+    pr->own_ann.count = (uint8_t)n;
+    for (int i = 0; i < n; i++) {
+        pr->own_ann.pads[i] = pr->remote_ring[(pr->remote_have - n + 1 + i) & (RING - 1)];
+    }
+    pc_log_line("net: machine %d is gone at frame %d (we hold its input to frame %d), dropping it",
+        pr->machine, net.frame, pr->remote_have);
+}
+
+/* Queue our announcement to every survivor; a full lane is retried next call. */
+static void drop_send(Peer* pr, int p) {
+    for (int i = 0; i < net.npeers; i++) {
+        if (i == p || net.peers[i].dropped || pr->ann_sent[i]) {
+            continue;
+        }
+        DropMsg w = pr->own_ann;
+        drop_wire(&w);
+        pr->ann_sent[i] = net_rel_send_peer(i, REL_DROP, &w, sizeof w);
+    }
+}
+
+void net_drop_rel(int peer, const void* payload, int len) {
+    DropMsg m;
+    if (len != (int)sizeof m) {
+        pc_log_line("net: REL_DROP of %d bytes ignored", len);
+        return;
+    }
+    memcpy(&m, payload, sizeof m);
+    drop_wire(&m); /* the same swap undoes itself */
+    int p = -1;
+    for (int i = 0; i < net.npeers; i++) {
+        if (net.peers[i].machine == m.machine) {
+            p = i;
+        }
+    }
+    if (p < 0 || p == peer || net.peers[p].dropped || m.count > DROP_FRAMES ||
+        m.count > m.have + 1 || m.have < -1 || m.have > net.frame + RING / 2)
+    {
+        return;
+    }
+    Peer* pr = &net.peers[p];
+    pr->ann[peer] = m;
+    pr->ann_in[peer] = true;
+    if (!pr->drop_started && drop_ok()) {
+        drop_begin(p); /* a survivor saw it first: join in */
+    }
+}
+
+static void drop_end_session(const char* why) {
+    pc_log_line("net: %s; leaving netplay", why);
+    s_status = PC_NET_PEER_TIMEOUT;
+    s_peer_left = true;
+}
+
+static void drop_finish(int p, int32_t agreed, int donor) {
+    Peer* pr = &net.peers[p];
+    if (pr->remote_have < agreed) {
+        const DropMsg* d = &pr->ann[donor];
+        int32_t gap = agreed - pr->remote_have;
+        if (gap > d->count) {
+            drop_end_session("the gap to the dropped machine's input is wider than it was told");
+            return;
+        }
+        Packet pk;
+        memset(&pk, 0, sizeof pk);
+        pk.first = pr->remote_have + 1;
+        pk.count = (uint8_t)gap;
+        pk.newest = agreed;
+        pk.ck_frame = -1;
+        for (int k = 0; k < gap; k++) {
+            pk.pads[k] = d->pads[d->count - gap + k];
+        }
+        on_inputs(pr, &pk, true); /* also flags the rollback for a frame it had predicted */
+    }
+    pr->drop_at = agreed + 1;
+    SDL_LockMutex(s_rx_lock);
+    pr->dropped = true;
+    SDL_UnlockMutex(s_rx_lock);
+    /* Past `agreed` the fighter is neutral; frames simulated on the held
+     * input the prediction repeated have to be run again. */
+    if (agreed + 1 <= simulated_upto() && (s_rb_frame < 0 || agreed + 1 < s_rb_frame)) {
+        s_rb_frame = agreed + 1;
+    }
+    pc_log_line("net: machine %d dropped: its input is real to frame %d, neutral from %d on", pr->machine,
+        agreed, pr->drop_at);
+    for (int i = 0; i < net.npeers; i++) {
+        if (!net.peers[i].dropped) {
+            return;
+        }
+    }
+    s_status = PC_NET_PEER_LEFT;
+    s_peer_left = true; /* nobody is left to play against */
+}
+
+static void drop_poll(void) {
+    for (int p = 0; p < net.npeers; p++) {
+        Peer* pr = &net.peers[p];
+        if (!pr->drop_started || pr->dropped) {
+            continue;
+        }
+        drop_send(pr, p);
+        bool all = true;
+        int32_t agreed = pr->own_ann.have;
+        int donor = -1;
+        for (int i = 0; i < net.npeers; i++) {
+            if (i == p || net.peers[i].dropped) {
+                continue;
+            }
+            if (!pr->ann_in[i]) {
+                all = false;
+            } else if (pr->ann[i].have > agreed) {
+                agreed = pr->ann[i].have;
+                donor = i;
+            }
+        }
+        if (all) {
+            drop_finish(p, agreed, donor);
+        } else if (SDL_GetTicksNS() - pr->drop_ns > (uint64_t)DROP_TIMEOUT_MS * 1000000ull) {
+            drop_end_session("a survivor never answered the drop");
+        }
+    }
+}
+
+/* Live machines silent past the stall timeout start being dropped. */
+static bool drop_silent(uint64_t now) {
+    bool any = false;
+    for (int i = 0; i < net.npeers; i++) {
+        Peer* pr = &net.peers[i];
+        if (pr->dropped || pr->drop_started) {
+            continue;
+        }
+        SDL_LockMutex(s_rx_lock);
+        uint64_t last = pr->heard ? pr->last_rx_ns : 0;
+        SDL_UnlockMutex(s_rx_lock);
+        if (last != 0 && now - last > (uint64_t)STALL_TIMEOUT_MS * 1000000ull) {
+            drop_begin(i);
+            any = true;
+        }
+    }
+    return any;
 }
 
 /* Apply what the receive thread queued, in arrival order (game thread): the
@@ -1260,6 +1475,23 @@ void recv_inputs(void) {
             break;
         }
     }
+    /* A BYE from one machine of several: the fight goes on without it, or
+     * (outside a fight) the session ends as a lost peer always did. */
+    for (int i = 0; i < net.npeers; i++) {
+        Peer* pr = &net.peers[i];
+        if (!pr->left || pr->dropped || pr->drop_started) {
+            continue;
+        }
+        if (drop_ok()) {
+            drop_begin(i);
+        } else {
+            SDL_LockMutex(s_rx_lock);
+            s_rx_left = true;
+            s_rx_why = PC_NET_PEER_LEFT;
+            SDL_UnlockMutex(s_rx_lock);
+        }
+    }
+    drop_poll();
     SDL_LockMutex(s_rx_lock);
     bool left = s_rx_left;
     int why = s_rx_why;
@@ -1327,6 +1559,9 @@ static void check_desync(void) {
     int32_t upto = confirmed_frame();
     for (int p = 0; p < net.npeers; p++) {
         Peer* pr = &net.peers[p];
+        if (pr->dropped) {
+            continue;
+        }
         int32_t from = pr->ck_checked + 1 > net.ck_from ? pr->ck_checked + 1 : net.ck_from;
         if (from <= net.frame - RING) {
             from = net.frame - RING + 1; /* aged out of s_ck_ring */
@@ -1585,6 +1820,9 @@ static bool wait_remote(int32_t need) {
             if (!resume_poll(now)) {
                 return false;
             }
+        } else if (drop_in_progress()) {
+            /* Waiting on the survivors' answers: recv_inputs (top of this
+             * loop) finishes the drop or ends the session on its timeout. */
         } else {
             /* Before the first packet there is no rx clock, so the connect
              * wait is still measured from t0. */
@@ -1599,6 +1837,9 @@ static bool wait_remote(int32_t need) {
             uint64_t since = s_progress_ns ? s_progress_ns : t0;
             bool stuck = now - since > NO_PROGRESS_TIMEOUT_MS * 1000000ull;
             if (quiet > limit || stuck) {
+                if (heard && !stuck && drop_ok() && drop_silent(now)) {
+                    continue; /* the silent machines are being dropped; wait on the rest */
+                }
                 s_no_progress = stuck && quiet <= limit;
                 if (!heard || s_no_progress || !resume_begin(now)) {
                     s_status = PC_NET_PEER_TIMEOUT;
@@ -1762,6 +2003,9 @@ bool pc_net_scene_hold(void) {
     int32_t remote_max = -1;
     bool all_in = true;
     for (int p = 0; p < SCENE_PEERS; p++) {
+        if (net.peers[p].dropped) {
+            continue;
+        }
         int32_t r = s_scene_exit_remote[p][s_scene_seq % SCENE_SLOTS];
         all_in = all_in && r >= 0;
         remote_max = r > remote_max ? r : remote_max;
@@ -2647,7 +2891,7 @@ static void predict(int32_t f) {
     static const WireFrame neutral;
     for (int i = 0; i < net.npeers; i++) {
         Peer* pr = &net.peers[i];
-        if (f > pr->remote_have) { /* a peer that has this frame keeps its real input */
+        if (!pr->dropped && f > pr->remote_have) { /* a peer that has this frame keeps its real input */
             pr->remote_ring[f & (RING - 1)] =
                 pr->remote_have >= 0 ? pr->remote_ring[pr->remote_have & (RING - 1)] : neutral;
         }
@@ -2854,7 +3098,9 @@ static void write_head(PADStatus* head, int32_t f) {
     }
     for (int i = 0; i < net.npeers; i++) {
         const Peer* pr = &net.peers[i];
-        const WireFrame* theirs_frame = &pr->remote_ring[f & (RING - 1)];
+        static const WireFrame gone; /* a dropped peer's fighter stands still */
+        const WireFrame* theirs_frame =
+            pr->dropped && f >= pr->drop_at ? &gone : &pr->remote_ring[f & (RING - 1)];
         const WirePad* theirs = &theirs_frame->pad[0];
         WirePad wrong;
         if (s_audit_poison) {

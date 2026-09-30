@@ -218,6 +218,7 @@ typedef struct Ack {
 #define REL_DELAY 0x13  /* the host's input-delay pick, dispatched by on_rel */
 #define REL_CHAT 0x15   /* fixed quick-chat phrase, consumed before caller queue */
 #define REL_SCENE 0x14  /* the scene-exit hand-off, dispatched by on_rel */
+#define REL_DROP 0x16   /* a peer is gone: what each survivor holds of it */
 typedef struct Rel {
     Hdr h; /* 'R' */
     uint8_t seq;
@@ -295,6 +296,20 @@ typedef struct Go {
     uint32_t hash;       /* go_hash() of the wire image above */
 } __attribute__((packed)) Go;
 
+/* Payload of REL_DROP (net.c): sent by each survivor of a 3-4 machine fight
+ * once it decides `machine` is gone. `have` is the newest frame of that
+ * machine's input it holds and pads the last `count` of them, so a survivor
+ * that holds less can fill its gap from the one that holds most (the dead
+ * machine cannot be asked). All the survivors then agree that the machine's
+ * input is real up to the largest `have` and neutral after it. */
+#define DROP_FRAMES 12
+typedef struct DropMsg {
+    uint8_t machine;
+    int32_t have;
+    uint8_t count;
+    WireFrame pads[DROP_FRAMES]; /* frames have-count+1 .. have */
+} __attribute__((packed)) DropMsg;
+
 /* Payload of the RESUME message (reliable REL_RESUME, net.c): what the
  * sender still holds after an interruption. Every field is 32-bit, so the
  * big-endian conversion is one loop over the image. */
@@ -334,6 +349,8 @@ _Static_assert(sizeof(PcNetTeam) == 9, "wire layout");
 _Static_assert(sizeof(Rules) == 16 + sizeof(GameRules) + 35, "wire layout");
 _Static_assert(sizeof(Ready) == 39, "wire layout");
 _Static_assert(sizeof(Go) == 32 + 4 + 4 + 4, "wire layout");
+_Static_assert(sizeof(DropMsg) == 6 + DROP_FRAMES * sizeof(WireFrame) && sizeof(DropMsg) <= REL_MAX,
+    "wire layout");
 _Static_assert(sizeof(Resume) == 20 && sizeof(Resume) % 4 == 0, "wire layout");
 _Static_assert(sizeof(DelayMsg) == 8, "wire layout");
 _Static_assert(sizeof(SceneMsg) == 8, "wire layout");
@@ -419,6 +436,17 @@ typedef struct Peer {
     int mac_quiet;        /* datagrams let through for want of a verifying tag */
     uint32_t ping_us;     /* smoothed round trip to it */
     uint16_t tx_seq;      /* next tx seq to it (tx_lock) */
+    /* It has gone (BYE, or silent past the stall timeout) in a 3-4 machine
+     * fight. left: its BYE arrived (receive thread). drop_started: this side
+     * has sent its REL_DROP. dropped: every survivor has, and its input is
+     * real up to drop_at - 1 and neutral from drop_at on. */
+    bool left, drop_started, dropped;
+    int32_t drop_at;
+    uint64_t drop_ns;         /* when this side started the drop */
+    bool ann_in[NET_MAX_PEERS];       /* survivor i's REL_DROP about it has arrived */
+    DropMsg ann[NET_MAX_PEERS];       /* ... and what it said (host order) */
+    DropMsg own_ann;                  /* what this side holds of it, sent to every survivor */
+    bool ann_sent[NET_MAX_PEERS];     /* ours to survivor i is queued */
     struct {
         uint16_t seq;
         uint64_t send_ns;
@@ -494,6 +522,8 @@ bool in_fight(void);
  * queueing it for the caller); game thread, like everything recv_inputs
  * applies. */
 void net_resume_rel(const void* payload, int len);
+/* A REL_DROP payload from `peer` (on_rel_from dispatches it here). */
+void net_drop_rel(int peer, const void* payload, int len);
 
 /* One sendto with errno/WSA translation and the sock_err counter; used by
  * the senders here and the link simulator's flush (net_sim.c). Caller holds

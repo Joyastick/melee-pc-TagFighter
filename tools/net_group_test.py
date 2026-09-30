@@ -112,18 +112,23 @@ HANDSHAKE_RX = re.compile(r"net: handshake done seed=(\d+) start_frame=(-?\d+) \
 GROUP_RX = re.compile(r"net: group of (\d+) machines, we are machine (\d+)")
 
 
-def check_group(ms, loss=0):
+def check_group(ms, loss=0, dropped=None):
     """Cross-instance assertions: everyone joined the same group, agreed on
-    the seed and start frame, and simulated identical frames."""
+    the seed and start frame, and simulated identical frames. `dropped` is
+    the index of a machine the run took away: it is held to the group and
+    handshake checks, but the frame comparison and the rest are the
+    survivors' (the dropped machine's record just stops)."""
     fails = []
     n = len(ms)
-    for i, m in enumerate(ms):
+    all_ms = ms
+    ms = [m for i, m in enumerate(all_ms) if i != dropped]
+    for i, m in enumerate(all_ms):
         g = GROUP_RX.findall(m.text())
         if n > 2 and g != [(str(n), str(i))]:
             fails.append(f"{m.name}: group line {g}, want [({n}, {i})]")
     # A refusal is a failure; a "done" line the game's own threads tore apart
     # is not (the checksum comparison below is the real proof it finished).
-    for m in ms:
+    for m in all_ms:
         if re.search(r"handshake timed out|refusing this session|READY rejected", m.text()):
             fails.append(f"{m.name}: the handshake failed")
     if fails:
@@ -147,6 +152,17 @@ def check_group(ms, loss=0):
             fails.append(f"checksums differ at frame {f}: " +
                          " ".join(c[f].hex() for c in cks))
             break
+    if dropped is not None:
+        for m in ms:
+            got = re.findall(r"net: machine %d dropped: its input is real to frame (-?\d+)" % dropped,
+                             m.text())
+            if len(got) != 1:
+                fails.append(f"{m.name}: {len(got)} 'machine {dropped} dropped' lines (want 1)")
+        agreed = {re.findall(r"machine %d dropped: its input is real to frame (-?\d+)" % dropped,
+                             m.text())[0] for m in ms
+                  if re.search(r"machine %d dropped" % dropped, m.text())}
+        if len(agreed) > 1:
+            fails.append(f"survivors agreed on different drop frames: {sorted(agreed)}")
     # a guest must have keyed every link: no bad-MAC drops after the handshake
     # (a handful at the start is the key handover: a datagram stamped before
     # its sender had the key can land after the receiver verified a tagged one)
@@ -212,7 +228,16 @@ def run(args):
     for i in range(n):
         if not nt.wait_port_free(args.port + i):
             return False
-    ms = [Machine(i, n, args.exe, args.disc, work, args.port, sim) for i in range(n)]
+    drop = args.drop
+    if drop is not None and not 0 <= drop < n:
+        print("net_group_test: --drop is a machine number")
+        return False
+    envs = [dict(sim) for _ in range(n)]
+    if drop is not None and args.drop_mode == "bye":
+        # exits at that frame through pc_net_disconnect, so its BYE goes out
+        envs[drop]["MELEE_NET_EXIT_AFTER_FRAMES"] = str(args.drop_frame)
+    ms = [Machine(i, n, args.exe, args.disc, work, args.port, envs[i]) for i in range(n)]
+    killed = False
     print(f"net_group_test: {n} machines, frames={frames}, keys={'pinned' if args.key else 'derived'}, "
           f"match={'yes' if have_keys else 'no (menus only)'}, pids={[m.proc.pid for m in ms]}, "
           f"logs={work}", flush=True)
@@ -248,9 +273,15 @@ def run(args):
                 r"net: disconnected", r"cannot roll back")
         deadline = time.time() + frames / 12.0 + 60
         last_frame, last_progress = -1, time.time()
-        while ok and time.time() < deadline and any(m.proc.poll() is None for m in ms):
+        while ok and time.time() < deadline and any(
+                m.proc.poll() is None for i, m in enumerate(ms) if i != drop):
             time.sleep(1)
-            texts = "".join(m.text() for m in ms)
+            live = [m for i, m in enumerate(ms) if i != drop]
+            if drop is not None and args.drop_mode == "kill" and not killed and                     max([int(x) for x in re.findall(r"net: frame (\d+)", ms[drop].text())] or [-1])                     >= args.drop_frame:
+                killed = True
+                print(f"net_group_test: killing machine {drop} (no BYE)", flush=True)
+                ms[drop].proc.kill()
+            texts = "".join(m.text() for m in live)  # the dropped one logs its own exit
             if any(re.search(t, texts) for t in term):
                 break
             fr = max([int(x) for x in re.findall(r"net: frame (\d+)", texts)] or [-1])
@@ -267,12 +298,16 @@ def run(args):
             print(f"net_group_test: workout wrote {workout.done()} key lines", flush=True)
         for m in ms:
             m.kill(20)
-    fails = check_group(ms, args.loss) if ok else []
+    fails = check_group(ms, args.loss, drop) if ok else []
     if ok and args.tag:
         fails += npt.check_tag(ms)
-    for m in ms:
+    for i, m in enumerate(ms):
         f, line, _ = nt.summarize(m, need_match=have_keys and ok)
         print(line)
+        if i == drop:
+            if f:
+                print(f"[{m.name}] (the dropped machine, not judged) " + ", ".join(f))
+            continue
         if f:
             ok = False
             print(f"[{m.name}] FAIL: " + ", ".join(f))
@@ -301,6 +336,12 @@ def main():
     p.add_argument("--loss", type=int, default=0)
     p.add_argument("--delay", type=int, default=0)
     p.add_argument("--jitter", action="store_true")
+    p.add_argument("--drop", type=int, default=None, metavar="MACHINE",
+                   help="take this machine away mid-match; the others must carry on")
+    p.add_argument("--drop-mode", choices=("bye", "kill"), default="bye",
+                   help="bye: it exits cleanly at --drop-frame; kill: killed there, no BYE")
+    p.add_argument("--drop-frame", type=int, default=4200,
+                   help="frame of the drop (a match starts at ~1500; kill reads 600-frame stats)")
     p.add_argument("--input-delay", type=int, default=None,
                    help="fixed input delay in frames instead of auto (1 forces rollbacks)")
     exe = os.path.join(root, "build-pc", "melee.exe" if os.name == "nt" else "melee")
