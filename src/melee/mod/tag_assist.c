@@ -32,6 +32,7 @@
 #include <sysdolphin/baselib/random.h>
 
 #include <melee/ft/kinds/ftCommon/forward.h>
+#include <melee/ft/kinds/ftCommon/ftCo_Attack100.h>
 #include <melee/ft/kinds/ftCommon/ftCo_Fall.h>
 
 /// Each of these declares that character's move-Enter function(s) --
@@ -377,6 +378,10 @@ typedef struct TeamState {
     u32 despawn_grace;    ///< hard-cap frames left to wait on
                            ///< ftAnim_IsFramesRemaining before re-benching
                            ///< unconditionally once assist_timer hits 0
+    u32 hold_grace;       ///< the same, but for a grab in progress (either
+                           ///< side): much longer, since benching mid-grab
+                           ///< strands the other fighter (see
+                           ///< TagAssist_InGrab)
     u32 ready_frame;      ///< sFrameCounter value at which the first-ever
                            ///< TryCallAssist is allowed to proceed -- see
                            ///< TAG_ASSIST_FIRST_CALL_GRACE_FRAMES
@@ -512,6 +517,12 @@ typedef struct TeamState {
 /// real respawn to finish, short enough that a genuinely stuck
 /// ftAnim_IsFramesRemaining (idle loop) doesn't hold the assist forever.
 #define ASSIST_DESPAWN_GRACE_FRAMES 180
+
+/// How long the auto-bench waits on a grab in progress before giving up and
+/// releasing it (15 seconds). Far longer than ASSIST_DESPAWN_GRACE_FRAMES: a
+/// carry (DK's cargo) or a swallow (Yoshi's Neutral B) is meant to last, and
+/// the AI or the couch partner is what ends it. This is only the safety valve.
+#define ASSIST_HOLD_GRACE_FRAMES 900
 
 /// sTeams[0] = the Red team, sTeams[1] = Blue -- which two ports belong to
 /// each is no longer fixed by port number, but read from the CSS's own
@@ -855,6 +866,8 @@ static Fighter_GObj* TagAssist_GetIceClimberPartner(Fighter_GObj* gobj)
     return Player_GetEntityAtIndex(fp->player_id, 1);
 }
 
+static void TagAssist_ReleaseGrab(Fighter_GObj* gobj);
+
 /// Puts the assist into a genuinely inert dormant state: no CPU AI
 /// decision-making at all (x221F_b3, which skips Fighter_8006ABA0's call
 /// into ftCo_800B3900 outright -- see the module comment for why this,
@@ -871,6 +884,7 @@ static Fighter_GObj* TagAssist_GetIceClimberPartner(Fighter_GObj* gobj)
 static void TagAssist_SetBenched(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
+    TagAssist_ReleaseGrab(gobj);
     Fighter_GObj* partner = TagAssist_GetIceClimberPartner(gobj);
     if (partner != NULL) {
         TagAssist_SetBenched(partner);
@@ -1203,6 +1217,7 @@ static void TagAssist_TryCallAssist(TeamState* team)
     team->assist_out = true;
     team->assist_timer = ASSIST_DURATION_FRAMES;
     team->despawn_grace = ASSIST_DESPAWN_GRACE_FRAMES;
+    team->hold_grace = ASSIST_HOLD_GRACE_FRAMES;
     team->tag_ready_frame = sFrameCounter + TAG_MIN_CALL_TO_TAG_FRAMES;
     team->tags_this_call = 0;
     OSReport("[TagAssist] call: assist kind=%d player_id=%d is_cpu_team=%d "
@@ -1342,6 +1357,41 @@ static bool TagAssist_IsInDeathSequence(Fighter_GObj* gobj)
 /// it leads into) would hand a free escape from air dodge's own core
 /// risk/reward, the same way tagging out of hitstun would -- so it's
 /// treated as "can't act" too, even though the player chose to start it.
+/// True while the fighter is the GRABBER in an ordinary grab: reaching (Catch,
+/// CatchPull, CatchDash), holding (CatchWait, CatchAttack), the release
+/// (CatchCut) or mid-throw (Throw*). Benching or cancelling a fighter out of
+/// one of these strands the victim: they stay held in a Capture state with
+/// nobody left to throw or release them.
+static bool TagAssist_IsGrabbing(Fighter* fp)
+{
+    return fp->motion_id >= ftCo_MS_Catch && fp->motion_id <= ftCo_MS_ThrowLw;
+}
+
+/// True while `fp` is in a grab relationship with another fighter, on EITHER
+/// side, whatever the character: an ordinary grab, DK's cargo carry, Yoshi's
+/// Neutral B swallow, Kirby's inhale and the rest all point each side's
+/// victim_gobj at the other (ftCo_Capture*.c set it, ftCo_CaptureCut/Throw
+/// clear it). Motion IDs can't cover the character-specific ones, so this is
+/// the universal test.
+static bool TagAssist_InGrab(Fighter* fp)
+{
+    return fp->victim_gobj != NULL;
+}
+
+/// Lets go of whoever `gobj` is still holding, the way retail's own grab
+/// release does (ftCo_800DA698 puts the grabber in CatchCut and the victim in
+/// CaptureCut), so the victim is free before the grabber is benched or has
+/// its motion overwritten. A no-op unless it is actually holding someone.
+static void TagAssist_ReleaseGrab(Fighter_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    if (fp->victim_gobj != NULL && fp->motion_id >= ftCo_MS_Catch &&
+        fp->motion_id <= ftCo_MS_CatchAttack)
+    {
+        ftCo_800DA698(gobj, true);
+    }
+}
+
 static bool TagAssist_CantAct(Fighter_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
@@ -1368,6 +1418,13 @@ static bool TagAssist_CantAct(Fighter_GObj* gobj)
         return true;
     }
     sAirDodgeChain[slot] = false;
+
+    // Mid-grab as the grabber: tagging in must not cancel it out of the grab
+    // and the auto-bench must wait it out (TagAssist_UpdateTimer releases the
+    // victim itself if the wait runs out), or the victim is left stuck held.
+    if (TagAssist_IsGrabbing(fp) || TagAssist_InGrab(fp)) {
+        return true;
+    }
 
     // Held by an ordinary grab -- every one of these is the victim's own
     // "being carried/damaged/struggling" motion ID for a given grab type,
@@ -1532,12 +1589,22 @@ static void TagAssist_UpdateTimer(TeamState* team)
     // from whatever the opponent just landed -- wait it out like a real
     // opponent's assist would have to, same as tagging in already does
     // (TagAssist_TryTag).
+    // A grab in progress (either side, any character) gets its own, much
+    // longer wait: DK carrying or Yoshi holding someone would otherwise be
+    // benched with the victim still attached, leaving them stuck or gone.
+    if (TagAssist_InGrab(GET_FIGHTER(team->assist)) && team->hold_grace > 0) {
+        team->hold_grace--;
+        return;
+    }
     if ((TagAssist_IsInDeathSequence(team->assist) ||
         TagAssist_CantAct(team->assist)) && team->despawn_grace > 0)
     {
         team->despawn_grace--;
         return;
     }
+    // Still holding someone once the wait is up: let go first, since the Wait
+    // baseline below would drop the grab without ever releasing the victim.
+    TagAssist_ReleaseGrab(team->assist);
     Fighter_ChangeMotionState(team->assist, ftCo_MS_Wait, 0, 0.0f, 1.0f, 0.0f,
                               NULL);
     TagAssist_SpawnDespawnEffect(team->assist);
@@ -2609,6 +2676,7 @@ void TagAssist_OnReset(void)
         sTeams[i].assist_out = false;
         sTeams[i].assist_timer = 0;
         sTeams[i].despawn_grace = 0;
+        sTeams[i].hold_grace = 0;
         sTeams[i].point_eliminated = false;
         sTeams[i].eliminated_partner = NULL;
     }
