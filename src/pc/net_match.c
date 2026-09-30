@@ -194,6 +194,23 @@ static unsigned avoided_cursor;
 static GroupLobby glob;
 static bool group_mode, group_lobby_up, group_target_known;
 static struct pc_dht_endpoint group_target; /* the host's endpoint, network order */
+/* A second place the host may be: the DHT record and the pairing server each
+ * name one, and the server may instead have paired us with another guest, so
+ * a guest sends what it says to the host to both. */
+static struct pc_dht_endpoint group_alt;
+static bool group_alt_known;
+static struct pc_dht_endpoint group_rdv_peer; /* the server's match, until the host answers */
+static uint64_t group_rdv_at;
+static bool group_rdv_open;
+static void group_note_target(struct pc_dht_endpoint ep) {
+    if (!group_target_known) {
+        group_target = ep;
+        group_target_known = true;
+    } else if (ep.address != group_target.address || ep.port != group_target.port) {
+        group_alt = ep;
+        group_alt_known = true;
+    }
+}
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -642,8 +659,7 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
             local ? " (same network, also dialing its LAN address)" : "");
         if (group_mode) {
             /* the lobby dials the host's LAN address when it is on our network */
-            group_target = local ? lan : ep;
-            group_target_known = true;
+            group_note_target(local ? lan : ep);
         } else {
             add_hello_target(ep);
             if (local)
@@ -1239,6 +1255,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     opponent[0] = 0;
     have_peer = agreed = false;
     group_mode = group_lobby_up = group_target_known = false;
+    group_alt_known = group_rdv_open = false;
     handshake_done = barrier_sent = barrier_received = false;
     publication = 0;
     publication_reason = NULL;
@@ -1339,11 +1356,40 @@ static void group_send(void* ctx, uint32_t ip, uint16_t port, const void* data, 
     (void)ctx;
     struct pc_dht_endpoint to = {htonl(ip), port};
     send_packet(data, (size_t)len, &to);
+    if (!glob.host && group_alt_known)
+        send_packet(data, (size_t)len, &group_alt);
 }
 /* Bring the lobby up once we know our own public endpoint (and, as a guest,
  * the host's), then drive it; when the roster is agreed open the session. */
 static void group_poll(uint64_t now) {
     direct_poll(now);
+    /* The pairing server's part: it pairs two queued players on the host's
+     * topic and both send at once, which opens their NATs. A guest takes the
+     * match as the host's endpoint; the host sends the guest a first packet
+     * (which is what opens its side) and queues again for the next one. */
+    pc_rdv_poll(now);
+    struct pc_dht_endpoint mate, mate_lan;
+    if (pc_rdv_take_match(&mate, &mate_lan)) {
+        bool same = mate_lan.address && mate_lan.port && mate.address == pc_rdv_public_ip();
+        struct pc_dht_endpoint use = same ? mate_lan : mate;
+        if (target[0]) {
+            group_note_target(use);
+            group_rdv_peer = mate;
+            group_rdv_at = now;
+            group_rdv_open = true;
+        } else {
+            for (int i = 0; i < 3; i++)
+                send_packet("MPG0", 4, &use);
+            pc_rdv_retry_avoiding(&mate);
+        }
+    }
+    if (group_rdv_open && group_lobby_up && glob.state != GL_COLLECTING)
+        group_rdv_open = false; /* the host answered */
+    else if (group_rdv_open && now - group_rdv_at > 6000) {
+        /* Probably another guest: ask the server for someone else. */
+        group_rdv_open = false;
+        pc_rdv_retry_avoiding(&group_rdv_peer);
+    }
     if (!group_lobby_up) {
         struct pc_dht_endpoint pub;
         bool guest = target[0] != 0;
@@ -1395,7 +1441,10 @@ int pc_net_match_group_count(void) {
     return group_mode && group_lobby_up && glob.host ? group_lobby_count(&glob) : 0;
 }
 bool pc_net_match_group_begin(void) {
-    return group_mode && group_lobby_up && group_lobby_start(&glob, SDL_GetTicks());
+    if (!group_mode || !group_lobby_up || !group_lobby_start(&glob, SDL_GetTicks()))
+        return false;
+    pc_rdv_stop(); /* nobody else joins now */
+    return true;
 }
 void pc_net_match_poll(void) {
     uint64_t now = SDL_GetTicks();
