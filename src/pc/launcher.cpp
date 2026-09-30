@@ -537,7 +537,7 @@ class Launcher final : public Rml::EventListener {
         }
         if (id == "discord" || id == "settings-discord") {
             status("Opening Discord in browser...");
-            SDL_OpenURL("https://discord.gg/aurt34svq");
+            SDL_OpenURL("https://discord.gg/UVsxZSUXFR");
             return;
         }
         if (tab_index(id) >= 0) {
