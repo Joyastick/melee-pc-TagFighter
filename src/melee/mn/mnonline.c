@@ -91,7 +91,7 @@ static const char* notice;
 static char party_text[5][40];
 static const char* const party_descriptions[] = {
     "Link with a teammate online. Select again to leave the party.",
-    "Your fighter. A opens TEAM SELECT.",
+    "Your fighter for the party. A picks one.",
     "The fighter your partner picked (MATE).",
     "Who starts on point. You and your partner can both swap it.",
     "Search Matchmaking as a duo with your partner.",
@@ -150,7 +150,10 @@ static void build_party_text(void)
         snprintf(party_text[PARTY_MATE], sizeof party_text[0], "MATE: -");
         snprintf(party_text[PARTY_POINT], sizeof party_text[0], "POINT: -");
     }
-    snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s", saved ? you : "NOT SET");
+    (void) saved;
+    snprintf(party_text[PARTY_YOU], sizeof party_text[0], "YOU: %s",
+             gmOnline_SavedFighter() >= 0 ? gmOnline_FighterName(gmOnline_SavedFighter()) :
+                                            "NOT SET");
     bool mate_searching = false;
 #ifdef TARGET_PC
     mate_searching = pc_net_party_partner_searching();
@@ -301,6 +304,16 @@ static void enterMatchmaking(void)
     enterOnline(ONLINE_KIND_UNRANKED);
 }
 
+/* The Party page's one-fighter pick: TEAM SELECT with door 1 only, saved apart
+ * from the Matchmaking team. */
+static void enterPartySelect(void)
+{
+    tagSetup();
+    gmOnline_SetTeamSelectThenSearch(false);
+    gmOnline_SetPartySelect(true);
+    enterOnline(ONLINE_KIND_TEAM_SELECT);
+}
+
 static void enterTeamSelect(void)
 {
     tagSetup();
@@ -383,7 +396,7 @@ static void confirmMeleeVs(void)
             enterOnline(ONLINE_KIND_DIRECT);
             break;
         case PARTY_YOU:
-            enterTeamSelect();
+            enterPartySelect();
             break;
         case PARTY_POINT:
             sfxForward();

@@ -2049,6 +2049,21 @@ extern "C" void pc_set_meleevs_team(const uint8_t team[9]) {
     std::string error;
     launcher::save_preferences(config_path, prefs, error);
 }
+extern "C" int pc_get_party_pick(void) {
+    if (prefs.party_pick.size() != 2)
+        return -1;
+    return std::stoi(prefs.party_pick, nullptr, 16);
+}
+extern "C" void pc_set_party_pick(int ckind) {
+    static const char hex[] = "0123456789abcdef";
+    prefs.party_pick.clear();
+    if (ckind >= 0 && ckind < 256) {
+        prefs.party_pick += hex[(ckind >> 4) & 15];
+        prefs.party_pick += hex[ckind & 15];
+    }
+    std::string error;
+    launcher::save_preferences(config_path, prefs, error);
+}
 extern "C" int pc_get_net_port(void) {
     const char* env_port = getenv("MELEE_NET_PORT");
     if (env_port && *env_port) {

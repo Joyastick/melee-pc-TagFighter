@@ -27,6 +27,11 @@ OnlineKind gmOnline_GetKind(void);
 /* True while the TEAM SELECT CSS is up (mncharsel.c restricts it to the
  * two local ports, one team, no costume or team changes). */
 bool gmOnline_IsTeamSelect(void);
+/* True while that CSS is the Party page's one-fighter pick: only door 1 is
+ * open and confirming saves the party pick, not a team. */
+bool gmOnline_IsPartySelect(void);
+/* The next TEAM SELECT is the Party page's one-fighter pick. */
+void gmOnline_SetPartySelect(bool value);
 /* A Matchmaking team has been saved by TEAM SELECT. */
 bool gmOnline_HasSavedTeam(void);
 /* The saved team for the Duo Party page: both fighters' names, whether the

@@ -56,6 +56,10 @@ struct Preferences {
     // MeleeVS Matchmaking team from TEAM SELECT: the 9-byte PcNetTeam
     // (net.h) as 18 lowercase hex digits; empty until a team is saved.
     std::string meleevs_team;
+    // The fighter picked for a Party (one CharacterKind byte) as 2 lowercase hex
+    // digits; empty until one is picked. Kept apart from meleevs_team so a
+    // party never touches the solo Matchmaking team.
+    std::string party_pick;
 };
 DiscInfo inspect_disc(const std::string& path);
 Verification verify_disc(

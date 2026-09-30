@@ -115,6 +115,12 @@ static inline bool teamSelectOn(void)
     return gmOnline_IsTeamSelect();
 }
 
+/// The Party page's pick: the same CSS with door 1 only (no partner or CPU).
+static inline bool partySelectOn(void)
+{
+    return gmOnline_IsPartySelect();
+}
+
 /// Tag Battle's own CSS title ("Melee"/"VS" two-tone) and per-door "POINT"
 /// labels, in place of the borrowed "TEAM BATTLE" banner. Created once by
 /// mnCharSel_802640A0 (where the SIS context ctx is in scope), updated every
@@ -3880,8 +3886,8 @@ static void teamSelectFrame(void)
     for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
         CSSDoor* dp = &mnCharSel_803F0DFC.doors[i];
         PlayerInitData* p = &mnCharSel_804D6CB0->vs.start.players[i];
-        u8 kind = i == 0 ? 0 : i == 1 ? dp->p_kind : 3;
-        if (i == 1 && kind == 3) {
+        u8 kind = i == 0 ? 0 : i == 1 && !partySelectOn() ? dp->p_kind : 3;
+        if (i == 1 && kind == 3 && !partySelectOn()) {
             kind = 1;
         }
         if (dp->p_kind != kind || (i < 2 && dp->team != 0)) {
@@ -3997,7 +4003,12 @@ void fn_80262F44(HSD_GObj* gobj)
             }
         }
 
+#ifdef TARGET_PC
+        /* The Party page's pick has one door: one valid player is enough. */
+        if (valid_count >= (partySelectOn() ? 1 : 2)) {
+#else
         if (valid_count >= 2) {
+#endif
             // Tag Battle needs exactly two players on Red and two on Blue --
             // TagAssist_OnFighterInputFrame pairs players by their chosen
             // team color, so anything else leaves someone with no partner
@@ -4016,7 +4027,7 @@ void fn_80262F44(HSD_GObj* gobj)
                     }
                 }
                 // TEAM SELECT is one team of two: both on Red.
-                if (team_select ? (red_count != 2 || blue_count != 0)
+                if (team_select ? (red_count != (partySelectOn() ? 1 : 2) || blue_count != 0)
                                 : (red_count != 2 || blue_count != 2))
                 {
                     goto hide;
@@ -5637,7 +5648,8 @@ s32 mnCharSel_802640A0(void)
             page->default_kerning = 1;
             page->font_size.x = 0.06f;
             page->font_size.y = 0.06f;
-            HSD_SisLib_803A6B98(page, 0.0f, 0.0f, "MATCHMAKING TEAM SELECT");
+            HSD_SisLib_803A6B98(page, 0.0f, 0.0f,
+                                partySelectOn() ? "PARTY FIGHTER" : "MATCHMAKING TEAM SELECT");
         }
 #endif
         mt = mnCharSel_804D6CB0->match_type;
@@ -5735,7 +5747,7 @@ s32 mnCharSel_802640A0(void)
                 /* TEAM SELECT: the saved team's doors 1-2 on Red (the
                  * online lobby filled slot_type), 3-4 shut. */
                 mnCharSel_803F0DFC.doors[i].team = 0;
-                if (i >= 2) {
+                if (i >= (partySelectOn() ? 1 : 2)) {
                     mnCharSel_803F0DFC.doors[i].p_kind = 3;
                 } else if (i == 0) {
                     mnCharSel_803F0DFC.doors[i].p_kind = 0;
@@ -5747,7 +5759,7 @@ s32 mnCharSel_802640A0(void)
                     mnCharSel_803F0DFC.doors[i].p_kind;
                 /* 2 = no Red/Blue team, so a shut door never counts as
                  * the team's default point (TagAssist_IsPortPoint). */
-                TagAssist_CssSyncPortTeam(i, i >= 2 ? 2 : 0);
+                TagAssist_CssSyncPortTeam(i, i >= (partySelectOn() ? 1 : 2) ? 2 : 0);
             } else if (sTagAutoPopulate) {
                 if (pc_net_active()) {
                     /* Online: net.c drives ports 0/1 (the two machines'

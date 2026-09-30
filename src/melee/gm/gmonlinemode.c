@@ -36,6 +36,8 @@ extern const char* pc_get_net_target(void);
 extern void pc_set_net_target(const char* code);
 extern bool pc_get_meleevs_team(uint8_t out[9]);
 extern void pc_set_meleevs_team(const uint8_t team[9]);
+extern int pc_get_party_pick(void);
+extern void pc_set_party_pick(int ckind);
 #include "pc/pc.h"
 #include <time.h>
 #endif
@@ -240,6 +242,17 @@ bool gmOnline_IsTeamSelect(void)
     return team_select_css;
 }
 
+static bool party_select; /* this TEAM SELECT is the Party page's fighter pick */
+bool gmOnline_IsPartySelect(void)
+{
+    return team_select_css && party_select;
+}
+
+void gmOnline_SetPartySelect(bool value)
+{
+    party_select = value;
+}
+
 void gmOnline_SetTeamSelectThenSearch(bool value)
 {
     team_select_then_search = value;
@@ -275,6 +288,19 @@ static void teamSelectPrefill(void)
     PlayerInitData* p = online_vs.start.players;
     PcNetTeam team;
     bool saved = loadSavedTeam(&team);
+    if (party_select) {
+        /* One fighter: door 1, on the saved party pick. */
+        int pick = pc_get_party_pick();
+        for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+            p[i].slot_type = i == 0 ? Gm_PKind_Human : Gm_PKind_NA;
+            p[i].team = 0;
+        }
+        if (pick >= 0 && pick < CKind_Playable_Count) {
+            p[0].ckind = pick;
+        }
+        TagAssist_SetExplicitPoint(0, 0);
+        return;
+    }
     for (int i = 0; i < 2; i++) {
         p[i].slot_type = i == 0 || (saved && team.fighter[1].human) ? Gm_PKind_Human
                                                                     : Gm_PKind_Cpu;
@@ -293,6 +319,11 @@ static void teamSelectPrefill(void)
 static void teamSelectSave(const PlayerInitData* p)
 {
     PcNetTeam team;
+    if (party_select) {
+        pc_set_party_pick(p[0].ckind);
+        pc_log_line("online: party pick saved %d", (int) p[0].ckind);
+        return;
+    }
     memset(&team, 0, sizeof team);
     for (int i = 0; i < 2; i++) {
         team.fighter[i].ckind = (int8_t) p[i].ckind;
@@ -414,14 +445,19 @@ void onExitCss(GameModeState* state)
         CSSData* css = gm_GetGameModeStateExitData(state);
         bool search = team_select_then_search;
         bool rematch = team_select_then_rematch;
-        team_select_css = false;
-        team_select_then_search = false;
-        team_select_then_rematch = false;
         if (css->pending_scene_change == CSSPendingSceneChange_2) {
+            team_select_css = false;
+            party_select = false;
+            team_select_then_search = false;
+            team_select_then_rematch = false;
             gm_ChangeGameModeAfterCurrentScene(GM_MENU); /* backed out */
             return;
         }
         teamSelectSave(css->vs.start.players);
+        team_select_css = false;
+        party_select = false;
+        team_select_then_search = false;
+        team_select_then_rematch = false;
         if (rematch) {
             /* Change team + rematch: back to the same opponent. */
             online_kind = ONLINE_KIND_DIRECT;
@@ -778,8 +814,8 @@ bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, i
 
 int gmOnline_SavedFighter(void)
 {
-    PcNetTeam team;
-    return loadSavedTeam(&team) ? team.fighter[0].ckind : -1;
+    int pick = pc_get_party_pick();
+    return pick >= 0 && pick < CKind_Playable_Count ? pick : -1;
 }
 
 const char* gmOnline_FighterName(int ckind)
