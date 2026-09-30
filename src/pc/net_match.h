@@ -32,6 +32,9 @@ bool pc_net_match_start(enum PcNetMatchMode mode, const char* target_code);
 bool pc_net_match_group_start(const char* host_code);
 int pc_net_match_group_count(void);
 bool pc_net_match_group_begin(void);
+/* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
+ * machine once the roster is out); false when not known yet. */
+bool pc_net_match_group_member(int i, char out[18]);
 void pc_net_match_stop(void);
 void pc_net_match_idle(void);
 void pc_net_match_warm(void);

@@ -1638,7 +1638,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 } else {
                     int count = pc_net_match_group_count();
                     for (int i = 1; i < count && i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
-                        snprintf(view.players[i].name, sizeof view.players[i].name, "PLAYER %d", i + 1);
+                        if (!pc_net_match_group_member(i, view.players[i].name)) {
+                            snprintf(view.players[i].name, sizeof view.players[i].name, "PLAYER %d", i + 1);
+                        }
                         view.players[i].ping_ms = -1;
                     }
                     view.player_count = count > 0 ? count : 1;

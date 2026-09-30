@@ -1400,6 +1400,11 @@ static void group_poll(uint64_t now) {
         self.pub_port = pub.port;
         self.lan_ip = ntohl(lan_address());
         self.lan_port = pc_dht_port();
+        {
+            char suffix[9], name[9];
+            if (pc_identity_parse_code(identity.code, suffix, name))
+                memcpy(self.name, name, 8);
+        }
         if (guest)
             group_lobby_join(&glob, &identity, &self, target_suffix, ntohl(group_target.address),
                 group_target.port, group_send, NULL, now, 120000);
@@ -1439,6 +1444,15 @@ bool pc_net_match_group_start(const char* host_code) {
 }
 int pc_net_match_group_count(void) {
     return group_mode && group_lobby_up && glob.host ? group_lobby_count(&glob) : 0;
+}
+bool pc_net_match_group_member(int i, char out[18]) {
+    const GroupMember* m = group_mode && group_lobby_up ? group_lobby_member(&glob, i) : NULL;
+    if (!m)
+        return false;
+    char suffix[9];
+    key_suffix(m->key, suffix);
+    snprintf(out, 18, "%s#%s", m->name, suffix);
+    return true;
 }
 bool pc_net_match_group_begin(void) {
     if (!group_mode || !group_lobby_up || !group_lobby_start(&glob, SDL_GetTicks()))

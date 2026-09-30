@@ -85,8 +85,17 @@ static uint32_t get32(const uint8_t* p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
+void group_name_clean(char out[9], const char* in8) {
+    int i = 0;
+    for (; i < 8 && in8[i] != '\0'; i++) {
+        unsigned char c = (unsigned char)in8[i];
+        out[i] = c >= 0x20 && c < 0x7f ? (char)c : '?';
+    }
+    memset(out + i, 0, (size_t)(9 - i));
+}
+
 int group_roster_encode(const GroupRoster* r, uint8_t* out, int cap) {
-    int need = 1 + r->n * (32 + 4 + 2 + 4 + 2 + 1 + 1);
+    int need = 1 + r->n * GROUP_MEMBER_WIRE;
     if (r->n > GROUP_MAX || cap < need) {
         return 0;
     }
@@ -106,6 +115,9 @@ int group_roster_encode(const GroupRoster* r, uint8_t* out, int cap) {
         *p++ = (uint8_t)m->lan_port;
         *p++ = m->team;
         *p++ = m->party;
+        memset(p, 0, 8);
+        memcpy(p, m->name, strnlen(m->name, 8));
+        p += 8;
     }
     return (int)(p - out);
 }
@@ -115,7 +127,7 @@ int group_roster_decode(GroupRoster* r, const uint8_t* in, int len) {
         return 0;
     }
     int n = in[0];
-    int need = 1 + n * (32 + 4 + 2 + 4 + 2 + 1 + 1);
+    int need = 1 + n * GROUP_MEMBER_WIRE;
     if (len < need) {
         return 0;
     }
@@ -136,6 +148,8 @@ int group_roster_decode(GroupRoster* r, const uint8_t* in, int len) {
         p += 2;
         m->team = *p++;
         m->party = *p++;
+        group_name_clean(m->name, (const char*)p);
+        p += 8;
     }
     return need;
 }

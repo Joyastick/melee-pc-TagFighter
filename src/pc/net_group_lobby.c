@@ -22,6 +22,7 @@ typedef struct Join {
     char host_suffix[8];
     uint32_t lan_ip;
     uint16_t lan_port;
+    char name[8]; /* the label of the sender's connect code */
     uint8_t sig[64];
 } Join;
 typedef struct Joined {
@@ -89,6 +90,7 @@ static void base(GroupLobby* l, const PcNetIdentity* id, const GroupMember* self
     l->id = *id;
     l->self = *self;
     memcpy(l->self.key, id->public_key, 32);
+    group_name_clean(l->self.name, self->name);
     l->send = send;
     l->ctx = ctx;
     l->started_ms = now;
@@ -145,6 +147,7 @@ static void send_join(GroupLobby* l) {
     memcpy(j.host_suffix, l->host_suffix, 8);
     j.lan_ip = l->self.lan_ip;
     j.lan_port = l->self.lan_port;
+    memcpy(j.name, l->self.name, 8);
     SIGN(l, &j);
     l->send(l->ctx, l->host_ip, l->host_port, &j, (int)sizeof j);
 }
@@ -212,6 +215,11 @@ bool group_lobby_start(GroupLobby* l, uint64_t now_ms) {
     return true;
 }
 
+const GroupMember* group_lobby_member(const GroupLobby* l, int i) {
+    bool known = l->host || l->state == GL_SETTLING || l->state == GL_READY;
+    return known && i >= 0 && i < l->roster.n ? &l->roster.m[i] : NULL;
+}
+
 const GroupRoster* group_lobby_roster(const GroupLobby* l, int* local) {
     if (l->state != GL_READY) {
         return NULL;
@@ -262,6 +270,7 @@ bool group_lobby_receive(GroupLobby* l, const void* data, int len, uint32_t src_
             l->roster.m[i].pub_port = src_port;
             l->roster.m[i].lan_ip = j.lan_ip;
             l->roster.m[i].lan_port = j.lan_port;
+            group_name_clean(l->roster.m[i].name, j.name);
         }
         Joined r;
         memset(&r, 0, sizeof r);

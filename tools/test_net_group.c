@@ -25,6 +25,7 @@ static GroupMember member(uint8_t k, uint32_t ip) {
     m.pub_port = 7000 + k;
     m.lan_ip = 0xC0A80000u | k; /* 192.168.0.k */
     m.lan_port = 8000 + k;
+    snprintf(m.name, sizeof m.name, "P%u", k);
     return m;
 }
 

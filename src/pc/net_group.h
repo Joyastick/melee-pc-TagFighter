@@ -23,7 +23,12 @@ typedef struct GroupMember {
     uint16_t lan_port;
     uint8_t team;  /* 0 = A, 1 = B */
     uint8_t party; /* members that queued together share it */
+    char name[9];  /* the NAME in NAME#SUFFIX, printable, "" if none; a label only */
 } GroupMember;
+
+/* Copy up to 8 bytes of a wire name into out, NUL-terminated, anything
+ * unprintable replaced by '?' (a name is only a label, but it gets drawn). */
+void group_name_clean(char out[9], const char* in8);
 
 /* Machine number = index; machine 0 hosts. Machines are ordered team A first,
  * then team B, so a team's machines are contiguous. */
@@ -48,10 +53,11 @@ bool group_from_parties(
  * second port to a CPU assist. -1 for a bad machine. */
 int group_port(const GroupRoster* r, int machine);
 
-/* Wire image: n, then per member key/endpoints/team/party, big-endian; the
+/* Wire image: n, then per member key/endpoints/team/party/name, big-endian; the
  * caller signs the bytes. decode validates lengths but not the roster (run
  * group_roster_check). Returns bytes used, 0 on failure. */
-#define GROUP_WIRE_MAX (1 + GROUP_MAX * (32 + 4 + 2 + 4 + 2 + 1 + 1))
+#define GROUP_MEMBER_WIRE (32 + 4 + 2 + 4 + 2 + 1 + 1 + 8)
+#define GROUP_WIRE_MAX (1 + GROUP_MAX * GROUP_MEMBER_WIRE)
 int group_roster_encode(const GroupRoster* r, uint8_t* out, int cap);
 int group_roster_decode(GroupRoster* r, const uint8_t* in, int len);
 

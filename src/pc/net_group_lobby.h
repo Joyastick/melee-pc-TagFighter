@@ -76,6 +76,9 @@ int group_lobby_count(const GroupLobby* l);
 /* Host: close the lobby with the machines that are in and send the roster.
  * False with fewer than two, or when not the host / not collecting. */
 bool group_lobby_start(GroupLobby* l, uint64_t now_ms);
+/* Host while collecting, everyone once the roster is known (GL_SETTLING on):
+ * machine i's entry, NULL when not known (yet). */
+const GroupMember* group_lobby_member(const GroupLobby* l, int i);
 /* Valid at GL_READY: the agreed roster and our machine number in it. */
 const GroupRoster* group_lobby_roster(const GroupLobby* l, int* local);
 

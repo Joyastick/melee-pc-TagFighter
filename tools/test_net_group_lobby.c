@@ -108,6 +108,7 @@ static GroupMember self_of(const Node* n) {
     m.pub_port = n->port;
     m.lan_ip = 0xC0A80000u | (n->ip & 255);
     m.lan_port = n->port;
+    snprintf(m.name, sizeof m.name, "N%u", (unsigned)(n->ip & 255));
     return m;
 }
 
@@ -168,6 +169,10 @@ static void all_ready(int n) {
         assert(memcmp(r->m[local].key, s_node[i].id.public_key, 32) == 0);
         /* the host recorded the endpoint the guest was seen at */
         assert(r->m[local].pub_ip == s_node[i].ip && r->m[local].pub_port == s_node[i].port);
+        /* and the label it sent, which every machine ends up with */
+        char want[9];
+        snprintf(want, sizeof want, "N%u", (unsigned)(s_node[i].ip & 255));
+        assert(strcmp(r->m[local].name, want) == 0);
     }
 }
 
