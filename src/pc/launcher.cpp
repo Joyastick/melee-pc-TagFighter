@@ -1954,8 +1954,14 @@ extern "C" bool pc_is_custom_textures_enabled(void) {
     return prefs.custom_textures;
 }
 extern "C" bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
+extern "C" bool gmOnline_IsTeamSelect(void);
 extern "C" bool pc_is_unlock_all_enabled(void) {
     bool unlock_all, frozen;
+    /* TEAM SELECT runs no network and no simulation (only the CSS saves a
+     * team), so it can show everyone; every match forces the same. */
+    if (gmOnline_IsTeamSelect()) {
+        return true;
+    }
     return pc_net_rules(&unlock_all, &frozen) ? unlock_all : prefs.unlock_all;
 }
 extern "C" bool pc_is_frozen_stadium_enabled(void) {
