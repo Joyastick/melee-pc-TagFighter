@@ -68,8 +68,8 @@ void group_lobby_join(GroupLobby* l, const PcNetIdentity* id, const GroupMember*
     const char* host_suffix, uint32_t host_ip, uint16_t host_port, GroupSend send, void* ctx,
     uint64_t now_ms, uint64_t timeout_ms);
 /* A datagram from src; true when it was a lobby message (whatever came of it). */
-bool group_lobby_receive(GroupLobby* l, const void* data, int len, uint32_t src_ip,
-    uint16_t src_port, uint64_t now_ms);
+bool group_lobby_receive(
+    GroupLobby* l, const void* data, int len, uint32_t src_ip, uint16_t src_port, uint64_t now_ms);
 void group_lobby_poll(GroupLobby* l, uint64_t now_ms);
 /* Host: how many machines are in, ourselves included. */
 int group_lobby_count(const GroupLobby* l);

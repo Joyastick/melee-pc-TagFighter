@@ -607,8 +607,8 @@ const PcNetTeam* pc_net_team(int machine) {
     return pc_net_matchmade() && machine >= 0 && machine < 2 ? &s_team[machine] : NULL;
 }
 
-void pc_net_set_group_layout(int machines, const int port0[], const bool slot1[],
-    const int partner_bind[]) {
+void pc_net_set_group_layout(
+    int machines, const int port0[], const bool slot1[], const int partner_bind[]) {
     for (int m = 0; m < NET_MAX_MACHINES; m++) {
         bool ok = m < machines;
         s_glay_port[m] = ok ? port0[m] : m;
@@ -634,8 +634,9 @@ void pc_net_local_team(PcNetTeam* out, int* partner_bind) {
 int pc_net_game_port(int machine, int slot) {
     if (net.npeers > 1) {
         if (s_glay_on && machine >= 0 && machine < NET_MAX_MACHINES) {
-            return slot == 0 ? s_glay_port[machine] :
-                   s_glay_slot1[machine] ? s_glay_port[machine] + 1 : -1;
+            return slot == 0             ? s_glay_port[machine] :
+                   s_glay_slot1[machine] ? s_glay_port[machine] + 1 :
+                                           -1;
         }
         return slot == 0 ? machine : -1;
     }
@@ -646,7 +647,7 @@ int pc_net_game_port(int machine, int slot) {
 int pc_net_partner_bind_of(int machine) {
     if (net.npeers > 1) {
         return s_glay_on && machine >= 0 && machine < NET_MAX_MACHINES ? s_glay_partner[machine] :
-                                                                          -1;
+                                                                         -1;
     }
     return machine == net.local  ? pc_net_local_partner_bind() :
            machine == net.remote ? pc_net_remote_partner_bind() :

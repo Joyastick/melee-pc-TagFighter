@@ -168,8 +168,8 @@ int pc_net_partner_bind_of(int machine); /* couch partner's Tag Bind, or < 0 */
  * Tag Bind (-1 none). Set after pc_net_connect_group succeeds; cleared by
  * pc_net_disconnect. Without it a group seats one player per machine on the
  * port of its machine number. */
-void pc_net_set_group_layout(int machines, const int port0[], const bool slot1[],
-    const int partner_bind[]);
+void pc_net_set_group_layout(
+    int machines, const int port0[], const bool slot1[], const int partner_bind[]);
 void pc_net_clear_group_layout(void);
 /* This machine's own team as it would go on the wire (the Matchmaking team
  * with the couch partner decided by whether a second controller is plugged

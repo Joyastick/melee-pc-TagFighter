@@ -884,8 +884,8 @@ static void rx_dispatch(int p, void* buf, int n) {
             /* One of several: recv_inputs decides whether the match goes on
              * without it (drop_ok) or ends as it always did. */
             pr->left = true;
-            pc_log_line("net: machine %d left (reason %d) at frame %d", pr->machine,
-                u->bye.reason, atomic_load(&s_frame_pub));
+            pc_log_line("net: machine %d left (reason %d) at frame %d", pr->machine, u->bye.reason,
+                atomic_load(&s_frame_pub));
             break;
         }
         s_rx_left = true;
@@ -1381,8 +1381,8 @@ static void drop_finish(int p, int32_t agreed, int donor) {
     if (agreed + 1 <= simulated_upto() && (s_rb_frame < 0 || agreed + 1 < s_rb_frame)) {
         s_rb_frame = agreed + 1;
     }
-    pc_log_line("net: machine %d dropped: its input is real to frame %d, neutral from %d on", pr->machine,
-        agreed, pr->drop_at);
+    pc_log_line("net: machine %d dropped: its input is real to frame %d, neutral from %d on",
+        pr->machine, agreed, pr->drop_at);
     for (int i = 0; i < net.npeers; i++) {
         if (!net.peers[i].dropped) {
             return;
@@ -2900,7 +2900,8 @@ static void predict(int32_t f) {
     static const WireFrame neutral;
     for (int i = 0; i < net.npeers; i++) {
         Peer* pr = &net.peers[i];
-        if (!pr->dropped && f > pr->remote_have) { /* a peer that has this frame keeps its real input */
+        if (!pr->dropped && f > pr->remote_have)
+        { /* a peer that has this frame keeps its real input */
             pr->remote_ring[f & (RING - 1)] =
                 pr->remote_have >= 0 ? pr->remote_ring[pr->remote_have & (RING - 1)] : neutral;
         }

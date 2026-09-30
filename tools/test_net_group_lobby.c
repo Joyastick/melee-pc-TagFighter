@@ -284,6 +284,7 @@ int main(void) {
     assert(group_lobby_receive(&s_node[0].l, p.data, p.len, 1, 1, s_now));
     assert(group_lobby_count(&s_node[0].l) == 2);
 
-    puts("PASS: lobby forms a signed roster over 25% loss, refuses strangers, forgeries and a fifth");
+    puts("PASS: lobby forms a signed roster over 25% loss, refuses strangers, forgeries and a "
+         "fifth");
     return 0;
 }

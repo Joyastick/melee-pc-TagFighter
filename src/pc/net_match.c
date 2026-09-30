@@ -193,9 +193,9 @@ static unsigned avoided_cursor;
  * session opens on that same socket. */
 static GroupLobby glob;
 static bool group_mode, group_lobby_up, group_target_known;
-static bool party_mode; /* the group lobby is a party link */
+static bool party_mode;                         /* the group lobby is a party link */
 static bool party_search, party_search_pending; /* a party leader queued / about to */
-static bool peer_party; /* the opponent's Hello says it is a party leader */
+static bool peer_party;                         /* the opponent's Hello says it is a party leader */
 #define NET_NO_PARTNER_BIND 0xFF
 static void party_match_begin(void);
 static bool pm_connect(void);
@@ -1182,7 +1182,8 @@ static bool party_receive(const void* data, size_t n, const struct pc_dht_endpoi
         return false;
     memcpy(&p, data, sizeof p);
     if (p.ver != 1 || p.machine != 1 - party.local || p.lobby_nonce != party.nonce ||
-        !signed_ok(party.roster.m[1 - party.local].key, p.sig, &p, sizeof p)) {
+        !signed_ok(party.roster.m[1 - party.local].key, p.sig, &p, sizeof p))
+    {
         static uint64_t logged;
         uint64_t t = SDL_GetTicks();
         if (t - logged > 5000) {
@@ -1374,9 +1375,8 @@ static bool pm_side_solo(PartySide* s) {
     s->fighter[0] = t.fighter[0].ckind;
     s->fighter[1] = t.fighter[1].ckind;
     s->human1 = pb >= 0;
-    s->cpu_level = t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ?
-                       t.fighter[1].cpu_level :
-                       9;
+    s->cpu_level =
+        t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ? t.fighter[1].cpu_level : 9;
     s->partner_bind = pb >= 0 ? (uint8_t)pb : NET_NO_PARTNER_BIND;
     s->point = pb >= 0 ? t.point & 1 : 0; /* a lone human starts on point */
     return true;
@@ -1658,9 +1658,8 @@ bool pc_net_match_party_rematch(int fighter) {
         prm.fighter[pm.local] = t.fighter[0].ckind;
         prm.fighter2[pm.local] = t.fighter[1].ckind;
         prm.human1[pm.local] = pb >= 0;
-        prm.cpu_level[pm.local] = t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ?
-                                      t.fighter[1].cpu_level :
-                                      9;
+        prm.cpu_level[pm.local] =
+            t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ? t.fighter[1].cpu_level : 9;
         prm.partner_bind[pm.local] = pb >= 0 ? (uint8_t)pb : NET_NO_PARTNER_BIND;
         prm.point[pm.local] = pb >= 0 ? t.point & 1 : 0;
     }
@@ -1736,8 +1735,8 @@ static bool pm_receive(const void* data, size_t n, const struct pc_dht_endpoint*
         if (!(party_search || peer_party) || pm.phase != PM_EXCHANGE || m.ver != 2 ||
             ep->address != peer.address || ep->port != peer.port ||
             memcmp(m.offer_hash, offer_hash, 20) || !signed_ok(peer_key, m.sig, &m, sizeof m) ||
-            m.n < 1 || m.n > 2 || group_roster_decode(&r, m.wire, m.rlen) != m.rlen ||
-            r.n != m.n || memcmp(r.m[0].key, peer_key, 32))
+            m.n < 1 || m.n > 2 || group_roster_decode(&r, m.wire, m.rlen) != m.rlen || r.n != m.n ||
+            memcmp(r.m[0].key, peer_key, 32))
             return true;
         if (!pm.have_theirs) {
             memset(&pm.theirs, 0, sizeof pm.theirs);
@@ -1768,9 +1767,9 @@ static bool pm_receive(const void* data, size_t n, const struct pc_dht_endpoint*
         PartyDesc d;
         memset(&d, 0, sizeof d);
         if (group_roster_decode(&d.roster, g.wire, g.rlen) != g.rlen ||
-            group_roster_check(&d.roster) != NULL || d.roster.n < 3 ||
-            g.team_size[0] < 1 || g.team_size[0] > 2 || g.team_size[1] < 1 ||
-            g.team_size[1] > 2 || g.team_size[0] + g.team_size[1] != d.roster.n)
+            group_roster_check(&d.roster) != NULL || d.roster.n < 3 || g.team_size[0] < 1 ||
+            g.team_size[0] > 2 || g.team_size[1] < 1 || g.team_size[1] > 2 ||
+            g.team_size[0] + g.team_size[1] != d.roster.n)
             return true;
         memcpy(d.fighter, g.fighter, 4);
         memcpy(d.point, g.point, 2);

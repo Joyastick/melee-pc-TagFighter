@@ -244,6 +244,24 @@ void on_rel_ack(const RelAck* k) {
     (void)k;
 }
 void rel_reset(void) {}
+/* the per-peer entry points net.c uses in a 3-4 machine match: the resume
+ * machine only ever talks to one peer, so they fall through to the plain ones */
+bool net_rel_send_peer(int peer, uint8_t type, const void* payload, int len) {
+    (void)peer;
+    return pc_net_send_reliable(type, payload, len);
+}
+void on_rel_from(int peer, const Rel* r, int n) {
+    (void)peer;
+    on_rel(r, n);
+}
+void on_rel_ack_from(int peer, const RelAck* k) {
+    (void)peer;
+    on_rel_ack(k);
+}
+int pc_net_partner_bind_of(int machine) {
+    (void)machine;
+    return -1;
+}
 
 /* net_handshake.c / net_sync.c */
 void rules_restore(void) {}
@@ -260,6 +278,7 @@ int pc_net_game_port(int machine, int slot) {
 bool pc_net_matchmade(void) {
     return false;
 }
+void pc_net_clear_group_layout(void) {}
 void adv_note(int remote_adv, int local_adv) {
     (void)remote_adv;
     (void)local_adv;
@@ -1327,7 +1346,7 @@ static void case_desync_checks_every_reported_frame(void) {
     peer_ck(HAVE + 5, 0x195); /* ahead of us, and it disagrees */
     peer_ck(HAVE + 7, 0x197); /* the next report must not bury it */
     check_desync();
-    assert(!net.desync_reported && s_ck_checked == HAVE);
+    assert(!net.desync_reported && net.peers[0].ck_checked == HAVE);
     peer_pads_as_predicted(); /* now we confirm through 198 */
     assert(confirmed_frame() == HAVE + 8);
     check_desync();
@@ -1345,7 +1364,7 @@ static void case_desync_checks_every_reported_frame(void) {
     peer_ck(HAVE + 7, 0x197);
     peer_pads_as_predicted();
     check_desync();
-    assert(!net.desync_reported && s_ck_checked == HAVE + 7);
+    assert(!net.desync_reported && net.peers[0].ck_checked == HAVE + 7);
     /* Before ck_from the lobbies differ by design: never compared. */
     setup();
     net.ck_from = HAVE + 6;

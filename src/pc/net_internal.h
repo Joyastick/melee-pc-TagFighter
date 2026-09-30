@@ -442,11 +442,11 @@ typedef struct Peer {
      * real up to drop_at - 1 and neutral from drop_at on. */
     bool left, drop_started, dropped;
     int32_t drop_at;
-    uint64_t drop_ns;         /* when this side started the drop */
-    bool ann_in[NET_MAX_PEERS];       /* survivor i's REL_DROP about it has arrived */
-    DropMsg ann[NET_MAX_PEERS];       /* ... and what it said (host order) */
-    DropMsg own_ann;                  /* what this side holds of it, sent to every survivor */
-    bool ann_sent[NET_MAX_PEERS];     /* ours to survivor i is queued */
+    uint64_t drop_ns;             /* when this side started the drop */
+    bool ann_in[NET_MAX_PEERS];   /* survivor i's REL_DROP about it has arrived */
+    DropMsg ann[NET_MAX_PEERS];   /* ... and what it said (host order) */
+    DropMsg own_ann;              /* what this side holds of it, sent to every survivor */
+    bool ann_sent[NET_MAX_PEERS]; /* ours to survivor i is queued */
     struct {
         uint16_t seq;
         uint64_t send_ns;

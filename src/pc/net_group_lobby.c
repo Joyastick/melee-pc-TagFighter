@@ -70,8 +70,8 @@ static void key_suffix(const uint8_t key[32], char out[9]) {
 }
 
 /* Every message ends in a 64-byte signature over the bytes before it. */
-#define SIGN(l, m) pc_identity_sign(&(l)->id, (m)->sig, (m), sizeof *(m) - sizeof (m)->sig)
-#define VERIFY(key, m) pc_identity_verify((key), (m)->sig, (m), sizeof *(m) - sizeof (m)->sig)
+#define SIGN(l, m) pc_identity_sign(&(l)->id, (m)->sig, (m), sizeof *(m) - sizeof(m)->sig)
+#define VERIFY(key, m) pc_identity_verify((key), (m)->sig, (m), sizeof *(m) - sizeof(m)->sig)
 
 static void fail(GroupLobby* l, const char* why) {
     l->state = GL_FAILED;
@@ -240,8 +240,8 @@ const GroupRoster* group_lobby_roster(const GroupLobby* l, int* local) {
     return &l->roster;
 }
 
-bool group_lobby_receive(GroupLobby* l, const void* data, int len, uint32_t src_ip,
-    uint16_t src_port, uint64_t now_ms) {
+bool group_lobby_receive(
+    GroupLobby* l, const void* data, int len, uint32_t src_ip, uint16_t src_port, uint64_t now_ms) {
     (void)now_ms;
     if (len < 6 || l->state == GL_IDLE || l->state == GL_FAILED) {
         return false;
@@ -404,7 +404,8 @@ void group_lobby_poll(GroupLobby* l, uint64_t now) {
     if (l->state == GL_IDLE || l->state == GL_FAILED || l->state == GL_READY) {
         return;
     }
-    bool waiting = !(l->host && l->state == GL_COLLECTING); /* a host may wait for guests for ever */
+    bool waiting =
+        !(l->host && l->state == GL_COLLECTING); /* a host may wait for guests for ever */
     if (waiting && l->timeout_ms != 0 && now - l->started_ms > l->timeout_ms) {
         fail(l, "the lobby timed out");
         return;

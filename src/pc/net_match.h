@@ -9,7 +9,13 @@ extern "C" {
 #endif
 enum PcNetMatchMode { PC_MATCH_DIRECT, PC_MATCH_UNRANKED, PC_MATCH_RANKED };
 /* PC_MATCH_PARTY: a party link (pc_net_match_party_start) is made; the search itself is over. */
-enum PcNetMatchState { PC_MATCH_SEARCH, PC_MATCH_CONNECT, PC_MATCH_READY, PC_MATCH_FAIL, PC_MATCH_PARTY };
+enum PcNetMatchState {
+    PC_MATCH_SEARCH,
+    PC_MATCH_CONNECT,
+    PC_MATCH_READY,
+    PC_MATCH_FAIL,
+    PC_MATCH_PARTY
+};
 #define PC_NET_CONTACTS_MAX 16
 typedef struct PcNetContact {
     char code[18];       /* NAME#SUFFIX as last seen */
@@ -65,8 +71,8 @@ bool pc_net_match_party_follow(void);
  * machine's fighter (a CharacterKind, machine order = team A's two, then B's)
  * and which of each team's two machines starts on point (0 or 1). */
 typedef struct PcNetGroupMatch {
-    int machines; /* 3 or 4 */
-    int local;    /* our machine number: team A's machines first */
+    int machines;     /* 3 or 4 */
+    int local;        /* our machine number: team A's machines first */
     int team_size[2]; /* machines per team: 2 is a party, 1 a solo or couch team */
     int fighter[4];   /* team A's two fighters, then B's; a party's are its machines' */
     int point[2];     /* which of each team's two fighters starts on point */
