@@ -464,6 +464,7 @@ static void setup(void) {
     net.active = true;
     net.local = 0;
     net.remote = 1;
+    net.peers[0].machine = 1; /* what connect_impl records for the peer */
     net.session = SESSION;
     net.seed = SEED;
     /* Mid-match means the match was agreed: session_established() is the
@@ -986,6 +987,7 @@ static void case_session_learned_only_from_rules(void) {
     setup();
     net.local = 1; /* the guest */
     net.remote = 0;
+    net.peers[0].machine = 0;
     net.session = 0; /* not told one yet: this is the learning window */
     net.hs = HS_PENDING;
     struct sockaddr_in dst, src;
@@ -1351,7 +1353,7 @@ static void case_desync_checks_every_reported_frame(void) {
     assert(confirmed_frame() == HAVE + 8);
     check_desync();
     assert(net.desync_reported);
-    assert(logged("net: DESYNC at frame 195 against machine 0 (local 00000bad remote 00000195)"));
+    assert(logged("net: DESYNC at frame 195 against machine 1 (local 00000bad remote 00000195)"));
     assert(logged_count("net: DESYNC") == 1);
     pc_net_disconnect();
 
