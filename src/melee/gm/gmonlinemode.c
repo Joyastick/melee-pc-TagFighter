@@ -328,6 +328,15 @@ static void teamSelectPrefill(void)
 static void teamSelectSave(const PlayerInitData* p)
 {
     PcNetTeam team;
+    if (!party_select) {
+        const char* forced = getenv("MELEE_TEAM_TEST_PICK"); /* test tooling: "a,b" */
+        int a, b;
+        if (forced && sscanf(forced, "%d,%d", &a, &b) == 2 && a >= 0 && b >= 0 &&
+            a < CKind_Playable_Count && b < CKind_Playable_Count) {
+            ((PlayerInitData*) p)[0].ckind = a;
+            ((PlayerInitData*) p)[1].ckind = b;
+        }
+    }
     if (party_select) {
         int pick = p[0].ckind;
         const char* forced = getenv("MELEE_PARTY_TEST_PICK"); /* test tooling: a fixed fighter */
@@ -1230,7 +1239,7 @@ static void partyAfterChange(bool then_rematch)
     online_kind = ONLINE_KIND_TEAM_SELECT;
     after_match = false; /* coming back to the lobby is not another choice */
     pam_active = false;
-    party_select = true;
+    party_select = !pam_solo; /* a solo or couch team picks both its fighters */
     party_after_css = true;
     team_select_then_search = !then_rematch;
     team_select_then_rematch = then_rematch;
@@ -1281,6 +1290,20 @@ static void partyAfterFollow(int pick)
 
 /* All four wanted a rematch and someone changes fighter: the ones who did pick
  * a new fighter, the rest go straight to waiting for the others. */
+/* Meet the other machines again: a solo or couch team brings the Matchmaking
+ * team the game has now (the team select may have changed it), a party member
+ * its one fighter. */
+static void partyRematchStart(int fighter)
+{
+    if (pam_solo) {
+        PcNetTeam team = matchmadeLocalTeam();
+        pc_net_set_matchmade(true, &team);
+    } else {
+        pc_net_set_matchmade(false, NULL);
+    }
+    pc_net_match_party_rematch(fighter);
+}
+
 static void partyRematchExecute(int pick)
 {
     if (pick == PAM_CHANGE_REMATCH) {
@@ -1290,7 +1313,7 @@ static void partyRematchExecute(int pick)
     after_match = false;
     pam_active = false;
     party_rematch_view = true;
-    pc_net_match_party_rematch(pam_my_fighter);
+    partyRematchStart(pam_my_fighter);
 }
 
 /* The after-match choice of a party match, the same four as a Matchmaking
@@ -1346,11 +1369,6 @@ static void partyAfterFrame(OnlineLobbyView* view)
             if (rep & (PAD_ANY_UP | PAD_ANY_DOWN)) {
                 int step = (rep & PAD_ANY_UP) ? 3 : 1;
                 pam_cursor[m] = (pam_cursor[m] + step) % 4;
-                if (pam_mixed && pam_cursor[m] == PAM_CHANGE_REMATCH) {
-                    /* a fighter change needs every machine to come back, which
-                     * only a party match can do */
-                    pam_cursor[m] = (pam_cursor[m] + step) % 4;
-                }
                 if (m == pam_local) sfxMove();
             } else if (trg & HSD_PAD_A) {
                 pam_pick[m] = pam_cursor[m];
@@ -1683,8 +1701,7 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
             if (party_rematch_pending) {
                 party_rematch_pending = false;
                 party_rematch_view = true;
-                pc_net_set_matchmade(false, NULL);
-                pc_net_match_party_rematch(party_picked >= 0 ? party_picked : pam_my_fighter);
+                partyRematchStart(party_picked >= 0 ? party_picked : pam_my_fighter);
                 party_picked = -1;
             } else if (party_follow) {
                 pc_net_set_matchmade(false, NULL);

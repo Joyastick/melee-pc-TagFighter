@@ -25,6 +25,8 @@ from party_link_test import wait_for, walk  # noqa: E402
 from party_match_test import to_link, wait_for_count  # noqa: E402
 
 PORTS = {"p0": "42331", "p1": "42332", "s": "42333"}
+PICKS = {"p0": "10", "p1": "11"}  # the party's fighters after the change
+SOLO_PICK = "12,13"               # the solo team's two fighters after the change
 
 
 def start(out, exe, disc, name, target, cache):
@@ -32,7 +34,8 @@ def start(out, exe, disc, name, target, cache):
     os.makedirs(os.path.join(d, "id"), exist_ok=True)
     return Game(d, exe, disc, port=PORTS[name], extra_env={
         "MELEE_IDENTITY_DIR": os.path.join(d, "id"), "MELEE_DIRECT_TARGET": target,
-        "MELEE_PARTY_TEST_AFTER": "1"}, cache_seed=cache)
+        "MELEE_PARTY_TEST_AFTER": "1", "MELEE_PARTY_TEST_PICK": PICKS.get(name, ""),
+        "MELEE_TEAM_TEST_PICK": SOLO_PICK}, cache_seed=cache)
 
 
 def main():
@@ -87,13 +90,41 @@ def main():
             print("team match:", line, flush=True)
             if line[0] != "3" or sorted(line[1:3]) != ["1", "2"] or "cpu" not in line[3] and "human" not in line[3]:
                 fails.append("not a 3 machine match: " + str(line))
-            # All three pick SAME FIGHTER - REMATCH (the cursor starts on it).
+            # Round 1: everyone picks CHANGE FIGHTER - REMATCH. The party members
+            # pick in the party pick, the solo team in the regular team select,
+            # and all three meet again with the new fighters.
+            time.sleep(10)
+            for g in games.values():
+                g.key("Down@100")
+                g.key("X@100")
+            for n, g in games.items():
+                if not wait_for(g, "party rematch with a fighter change", 60):
+                    fails.append(n + " never started the fighter change")
+            time.sleep(14)  # the pick screens load
+            for n, g in games.items():
+                saved = "party pick saved" if n != "s" else "team select saved"
+                want = g.text().count(saved) + 1
+                for _ in range(6):  # Start until the pick is saved (input is slow under load)
+                    g.key("Return@150")
+                    if wait_for_count(g, saved, want, 6):
+                        break
+            for n, g in games.items():
+                if not wait_for_count(g, "entering party match", 2, 240):
+                    fails.append(n + " never reached the second fight")
+            if not fails:
+                line = re.findall(r"matchmade match on stage \d+: (.*)", games["s"].text())[-1]
+                picks = sorted(re.findall(r"P\d (\d+)/", line))
+                print("second fight fighters", picks, flush=True)
+                if picks != sorted(["10", "11", "12", "13"]):
+                    fails.append("the fighters are not the ones picked: " + line)
+            # Round 2: all three pick SAME FIGHTER - REMATCH (the cursor starts on
+            # it), which starts the next fight in the same session.
             time.sleep(10)
             for g in games.values():
                 g.key("X@100")
             for n, g in games.items():
-                if not wait_for_count(g, "team match of", 2, 90):
-                    fails.append(n + " never started the rematch fight")
+                if not wait_for_count(g, "team match of", 3, 120):
+                    fails.append(n + " never started the same-session rematch fight")
     except SystemExit as e:
         fails.append(str(e))
     finally:

@@ -1453,6 +1453,10 @@ typedef struct PartyReadyMsg {
     int8_t fighter;
     uint8_t heard; /* bit i: we have the ready of machine i */
     uint64_t match_id;
+    /* A solo or couch team is one machine: its second fighter and how it is
+     * played (a CPU assist at cpu_level, or a couch player with a Tag Bind). */
+    int8_t fighter2;
+    uint8_t human1, cpu_level, partner_bind, point;
     uint8_t sig[64];
 } PartyReadyMsg;
 #pragma pack(pop)
@@ -1463,6 +1467,8 @@ static struct {
     bool have[4];
     uint8_t heard_by[4]; /* what machine i told us it has heard */
     int8_t fighter[4];
+    int8_t fighter2[4];
+    uint8_t human1[4], cpu_level[4], partner_bind[4], point[4]; /* solo machines' teams */
 } prm;
 static uint32_t party_games; /* rematch sessions so far: part of the next one's id and seed */
 static uint32_t prm_seed(void) {
@@ -1475,6 +1481,8 @@ static int prm_fighter(int slot) {
         int machine = pm_first(t) + k;
         if (prm.have[machine])
             return prm.fighter[machine];
+    } else if (prm.active && prm.have[pm_first(t)]) {
+        return k ? prm.fighter2[pm_first(t)] : prm.fighter[pm_first(t)];
     }
     return pm.desc.fighter[slot];
 }
@@ -1523,7 +1531,7 @@ static bool prm_receive(const void* data, size_t n, const struct pc_dht_endpoint
         return false;
     PartyReadyMsg m;
     memcpy(&m, data, sizeof m);
-    if (!prm.active || m.ver != 1 || m.machine >= pm.desc.roster.n || m.machine == pm.local ||
+    if (!prm.active || m.ver != 2 || m.machine >= pm.desc.roster.n || m.machine == pm.local ||
         m.match_id != prm.match_id ||
         !signed_ok(pm.desc.roster.m[m.machine].key, m.sig, &m, sizeof m))
         return true;
@@ -1532,6 +1540,11 @@ static bool prm_receive(const void* data, size_t n, const struct pc_dht_endpoint
         pc_log_line("match: party rematch, machine %d is back", m.machine);
     prm.have[m.machine] = true;
     prm.fighter[m.machine] = m.fighter;
+    prm.fighter2[m.machine] = m.fighter2;
+    prm.human1[m.machine] = m.human1 != 0;
+    prm.cpu_level[m.machine] = m.cpu_level >= 1 && m.cpu_level <= 9 ? m.cpu_level : 9;
+    prm.partner_bind[m.machine] = m.partner_bind;
+    prm.point[m.machine] = m.point & 1;
     prm.heard_by[m.machine] = m.heard;
     return true;
 }
@@ -1547,9 +1560,14 @@ static void prm_poll(uint64_t now) {
         PartyReadyMsg m;
         memset(&m, 0, sizeof m);
         m.magic = PRR_MAGIC;
-        m.ver = 1;
+        m.ver = 2;
         m.machine = (uint8_t)pm.local;
         m.fighter = prm.fighter[pm.local];
+        m.fighter2 = prm.fighter2[pm.local];
+        m.human1 = prm.human1[pm.local];
+        m.cpu_level = prm.cpu_level[pm.local];
+        m.partner_bind = prm.partner_bind[pm.local];
+        m.point = prm.point[pm.local];
         for (int i = 0; i < machines; i++)
             m.heard |= (uint8_t)((prm.have[i] ? 1 : 0) << i);
         m.match_id = prm.match_id;
@@ -1568,9 +1586,19 @@ static void prm_poll(uint64_t now) {
     /* keep answering for a moment so the slowest machine hears that we heard it */
     if (prm.done_at && now - prm.done_at > 1500) {
         prm.active = false;
-        for (int i = 0; i < machines; i++)
-            if (pm.desc.team_size[pm_team_of(i)] == 2)
+        for (int i = 0; i < machines; i++) {
+            int t = pm_team_of(i);
+            if (pm.desc.team_size[t] == 2) {
                 pm.desc.fighter[pm_slot_of(i)] = prm.fighter[i];
+            } else { /* a solo or couch team brings its whole team */
+                pm.desc.fighter[t * 2] = prm.fighter[i];
+                pm.desc.fighter[t * 2 + 1] = prm.fighter2[i];
+                pm.desc.human1[t] = prm.human1[i];
+                pm.desc.cpu_level[t] = prm.cpu_level[i];
+                pm.desc.partner_bind[t] = prm.partner_bind[i];
+                pm.desc.point[t] = prm.point[i];
+            }
+        }
         pm.desc.seed = prm_seed();
         party_games++;
         if (!pm_connect()) {
@@ -1612,9 +1640,30 @@ bool pc_net_match_party_rematch(int fighter) {
         bool lan = m->lan_ip && m->pub_ip == r->m[pm.local].pub_ip;
         prm.peer[i].address = htonl(lan ? m->lan_ip : m->pub_ip);
         prm.peer[i].port = lan ? m->lan_port : m->pub_port;
+        int t = pm_team_of(i);
         prm.fighter[i] = pm.desc.fighter[pm_slot_of(i)];
+        prm.fighter2[i] = pm.desc.fighter[t * 2 + 1];
+        prm.human1[i] = pm.desc.human1[t];
+        prm.cpu_level[i] = pm.desc.cpu_level[t];
+        prm.partner_bind[i] = pm.desc.partner_bind[t];
+        prm.point[i] = pm.desc.point[t];
     }
     prm.fighter[pm.local] = (int8_t)fighter;
+    if (pm.desc.team_size[pm_team_of(pm.local)] == 1) {
+        /* our own team as the game now has it (the regular team select may
+         * have changed it, both fighters and the point) */
+        PcNetTeam t;
+        int pb;
+        pc_net_local_team(&t, &pb);
+        prm.fighter[pm.local] = t.fighter[0].ckind;
+        prm.fighter2[pm.local] = t.fighter[1].ckind;
+        prm.human1[pm.local] = pb >= 0;
+        prm.cpu_level[pm.local] = t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ?
+                                      t.fighter[1].cpu_level :
+                                      9;
+        prm.partner_bind[pm.local] = pb >= 0 ? (uint8_t)pb : NET_NO_PARTNER_BIND;
+        prm.point[pm.local] = pb >= 0 ? t.point & 1 : 0;
+    }
     prm.have[pm.local] = true;
     prm.deadline = SDL_GetTicks() + PRR_WAIT_MS;
     prm.active = true;
