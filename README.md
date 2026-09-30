@@ -54,9 +54,12 @@ The full list, including known issues, is in [ROADMAP.md](ROADMAP.md).
 
 MeleeVS builds are on
 [this fork's releases page](https://github.com/Joyastick/melee-pc-TagFighter/releases),
-not upstream's (which only ships vanilla melee-pc). Grab the
-`Melee-Windows-x86_64-vX.Y.Z.zip` asset from the latest release, unzip it, and
-run `melee.exe`. You need a **Melee USA revision 2 (NTSC-U 1.02, GALE01)**
+not upstream's (which only ships vanilla melee-pc). Releases carry builds for
+Windows, Linux and macOS only (iOS and Android are not published). On Windows,
+grab the `Melee-Windows-x86_64-vX.Y.Z.zip` asset from the latest release,
+unzip it, and run `melee.exe`; on Linux use the AppImage or tarball, and on
+macOS the `Melee-macOS-arm64` zip (an Intel one is attached when it built).
+You need a **Melee USA revision 2 (NTSC-U 1.02, GALE01)**
 disc image. For building from source, see
 [melee-pc's build docs](https://github.com/999sian/melee-pc/blob/master/docs/building.md);
 the steps are the same for this fork.
