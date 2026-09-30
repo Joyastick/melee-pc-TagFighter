@@ -1133,25 +1133,31 @@ static struct {
     struct pc_dht_endpoint peer; /* network order; follows the partner's source address */
     int mate_fighter;
     uint8_t point, seq;
-    bool searching, mate_searching;
+    bool searching, mate_searching, heard;
+    unsigned tx, rx;
+    uint64_t next_log;
 } party;
 static int party_my_fighter = -1;
 static void party_drop(void) {
+    if (party.linked)
+        pc_log_line("match: party link closed (state %d)", (int)state);
     memset(&party, 0, sizeof party);
     party.mate_fighter = -1;
 }
-static void party_make(const GroupRoster* r, int local, uint64_t now) {
+static void party_make(const GroupRoster* r, int local, uint64_t now, uint64_t nonce) {
     party_drop();
     party.linked = true;
     party.roster = *r;
     party.local = local;
-    party.nonce = glob.lobby_nonce;
+    party.nonce = nonce;
     party.last_rx = now;
     const GroupMember* m = &r->m[1 - local];
     bool lan = m->lan_ip && m->pub_ip == r->m[local].pub_ip;
     party.peer.address = htonl(lan ? m->lan_ip : m->pub_ip);
     party.peer.port = lan ? m->lan_port : m->pub_port;
-    pc_log_line("match: party linked, we are machine %d", local);
+    uint32_t pip = ntohl(party.peer.address);
+    pc_log_line("match: party linked, we are machine %d (partner at %u.%u.%u.%u:%u)", local,
+        pip >> 24, (pip >> 16) & 0xFF, (pip >> 8) & 0xFF, pip & 0xFF, party.peer.port);
 }
 static void party_send(void) {
     PartyMsg p;
@@ -1165,7 +1171,8 @@ static void party_send(void) {
     p.point_seq = party.seq;
     p.searching = party.searching;
     sign_packet(&p, sizeof p);
-    send_packet(&p, sizeof p, &party.peer);
+    if (send_packet(&p, sizeof p, &party.peer))
+        party.tx++;
 }
 static bool party_receive(const void* data, size_t n, const struct pc_dht_endpoint* ep) {
     PartyMsg p;
@@ -1177,9 +1184,24 @@ static bool party_receive(const void* data, size_t n, const struct pc_dht_endpoi
         return false;
     memcpy(&p, data, sizeof p);
     if (p.ver != 1 || p.machine != 1 - party.local || p.lobby_nonce != party.nonce ||
-        !signed_ok(party.roster.m[1 - party.local].key, p.sig, &p, sizeof p))
+        !signed_ok(party.roster.m[1 - party.local].key, p.sig, &p, sizeof p)) {
+        static uint64_t logged;
+        uint64_t t = SDL_GetTicks();
+        if (t - logged > 5000) {
+            logged = t;
+            pc_log_line("match: party message refused (machine %d vs %d, nonce %s)", p.machine,
+                1 - party.local, p.lobby_nonce == party.nonce ? "ok" : "differs");
+        }
         return true; /* ours to drop */
+    }
+    if (!party.heard) {
+        party.heard = true;
+        uint32_t ip = ntohl(ep->address);
+        pc_log_line("match: party heard the partner from %u.%u.%u.%u:%u", ip >> 24,
+            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep->port);
+    }
     party.peer = *ep;
+    party.rx++;
     party.last_rx = SDL_GetTicks();
     if (party.mate_fighter != p.fighter)
         pc_log_line("match: party mate's fighter is %d", (int)p.fighter);
@@ -1222,6 +1244,7 @@ void pc_net_party_toggle_point(void) {
     party.next_send = 0;
 }
 void pc_net_party_leave(void) {
+    pc_log_line("match: leaving the party");
     party_drop();
 }
 void pc_net_party_poll(void) {
@@ -1236,6 +1259,11 @@ void pc_net_party_poll(void) {
         pc_log_line("match: party partner went silent, link dropped");
         party_drop();
         return;
+    }
+    if (now >= party.next_log) {
+        party.next_log = now + 8000;
+        pc_log_line("match: party link tx %u rx %u, last heard %u ms ago (state %d)", party.tx,
+            party.rx, (unsigned)(now - party.last_rx), (int)state);
     }
     if (now >= party.next_send) {
         party_send();
@@ -1491,6 +1519,29 @@ bool pc_net_match_party_follow(void) {
     }
     state = PC_MATCH_CONNECT;
     pc_net_set_datagram_handler(NULL);
+    return true;
+}
+bool pc_net_party_restore(void) {
+    if (!pm.desc_valid)
+        return false;
+    int first = pm.local & ~1; /* our team's two machines are 0-1 or 2-3 */
+    GroupRoster r;
+    memset(&r, 0, sizeof r);
+    r.n = 2;
+    r.m[0] = pm.desc.roster.m[first];
+    r.m[1] = pm.desc.roster.m[first + 1];
+    /* Both sides derive the same nonce from what they already share. */
+    uint8_t material[64 + 4], h[20];
+    memcpy(material, r.m[0].key, 32);
+    memcpy(material + 32, r.m[1].key, 32);
+    memcpy(material + 64, &pm.desc.seed, 4);
+    pc_dht_sha1(material, sizeof material, h);
+    uint64_t nonce;
+    memcpy(&nonce, h, 8);
+    party_make(&r, pm.local & 1, SDL_GetTicks(), nonce);
+    party.point = pm.desc.point[pm.local / 2];
+    party.seq = 0;
+    party.mate_fighter = pm.desc.fighter[pm.local ^ 1];
     return true;
 }
 bool pc_net_party_match(int* local, int fighter[4], int point[2]) {
@@ -1860,7 +1911,7 @@ static void group_poll(uint64_t now) {
         }
         pc_rdv_stop();
         if (party_mode) {
-            party_make(r, local, now);
+            party_make(r, local, now, glob.lobby_nonce);
             state = PC_MATCH_PARTY;
             return;
         }

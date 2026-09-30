@@ -2265,6 +2265,14 @@ int pc_net_peer_status(void) {
     return s_status;
 }
 
+int pc_net_machines_gone(void) {
+    int n = 0;
+    for (int i = 0; i < net.npeers; i++) {
+        n += net.peers[i].left || net.peers[i].dropped;
+    }
+    return n;
+}
+
 bool pc_net_desync(void) {
     return net.active && net.desync_reported;
 }

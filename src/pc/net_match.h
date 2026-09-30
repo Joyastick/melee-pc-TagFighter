@@ -64,7 +64,11 @@ bool pc_net_match_party_follow(void);
 /* The agreed party match while its session is up: our machine number, each
  * machine's fighter (a CharacterKind, machine order = team A's two, then B's)
  * and which of each team's two machines starts on point (0 or 1). */
-bool pc_net_party_match(int* local, int fighter[4], int point[2]); /* every frame, from anywhere: keeps the link alive */
+bool pc_net_party_match(int* local, int fighter[4], int point[2]);
+/* After a party match: link with our teammate again (their endpoint from the
+ * roster, no lobby), so the Party page shows them once both are back in the
+ * menus. False when there was no party match. */
+bool pc_net_party_restore(void); /* every frame, from anywhere: keeps the link alive */
 /* Machine i of the lobby as "NAME#SUFFIX" (the host while collecting, every
  * machine once the roster is out); false when not known yet. */
 bool pc_net_match_group_member(int i, char out[18]);

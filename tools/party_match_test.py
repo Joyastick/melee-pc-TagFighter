@@ -28,7 +28,8 @@ def start(out, exe, disc, name, target, cache):
     d = os.path.join(out, name)
     os.makedirs(os.path.join(d, "id"), exist_ok=True)
     return Game(d, exe, disc, port=PORTS[name], extra_env={
-        "MELEE_IDENTITY_DIR": os.path.join(d, "id"), "MELEE_DIRECT_TARGET": target},
+        "MELEE_IDENTITY_DIR": os.path.join(d, "id"), "MELEE_DIRECT_TARGET": target,
+        "MELEE_PARTY_TEST_AFTER": "1"},
         cache_seed=cache)
 
 
@@ -85,6 +86,27 @@ def main():
         for name, g in games.items():
             if not wait_for(g, "entering party match", 120):
                 fails.append(name + " never entered the fight")
+        if not fails:
+            # The fight is skipped (MELEE_PARTY_TEST_AFTER): all four are in the
+            # after-match lobby. One machine picks BACK TO PARTY, which ends it
+            # for all four (keys sent to the others would land on the Party page).
+            time.sleep(10)
+            games["a0"].key("Down@100")
+            time.sleep(0.5)
+            games["a0"].key("X@100")
+            for name, g in games.items():
+                if not wait_for(g, "after match: party leaves", 60):
+                    fails.append(name + " never left the after-match lobby")
+            for name, g in games.items():  # back on the Party page, teammate linked again
+                end = time.time() + 90
+                while time.time() < end and g.text().count("party linked, we are machine") < 2:
+                    time.sleep(1)
+                if g.text().count("party linked, we are machine") < 2:
+                    fails.append(name + " never re-linked with its teammate")
+            time.sleep(30)  # past the link's 20 s silence limit: it must be alive
+            for name, g in games.items():
+                if "partner went silent" in g.text():
+                    fails.append(name + " lost its teammate after the match")
     except SystemExit as e:
         fails.append(str(e))
     finally:

@@ -269,6 +269,9 @@ enum {
     PC_NET_PEER_RESUME
 };
 int pc_net_peer_status(void);
+/* 3-4 machine sessions: how many of the other machines have left or been
+ * dropped (the match goes on without them; the after-match lobby ends). */
+int pc_net_machines_gone(void);
 void pc_net_peer_status_clear(void);
 
 #ifdef __cplusplus

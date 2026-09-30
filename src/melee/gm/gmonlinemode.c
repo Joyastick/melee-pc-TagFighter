@@ -63,6 +63,18 @@ enum {
 static bool awaiting_rank_result;
 static bool party_queue;  /* this lobby is a party leader's Matchmaking search */
 static bool party_follow; /* this lobby joins the match our leader found */
+/* After a party match (four machines): each machine's pick from its synced
+ * pad, REMATCH or BACK TO PARTY, and its cursor. */
+enum { PAM_REMATCH, PAM_LEAVE };
+static int pam_local;
+static bool pam_active; /* the after-match lobby is a party match's */
+static int pam_pick[4];
+static int pam_cursor[4];
+static bool partyMatchActive(void)
+{
+    int local, fighter[4], point[2];
+    return pc_net_party_match(&local, fighter, point);
+}
 static void onEnterLobby(GameModeState*);
 static void onEnterCss(GameModeState*);
 static void onExitCss(GameModeState*);
@@ -343,6 +355,10 @@ void onEnterLobby(UNUSED GameModeState* state)
         am_cursor[0] = am_cursor[1] = 0;
         am_pick[0] = am_pick[1] = -1;
         am_outcome = AM_OUT_NONE;
+        for (int i = 0; i < 4; i++) {
+            pam_pick[i] = -1;
+            pam_cursor[i] = PAM_REMATCH;
+        }
     }
 #endif
 }
@@ -563,7 +579,8 @@ void onExitVs(GameModeState* state)
 #ifdef TARGET_PC
     /* Matchmaking skips RESULTS: the after-match lobby says who won and
      * asks what next. A tie still goes through sudden death first. */
-    if (pc_net_matchmade() && !gm_MatchHasMultipleWinners(&mei->match_end)) {
+    if ((pc_net_matchmade() || partyMatchActive()) &&
+        !gm_MatchHasMultipleWinners(&mei->match_end)) {
         matchmadeFinish(&mei->match_end);
     }
 #endif
@@ -584,7 +601,7 @@ void onExitSuddenDeath(GameModeState* state)
 #endif
     gmVsMelee_ExitSuddenDeath(state);
 #ifdef TARGET_PC
-    if (pc_net_matchmade()) {
+    if (pc_net_matchmade() || partyMatchActive()) {
         matchmadeFinish(&gmVsMelee_VsExitInfo.match_end);
     }
 #endif
@@ -609,7 +626,7 @@ void onExitResults(GameModeState* state)
     gmVsMelee_ExitResults(state, &online_vs, state_css);
 #ifdef TARGET_PC
     /* Matchmaking has no online CSS to go back to: the lobby asks what next. */
-    if (pc_net_matchmade()) {
+    if (pc_net_matchmade() || partyMatchActive()) {
         after_match = true;
         gm_SetNextGameModeStateId(state_lobby);
     }
@@ -837,6 +854,7 @@ static void matchmadeTail(u32 seed);
 static void matchmadeBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
+    pam_active = false;
     am_leaver = -1; /* the last game's after-match title has been shown */
     start->rules.is_teams = 1;
     for (int i = 0; i < GM_MAX_PLAYERS; i++) {
@@ -877,6 +895,8 @@ static void matchmadePartyBuild(u32 seed)
     if (!pc_net_party_match(&local, fighter, point)) {
         return;
     }
+    pam_local = local;
+    pam_active = true;
     for (int m = 0; m < 4; m++) {
         int team = m / 2;
         PlayerInitData* p = &start->players[pc_net_game_port(m, 0)];
@@ -1067,8 +1087,112 @@ static void afterMatchExecute(int me)
     }
 }
 
+/* Back to the Party page with our teammate linked again. */
+static void partyAfterLeave(void)
+{
+    after_match = false;
+    pam_active = false;
+    pc_net_party_restore();
+    pc_net_disconnect();
+    pc_net_match_idle();
+    pc_net_peer_status_clear();
+    gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+    gm_801A4B60();
+}
+
+/* The after-match choice of a party match: every machine picks REMATCH or BACK
+ * TO PARTY from its own synced pad, so all four read the same picks on the
+ * same frame. A rematch needs all four; anyone leaving (or dropping) ends the
+ * session for everyone, and each team goes back to its Party page. */
+static void partyAfterFrame(OnlineLobbyView* view)
+{
+    static const char* const label[2] = { "REMATCH", "BACK TO PARTY" };
+    static char tag[2][12];
+    int team = pam_local / 2;
+
+    view->title = am_result == AM_RESULT_NONE ? "MATCH OVER" :
+                  am_result == team           ? "Your team won!" :
+                                                "Your team lost.";
+    view->phase = LOBBY_PHASE_FOUND;
+    view->menu_count = 2;
+    view->menu[0] = label[0];
+    view->menu[1] = label[1];
+
+    if (am_outcome != AM_OUT_NONE) {
+        view->phase = LOBBY_PHASE_CONNECTING;
+        snprintf(view->message, sizeof view->message, "Back to the party...");
+        if (pc_net_frame() >= am_leave_frame || !pc_net_active()) {
+            am_outcome = AM_OUT_NONE;
+            partyAfterLeave();
+        }
+        return;
+    }
+    if (!pc_net_active() || pc_net_machines_gone() > 0) {
+        am_outcome = AM_OUT_LEAVE; /* someone is gone: no rematch */
+        am_leave_frame = 0;
+        return;
+    }
+    for (int m = 0; m < 4; m++) {
+        u8 port = (u8) pc_net_game_port(m, 0);
+        u64 rep = gm_801A36C0(port);
+        u64 trg = gm_GetButtonsTriggered(port);
+        int before = pam_pick[m];
+        if (pam_pick[m] < 0) {
+            if (rep & (PAD_ANY_UP | PAD_ANY_DOWN)) {
+                pam_cursor[m] = 1 - pam_cursor[m];
+                if (m == pam_local) sfxMove();
+            } else if (trg & HSD_PAD_A) {
+                pam_pick[m] = pam_cursor[m];
+            } else if (trg & HSD_PAD_B) {
+                pam_pick[m] = PAM_LEAVE;
+            }
+        } else if (trg & HSD_PAD_B) {
+            pam_pick[m] = -1;
+        }
+        if (m == pam_local && pam_pick[m] != before) {
+            if (pam_pick[m] == PAM_REMATCH) sfxForward();
+            else sfxBack();
+        }
+    }
+    int rematch = 0, leave = 0;
+    for (int m = 0; m < 4; m++) {
+        rematch += pam_pick[m] == PAM_REMATCH;
+        leave += pam_pick[m] == PAM_LEAVE;
+    }
+    for (int i = 0; i < 2; i++) {
+        int n = i == PAM_REMATCH ? rematch : leave;
+        snprintf(tag[i], sizeof tag[i], "%s%d/4", pam_pick[pam_local] == i ? "YOU " : "", n);
+        view->menu_tag[i] = tag[i];
+    }
+    view->menu_cursor = pam_pick[pam_local] >= 0 ? pam_pick[pam_local] : pam_cursor[pam_local];
+    snprintf(view->message, sizeof view->message, "%s",
+             pam_pick[pam_local] < 0 ? "A rematch needs all four players" :
+             leave == 0              ? "Waiting for the others..." : "");
+    view->hint = pam_pick[pam_local] < 0 ? "D-PAD: choose    A: confirm    B: back to party" :
+                                           "B: change your pick";
+    if (leave > 0) {
+        pc_log_line("after match: party leaves (%d rematch, %d leave)", rematch, leave);
+        am_outcome = AM_OUT_LEAVE;
+        am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
+        return;
+    }
+    if (rematch == 4) {
+        u32 seed = pc_net_match_seed() + ++am_game * 0x9E3779B9u;
+        pc_log_line("after match: party rematch %u, seed %u", am_game, seed);
+        after_match = false;
+        *HSD_RandSeedPtr = seed;
+        matchmadePartyBuild(seed);
+        gm_SetNextGameModeStateId(state_vs);
+        gm_801A4B60();
+    }
+}
+
 static void afterMatchFrame(OnlineLobbyView* view)
 {
+    if (pam_active) {
+        partyAfterFrame(view);
+        return;
+    }
     static const char* const label[4] = { "SAME TEAM - REMATCH", "CHANGE TEAM - REMATCH",
                                           "SAME TEAM - MATCHMAKE",
                                           "CHANGE TEAM - MATCHMAKE" };
@@ -1772,7 +1896,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     matchmadePartyBuild(pc_net_match_seed());
                     am_game = 0;
                     rematch_direct = false;
-                    gm_SetNextGameModeStateId(state_vs);
+                    if (getenv("MELEE_PARTY_TEST_AFTER")) {
+                        /* test tooling: straight to the after-match lobby */
+                        after_match = true;
+                        gm_SetNextGameModeStateId(state_lobby);
+                    } else {
+                        gm_SetNextGameModeStateId(state_vs);
+                    }
                     pc_log_line("lobby: entering party match at frame %d, seed %u", pc_net_frame(),
                                 pc_net_match_seed());
                 } else if (pc_net_matchmade()) {
