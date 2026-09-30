@@ -25,6 +25,13 @@ bool pc_net_match_start(enum PcNetMatchMode mode, const char* target_code);
 /* stop closes the DHT node; idle ends the attempt but keeps the node open.
  * warm opens (if needed) and polls an idle node while no search is running,
  * so menus and code entry pre-bootstrap it. */
+/* A 3-4 machine Direct match: the host passes NULL, guests the host's connect
+ * code, and the usual pc_net_match_poll/state drive it to PC_MATCH_READY. The
+ * host sees how many machines have joined (itself included) and closes the
+ * lobby with group_begin (false with fewer than two). */
+bool pc_net_match_group_start(const char* host_code);
+int pc_net_match_group_count(void);
+bool pc_net_match_group_begin(void);
 void pc_net_match_stop(void);
 void pc_net_match_idle(void);
 void pc_net_match_warm(void);

@@ -3,6 +3,7 @@
 #include "net_dht.h"
 #include "net_dht_item.h"
 #include "net.h"
+#include "net_group_lobby.h"
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "net_rendezvous.h"
@@ -186,6 +187,13 @@ static struct {
     uint64_t until;
 } avoided[4];
 static unsigned avoided_cursor;
+/* Group lobby (a 3-4 machine Direct match) over the DHT socket: the host's
+ * direct record is how guests find it, the lobby's JOIN/roster/GO messages
+ * (MPG1) share the socket with the DHT, and once the roster is agreed the
+ * session opens on that same socket. */
+static GroupLobby glob;
+static bool group_mode, group_lobby_up, group_target_known;
+static struct pc_dht_endpoint group_target; /* the host's endpoint, network order */
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -632,15 +640,21 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
         pc_log_line("match: direct record for %s -> %u.%u.%u.%u:%u%s", target, ip >> 24,
             (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port,
             local ? " (same network, also dialing its LAN address)" : "");
-        add_hello_target(ep);
-        if (local)
-            add_hello_target(lan);
+        if (group_mode) {
+            /* the lobby dials the host's LAN address when it is on our network */
+            group_target = local ? lan : ep;
+            group_target_known = true;
+        } else {
+            add_hello_target(ep);
+            if (local)
+                add_hello_target(lan);
+        }
         direct_next = SDL_GetTicks() + DIRECT_REPOLL_MS; /* pick up a host re-publish */
     } else {
         pc_log_line("match: no direct record for %s yet (status=%d)", target, (int)r->status);
         direct_next = SDL_GetTicks() + 2000;
     }
-    if (dial_next == UINT64_MAX)
+    if (dial_next == UINT64_MAX && !group_mode)
         dial_next = 0; /* first lookup done: now tell the host where we are */
 }
 /* Dial-back record: "MPB1", the dialer's identity key, public endpoint,
@@ -1061,6 +1075,11 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
     (void)unused;
     if (pc_rdv_receive(data, n, ep))
         return;
+    if (group_mode) {
+        if (group_lobby_up)
+            group_lobby_receive(&glob, data, (int)n, ntohl(ep->address), ep->port, SDL_GetTicks());
+        return; /* a group lobby has no Hello / Offer / Ping */
+    }
     if (n == sizeof(MatchPing)) {
         receive_ping(data, ep);
     } else if (n == sizeof(MatchHello)) {
@@ -1219,6 +1238,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     seed = 0;
     opponent[0] = 0;
     have_peer = agreed = false;
+    group_mode = group_lobby_up = group_target_known = false;
     handshake_done = barrier_sent = barrier_received = false;
     publication = 0;
     publication_reason = NULL;
@@ -1315,6 +1335,68 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     next_send = 0;
     return true;
 }
+static void group_send(void* ctx, uint32_t ip, uint16_t port, const void* data, int len) {
+    (void)ctx;
+    struct pc_dht_endpoint to = {htonl(ip), port};
+    send_packet(data, (size_t)len, &to);
+}
+/* Bring the lobby up once we know our own public endpoint (and, as a guest,
+ * the host's), then drive it; when the roster is agreed open the session. */
+static void group_poll(uint64_t now) {
+    direct_poll(now);
+    if (!group_lobby_up) {
+        struct pc_dht_endpoint pub;
+        bool guest = target[0] != 0;
+        if (!public_endpoint(&pub) || (guest && !group_target_known))
+            return;
+        GroupMember self = {0};
+        self.pub_ip = ntohl(pub.address);
+        self.pub_port = pub.port;
+        self.lan_ip = ntohl(lan_address());
+        self.lan_port = pc_dht_port();
+        if (guest)
+            group_lobby_join(&glob, &identity, &self, target_suffix, ntohl(group_target.address),
+                group_target.port, group_send, NULL, now, 120000);
+        else
+            group_lobby_host(&glob, &identity, &self, group_send, NULL, now, 120000);
+        group_lobby_up = true;
+        pc_log_line("match: group lobby %s", guest ? "joining" : "hosting");
+        return;
+    }
+    group_lobby_poll(&glob, now);
+    if (glob.state == GL_FAILED) {
+        fail(glob.why ? glob.why : "group lobby failed");
+    } else if (glob.state == GL_READY) {
+        int local;
+        const GroupRoster* r = group_lobby_roster(&glob, &local);
+        host = local == 0;
+        seed = 0;
+        if (host && !pc_identity_random(&seed, sizeof seed)) {
+            fail("no random source");
+            return;
+        }
+        pc_rdv_stop();
+        pc_log_line("match: group of %d agreed, we are machine %d", r->n, local);
+        if (!group_connect(r, local, pc_dht_take_socket(), seed)) {
+            fail("group connect failed");
+            return;
+        }
+        state = PC_MATCH_CONNECT;
+        pc_net_set_datagram_handler(NULL);
+    }
+}
+bool pc_net_match_group_start(const char* host_code) {
+    if (!pc_net_match_start(PC_MATCH_DIRECT, host_code))
+        return false;
+    group_mode = true;
+    return true;
+}
+int pc_net_match_group_count(void) {
+    return group_mode && group_lobby_up && glob.host ? group_lobby_count(&glob) : 0;
+}
+bool pc_net_match_group_begin(void) {
+    return group_mode && group_lobby_up && group_lobby_start(&glob, SDL_GetTicks());
+}
 void pc_net_match_poll(void) {
     uint64_t now = SDL_GetTicks();
     pc_upnp_want(pc_dht_port());
@@ -1339,6 +1421,10 @@ void pc_net_match_poll(void) {
                         return;
                 }
             }
+        }
+        if (group_mode) {
+            group_poll(now);
+            return;
         }
         direct_poll(now);
         pc_rdv_poll(now);
