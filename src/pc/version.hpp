@@ -26,6 +26,9 @@ struct SemVer {
 };
 
 const std::string& get_app_version();
+/// What the launcher shows: MELEE_VERSION_LABEL when the build set one (an RC),
+/// otherwise get_app_version(). Display only; never use it for compatibility.
+const std::string& get_display_version();
 const std::string& get_upstream_pc_version();
 bool is_update_available(std::string_view current_ver, std::string_view latest_ver);
 

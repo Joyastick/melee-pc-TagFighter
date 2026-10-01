@@ -49,7 +49,8 @@ enum { RDV_OFF, RDV_RESOLVING, RDV_HELLO, RDV_QUEUE, RDV_MATCHED, RDV_DOWN };
 static struct {
     int state;
     PcRdvSend send;
-    uint8_t topic[20], nonce[8], cookie[16];
+    uint8_t topic[20], topic2[20], nonce[8], cookie[16];
+    bool has_topic2;
     struct pc_dht_endpoint lan, avoid, peer, peer_lan;
     bool queued, match_ready;
     int tries, unanswered;
@@ -62,6 +63,7 @@ static char server_host[256], server_port[8];
 static uint8_t server_key[32];
 static struct pc_dht_endpoint server;
 static bool server_known;
+static bool server_multi; /* answered a version-2 HELLO: several topics per search */
 static uint32_t public_ip;
 /* NAT check: the server also answers HELLO on its port + 1. A router that
  * shows the two a different public port for us changes ports per
@@ -205,6 +207,11 @@ static void send_hello(void) {
     uint8_t p[HELLO_SIZE] = {0};
     header(p, 'H');
     memcpy(p + HDR, rdv.nonce, 8);
+    if (!server_multi) {
+        p[4] = 2; /* the multi-topic probe (see net_rendezvous.h) */
+        rdv.send(p, sizeof p, &server);
+        p[4] = 1;
+    }
     rdv.send(p, sizeof p, &server);
     if (nat_state == PC_RDV_NAT_UNKNOWN) {
         struct pc_dht_endpoint second = {server.address, (uint16_t)(server.port + 1)};
@@ -225,16 +232,26 @@ static void nat_observe(int which, uint16_t port) {
             nat_port[0], nat_port[1]);
 }
 
-static void send_join(void) {
+static void send_join_topic(const uint8_t topic[20]) {
     uint8_t p[JOIN_SIZE] = {0}, *q = p + HDR;
     header(p, 'J');
     memcpy(q, rdv.nonce, 8);
     memcpy(q + 8, rdv.cookie, 16);
-    memcpy(q + 24, rdv.topic, 20);
+    memcpy(q + 24, topic, 20);
     put_endpoint(q + 44, &rdv.lan);
     q[50] = 2; /* players wanted; 4 with 3-4 player online */
     put_endpoint(q + 51, &rdv.avoid);
     rdv.send(p, sizeof p, &server);
+}
+
+static void send_join(void) {
+    send_join_topic(rdv.topic);
+    if (rdv.has_topic2 && server_multi)
+        send_join_topic(rdv.topic2);
+}
+
+static bool our_topic(const uint8_t* t) {
+    return !memcmp(t, rdv.topic, 20) || (rdv.has_topic2 && !memcmp(t, rdv.topic2, 20));
 }
 
 static void send_leave(void) {
@@ -262,6 +279,15 @@ void pc_rdv_start(const uint8_t topic[20], uint32_t lan_ip, uint16_t lan_port, P
     rdv.lan.address = lan_ip;
     rdv.lan.port = lan_port;
     rdv.state = RDV_RESOLVING;
+}
+
+void pc_rdv_add_topic(const uint8_t topic[20]) {
+    if (rdv.state == RDV_OFF)
+        return;
+    memcpy(rdv.topic2, topic, 20);
+    rdv.has_topic2 = true;
+    if (rdv.state == RDV_QUEUE)
+        rdv.next_send = 0; /* JOIN it now */
 }
 
 void pc_rdv_stop(void) {
@@ -331,8 +357,8 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
     const uint8_t* p = data;
     if (size < HDR || memcmp(p, "MPS1", 4))
         return false;
-    if (!server_known || from->address != server.address || p[4] != 1 || rdv.state == RDV_OFF ||
-        memcmp(p + HDR, rdv.nonce, 8))
+    if (!server_known || from->address != server.address || rdv.state == RDV_OFF ||
+        !(p[4] == 1 || (p[4] == 2 && p[5] == 'C')) || memcmp(p + HDR, rdv.nonce, 8))
         return true;
     if (from->port == (uint16_t)(server.port + 1)) {
         /* The NAT check's second port only ever answers our HELLO. */
@@ -346,8 +372,18 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
     uint64_t now = SDL_GetTicks();
     switch (p[5]) {
     case 'C':
-        if (size != COOKIE_SIZE || rdv.state != RDV_HELLO ||
+        if (size != COOKIE_SIZE || (rdv.state != RDV_HELLO && rdv.state != RDV_QUEUE) ||
             !pc_identity_verify(server_key, p + size - SIG, p, size - SIG))
+            break;
+        if (p[4] == 2 && !server_multi) {
+            server_multi = true;
+            pc_log_line("pairing: server can wait on two topics per search");
+            if (rdv.state == RDV_QUEUE) {
+                rdv.next_send = 0; /* the version-1 cookie won: JOIN the second topic now */
+                break;
+            }
+        }
+        if (rdv.state != RDV_HELLO)
             break;
         memcpy(rdv.cookie, p + HDR + 8, 16);
         {
@@ -361,7 +397,7 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
         rdv.next_send = 0; /* JOIN now */
         break;
     case 'Q':
-        if (size != QUEUED_SIZE || rdv.state != RDV_QUEUE || memcmp(p + HDR + 24, rdv.topic, 20))
+        if (size != QUEUED_SIZE || rdv.state != RDV_QUEUE || !our_topic(p + HDR + 24))
             break;
         /* Unsigned: a forged one can at worst hand us a bad cookie, and it
          * already had to echo our random nonce. */
@@ -373,7 +409,7 @@ bool pc_rdv_receive(const void* data, size_t size, const struct pc_dht_endpoint*
         break;
     case 'M':
         if (size != MATCH_SIZE || (rdv.state != RDV_QUEUE && rdv.state != RDV_HELLO) ||
-            memcmp(p + HDR + 8, rdv.topic, 20) ||
+            !our_topic(p + HDR + 8) ||
             !pc_identity_verify(server_key, p + size - SIG, p, size - SIG))
             break;
         rdv.peer = get_endpoint(p + HDR + 28);

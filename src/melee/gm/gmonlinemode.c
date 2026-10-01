@@ -26,6 +26,7 @@
 #include <sysdolphin/baselib/random.h>
 #ifdef TARGET_PC
 #include "pc/net.h"
+#include "pc/net_dht.h"
 #include "pc/net_lan.h"
 #include "pc/net_identity.h"
 #include "pc/net_match.h"
@@ -37,6 +38,7 @@ extern void pc_set_net_target(const char* code);
 extern bool pc_get_meleevs_team(uint8_t out[9]);
 extern void pc_set_meleevs_team(const uint8_t team[9]);
 #include "pc/pc.h"
+#include <time.h>
 #endif
 
 /* GM_ONLINE: lobby -> CSS -> SSS -> VS -> (sudden death) -> results -> CSS,
@@ -862,6 +864,13 @@ static bool direct_editing;   /* on the code page */
 static bool direct_code_edit; /* X pressed: the D-pad changes the code */
 static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
+/* Recent opponents under "YOU": outside code editing, up/down walks them
+ * (and back to the code the page had) and fills the code, so START dials a
+ * contact exactly like a typed code. */
+static PcNetContact direct_contacts[ONLINE_LOBBY_CONTACTS];
+static int direct_contact_count;
+static int direct_contact_cursor; /* -1: the typed code */
+static char direct_typed[DIRECT_CODE_SLOTS + 1];
 
 /* Reconnect to the last opponent as a Matchmaking (fixed teams, random
  * stage) Direct session: the original host hosts its code, the other side
@@ -1103,7 +1112,51 @@ static void directEntryBegin(void)
     direct_editing = true;
     direct_code_edit = false;
     direct_error[0] = '\0';
-    pc_log_line("lobby: direct connect code entry, prefilled '%s'", direct_entry);
+    direct_contact_count =
+        pc_net_match_contacts(direct_contacts, ONLINE_LOBBY_CONTACTS);
+    direct_contact_cursor = -1;
+    for (int i = 0; i < direct_contact_count; i++) {
+        if (strcmp(direct_contacts[i].code, direct_entry) == 0) {
+            direct_contact_cursor = i;
+        }
+    }
+    snprintf(direct_typed, sizeof direct_typed, "%s", direct_entry);
+    pc_log_line("lobby: direct connect code entry, prefilled '%s', %d contacts",
+                direct_entry, direct_contact_count);
+}
+
+/* Up/down outside editing: -1 (the typed code), then each contact. */
+static void directContactStep(int step)
+{
+    int n = direct_contact_count + 1;
+    if (direct_contact_cursor < 0) {
+        snprintf(direct_typed, sizeof direct_typed, "%s", direct_entry);
+    }
+    direct_contact_cursor = (direct_contact_cursor + 1 + step + n) % n - 1;
+    snprintf(direct_entry, sizeof direct_entry, "%s",
+             direct_contact_cursor < 0
+                 ? direct_typed
+                 : direct_contacts[direct_contact_cursor].code);
+    direct_cursor = (int) strlen(direct_entry);
+    if (direct_cursor >= DIRECT_CODE_SLOTS) {
+        direct_cursor = DIRECT_CODE_SLOTS - 1;
+    }
+    direct_error[0] = '\0';
+}
+
+/* "just now", "5m ago", "3h ago", "12d ago". */
+static void directContactAge(char* out, size_t n, int64_t when)
+{
+    int64_t s = (int64_t) time(NULL) - when;
+    if (s < 60) {
+        snprintf(out, n, "just now");
+    } else if (s < 3600) {
+        snprintf(out, n, "%dm ago", (int) (s / 60));
+    } else if (s < 86400) {
+        snprintf(out, n, "%dh ago", (int) (s / 3600));
+    } else {
+        snprintf(out, n, "%dd ago", (int) (s / 86400));
+    }
 }
 
 /* Slots past the first blank stay blank, so the code is always contiguous. */
@@ -1294,7 +1347,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     const char* why = NULL;
     int state;
     int n;
-    u64 input = gm_GetButtonsTriggered(PAD_MAX_CONTROLLERS);
+    /* Live session: this machine's own game port only (pc_net_game_port:
+     * host 1 / guest 2 for Direct and LAN, host 1 / guest 3 for
+     * Matchmaking), so the peer's synced presses cannot drive this lobby. */
+    u64 input = gm_GetButtonsTriggered(
+        pc_net_active() ? (u8) pc_net_game_port(pc_net_local_player(), 0) : PAD_MAX_CONTROLLERS);
     bool keep_lobby = false; /* B was used on this page, not to leave it */
 
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
@@ -1333,6 +1390,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                         direct_cursor = DIRECT_CODE_SLOTS - 1;
                     }
                     sfxForward();
+                } else if (direct_contact_count > 0 &&
+                           (repeat & (PAD_ANY_UP | PAD_ANY_DOWN))) {
+                    directContactStep((repeat & PAD_ANY_DOWN) ? 1 : -1);
+                    sfxMove();
                 }
             } else if (input & (HSD_PAD_X | HSD_PAD_B | PAD_CANCEL)) {
                 /* Done editing; B here must not also leave the page. */
@@ -1354,9 +1415,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 edited = true;
             } else if (repeat & PAD_ANY_UP) {
                 directEntryCycle(1);
+                direct_contact_cursor = -1; /* now a typed code */
                 edited = true;
             } else if (repeat & PAD_ANY_DOWN) {
                 directEntryCycle(-1);
+                direct_contact_cursor = -1;
                 edited = true;
             }
             if (edited) {
@@ -1385,17 +1448,43 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 snprintf(view.message, sizeof view.message, "Friend's code: %s",
                          direct_entry[0] ? direct_entry : "none");
             }
+            view.contact_title = "RECENT OPPONENTS";
+            view.contact_count = direct_contact_count;
+            view.contact_cursor = direct_contact_cursor;
+            for (int i = 0; i < direct_contact_count; i++) {
+                lobbyCopyName(view.contact_code[i], direct_contacts[i].code);
+                directContactAge(view.contact_when[i], sizeof view.contact_when[i],
+                                 direct_contacts[i].last_played);
+            }
             view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        direct_contact_count > 0 ?
+                            (direct_entry[0] ? "START: connect    UP/DOWN: recent    X: edit    B: back" :
+                                               "START: host    UP/DOWN: recent    X: edit    B: back") :
                         direct_entry[0]  ? "START: connect    X: edit code    B: back" :
                                            "START: host your code    X: edit code    B: back";
             if (input & HSD_PAD_START) {
-                if (direct_entry[0] && !pc_identity_code_valid(direct_entry)) {
+                /* Only the eight characters after '#' identify a player (a
+                 * bare eight works too, and 0/1/8 read as O/I/B); the name
+                 * before it is just a label. */
+                char suffix[9], name[9];
+                bool parsed = direct_entry[0] &&
+                              pc_identity_parse_code(direct_entry, suffix, name);
+                bool own = parsed &&
+                           strcmp(suffix, pc_identity_code_suffix(
+                                              pc_net_match_local_code())) == 0;
+                if (direct_entry[0] && (!parsed || own)) {
                     sfxBack();
                     /* Held until the code changes: a one-frame message is
                      * invisible, and the player needs to know why nothing
                      * happened. */
-                    snprintf(direct_error, sizeof direct_error,
-                             "%s is not a connect code (NAME#AB2CDE3F)", direct_entry);
+                    if (own) {
+                        snprintf(direct_error, sizeof direct_error,
+                                 "That is your own code");
+                    } else {
+                        snprintf(direct_error, sizeof direct_error,
+                                 "%s is not a connect code (NAME#AB2CDE3F)",
+                                 direct_entry);
+                    }
                     snprintf(view.message, sizeof view.message, "%s", direct_error);
                     pc_log_line("lobby: direct connect rejected '%s'", direct_entry);
                 } else {
@@ -1460,9 +1549,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 /* The pairing server saw this router change ports per
                  * destination: say why no match may ever connect, unless
                  * the router forwards our port (net_upnp.c). */
-                snprintf(view.message, sizeof view.message, "%s",
-                         pc_upnp_mapped(NULL) ? "Searching... Strict NAT, port forwarded (UPnP)" :
-                                                "Searching... Strict NAT: matches may fail");
+                if (pc_upnp_mapped(NULL))
+                    snprintf(view.message, sizeof view.message,
+                             "Searching... Strict NAT, port forwarded (UPnP)");
+                else
+                    snprintf(view.message, sizeof view.message,
+                             "Strict NAT: enable router UPnP or forward UDP %u",
+                             (unsigned) pc_dht_port());
             } else {
                 snprintf(view.message, sizeof view.message, "%s", why ? why : "Searching for an opponent...");
             }

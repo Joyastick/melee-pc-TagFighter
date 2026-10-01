@@ -189,9 +189,8 @@ jobs:
 
   android:
     name: Android (arm64-v8a)
-    # Not part of releases (the release job does not need it) and there is no
-    # signing key for one, so skip tag builds: this also keeps a test-signed
-    # APK from being picked up by the release job's artifact download.
+    # Skipped on tags: there is no release signing key set up for Android, and
+    # the release job publishes only Windows, Linux and macOS anyway.
     if: github.ref_type != 'tag'
     runs-on: ubuntu-24.04
     steps:
@@ -326,7 +325,8 @@ jobs:
 
   release:
     name: Publish release
-    needs: [tests, linux, windows, ios, macos]
+    # iOS and Android are built on tags too but do not gate or ship a release.
+    needs: [tests, linux, windows, macos]
     if: startsWith(github.ref, 'refs/tags/MeleeVS-v')
     runs-on: ubuntu-24.04
     permissions:
@@ -350,7 +350,25 @@ jobs:
           # fork-specific notes from what actually merged since the last tag
           # instead. Beta tags are not marked prerelease here, matching how
           # this fork's own releases have always been published.
+          #
+          # Only Windows, Linux and macOS ship. iOS and Android still build on
+          # tags (a check that they compile) but are not published, and the
+          # download above fetches every artifact, so pick the assets by name
+          # rather than passing artifacts/*.
+          shopt -s nullglob
+          assets=(
+            artifacts/Melee-Windows-*.zip
+            artifacts/Melee-*.AppImage
+            artifacts/melee-linux-*.tar.gz
+            artifacts/Melee-macOS-*.zip
+          )
+          # The macOS Intel job may fail without failing the run, so its zip
+          # is optional; these three are what a release must have.
+          for need in 'Melee-Windows-x86_64-*.zip' 'Melee-x86_64-*.AppImage' 'Melee-macOS-arm64-*.zip'; do
+            compgen -G "artifacts/${need}" > /dev/null || { echo "missing release asset: ${need}"; exit 1; }
+          done
+          printf 'publishing: %s\n' "${assets[@]}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            artifacts/*
+            "${assets[@]}"

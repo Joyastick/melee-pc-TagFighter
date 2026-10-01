@@ -94,6 +94,9 @@
 #include <sysdolphin/baselib/lobj.h>
 #include <sysdolphin/baselib/mtx.h>
 #include <sysdolphin/baselib/random.h>
+#ifdef TARGET_PC
+#include "pc/slp.h"
+#endif
 
 extern MotionState* ftData_CharacterStateTables[Ft_Kind_Max];
 
@@ -1837,7 +1840,7 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                 s8* h = ftCo_ucf_raw_x[fp->x618_player_id];
                 h[2] = h[1];
                 h[1] = h[0];
-                h[0] = HSD_PadGameStatus[fp->x618_player_id].stickX;
+                h[0] = pc_pad_game_raw_x[fp->x618_player_id];
                 SET_STICKS(fp->input.lstick[0].x, fp->input.lstick[0].y,
                            HSD_PadGameStatus[fp->x618_player_id].nml_stickX,
                            HSD_PadGameStatus[fp->x618_player_id].nml_stickY);
@@ -1948,6 +1951,9 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                 }
             }
 
+#ifdef TARGET_PC
+            pc_slp_pre_frame(gobj); /* Slippi's SendGamePreFrame hook point */
+#endif
             Fighter_Spaghetti_8006AD10_Inner1(fp);
 
             TagAssist_OnFighterInputFrame(gobj);

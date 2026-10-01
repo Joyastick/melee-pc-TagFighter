@@ -27,17 +27,21 @@
  * codec, link simulator, reliable channel, handshake, time sync and
  * snapshots are the net_*.c modules listed in net_internal.h. */
 #include "compat.h"
+#include "pc/file_cache.h"
 #include "pc/net_internal.h"
+#include "pc/net_sfx.h"
 
 #include <dolphin/ar.h>
 #include <dolphin/os.h>
 #include <dolphin/vi.h>
+#include <melee/gm/gmvs.h>
 #include <melee/gm/gmvsmelee.h>
 #include <melee/lb/lb_0195.h>
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/random.h>
 
 #include <SDL3/SDL_error.h>
+#include <SDL3/SDL_events.h>
 #include <SDL3/SDL_thread.h>
 #include <SDL3/SDL_timer.h>
 #include <errno.h>
@@ -60,11 +64,19 @@ static int32_t s_remote_have = -1;    /* newest contiguous real remote frame */
 static int32_t s_remote_newest = -1;  /* newest frame the peer reported holding */
 static int32_t s_last_acked = -1;     /* newest local frame the peer holds */
 static int32_t s_rb_frame = -1;       /* oldest mispredicted frame not rolled back yet */
-static int32_t s_remote_ck_frame = -1;
-static uint32_t s_remote_ck;
-static uint32_t s_ck_ring[RING]; /* our checksum entering each frame */
-static bool s_heard;             /* any packet from the peer yet */
-static uint64_t s_last_rx_ns;    /* when the last accepted datagram arrived */
+/* The peer's checksums by frame. Each input packet reports one frame, the
+ * newest it has confirmed, and that is often ahead of ours; a single slot
+ * overwritten by every packet meant those frames were never compared from
+ * this side. Kept by frame instead, each is compared once we confirm it too
+ * (GGRS's pending-checksum map, bounded here by the ring). */
+static struct {
+    int32_t frame; /* -1: empty */
+    uint32_t ck;
+} s_rck[RING];
+static int32_t s_ck_checked = -1; /* newest frame compared against the peer's */
+static uint32_t s_ck_ring[RING];  /* our checksum entering each frame */
+static bool s_heard;              /* any packet from the peer yet */
+static uint64_t s_last_rx_ns;     /* when the last accepted datagram arrived */
 /* When the contiguous remote mark last moved, 0 before the first time. The
  * no-progress bound is measured from here, not from the start of a wait:
  * wait_remote's own clock restarts on every call, so a peer that advanced one
@@ -139,7 +151,13 @@ static uint64_t s_last_send_ns;
 static SDL_Thread* s_rx_thread; /* NULL: recv_inputs drains the socket itself */
 static atomic_bool s_rx_run;
 static SDL_Mutex* s_rx_lock;
-static atomic_int s_frame_pub;   /* net.frame as the receive thread may read it */
+static atomic_int s_frame_pub; /* net.frame as the receive thread may read it */
+/* send_inputs' verdict on whether the link wants tx_timer's mid-frame
+ * resend. Loss, jitter and rollback depth are game-thread state; the timer
+ * used to read them bare from its own thread. */
+static atomic_bool s_want_resend;
+/* send_inputs' adv, recomputed every tick (tx_timer stamps it on resends) */
+static atomic_int s_adv_pub;
 static int32_t s_rx_have = -1;   /* newest contiguous remote frame queued (acked) */
 static bool s_rx_left;           /* BYE or protocol mismatch seen: s_peer_left to be */
 static int s_rx_why;             /* the s_status that goes with it */
@@ -167,13 +185,9 @@ static bool s_warn_sock;
 static unsigned s_rx_malformed, s_rx_bad_src, s_rx_bad_sess, s_rx_bad_player, s_tx_would_block;
 static unsigned s_rx_bad_mac; /* datagrams refused by the authentication gate */
 
-/* Adaptive redundancy: unacked frames repeated per input packet, clamped to
- * loss and rollback depth; the value in force is reported as `red`. The
- * floor is normally REDUNDANCY_FLOOR and rises to the full window while a
- * reconnect refills a gap, so send_inputs pays a load rather than a test. */
-#define REDUNDANCY_FLOOR 4
+/* Unacked frames the newest input packet carried, reported as `red`: every
+ * one the peer has not acked, up to REDUNDANCY (send_inputs says why). */
 static int s_red_target = REDUNDANCY;
-static int s_red_floor = REDUNDANCY_FLOOR;
 
 /* Rollback re-run cost: every re-run tick of a rollback happens inside the
  * one present that started it, so a deep correction lands as a long frame.
@@ -198,6 +212,8 @@ static bool s_timer_tried;      /* SDL_AddTimer attempted this session */
  * Snapshot failure uses s_lockstep instead: earlier predicted frames must
  * remain eligible for correction. */
 static int s_scene_last = -1; /* scene_kind() at the last fresh tick */
+/* Lockstep frames a fight's first loads get before it predicts. */
+#define FIGHT_ENTRY_LEAD 10
 static bool s_rb_lost_logged; /* rb_lost: one log per session */
 
 static void barrier_raise(int32_t f) {
@@ -213,6 +229,51 @@ void pc_net_note_io(void) {
     if (SDL_GetCurrentThreadID() == s_game_thread) {
         int lead = in_fight() ? 2 : IO_QUIET;
         barrier_raise(net.frame + lead);
+    }
+}
+
+/* Files a netplay fight may load mid-match without raising the barrier.
+ * Every one is served synchronously from the file cache (pinned there, and
+ * fetched at fight entry), so the load completes inside the tick that asks
+ * for it on both peers, copies pristine bytes over whatever its buffer held,
+ * and a re-simulated tick re-runs exactly the same copy. The barrier used to
+ * be raised instead, and every rollback behind it was refused: a Pokemon
+ * Stadium transformation that landed while a remote input was still
+ * predicted locked the misprediction in and desynced the match (net_test
+ * --stage 3, "cannot roll back to frame 5818 (behind the barrier)"). Slippi
+ * preloads the same four archives for the same reason. A file joins this
+ * list only once whatever parses it tolerates a re-run: Stadium's parse
+ * refreshes its buffer first (grStadium_801D42B8), since that buffer may sit
+ * in memory no snapshot covers. */
+static const char* const s_pure_loads[] = {"GrPs1.dat", "GrPs2.dat", "GrPs3.dat", "GrPs4.dat"};
+
+bool pc_net_pure_load(const char* filename) {
+    if (!pc_net_deterministic() || filename == NULL) {
+        return false;
+    }
+    const char* base = strrchr(filename, '/');
+    base = base != NULL ? base + 1 : filename;
+    for (size_t i = 0; i < sizeof s_pure_loads / sizeof s_pure_loads[0]; i++) {
+        if (strcmp(base, s_pure_loads[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Fight entry, behind the barrier: have every pure load cached before the
+ * first frame that can predict. Machines that prewarm have them already. */
+static void pure_loads_fetch(void) {
+    static uint32_t fetched_session;
+    if (fetched_session == net.session) {
+        return;
+    }
+    fetched_session = net.session;
+    for (size_t i = 0; i < sizeof s_pure_loads / sizeof s_pure_loads[0]; i++) {
+        if (!pc_file_cache_require(s_pure_loads[i])) {
+            pc_log_line("net: %s could not be cached; its mid-match load will stop rollback",
+                s_pure_loads[i]);
+        }
     }
 }
 
@@ -358,13 +419,17 @@ static Uint32 SDLCALL tx_timer(void* ud, SDL_TimerID id, Uint32 interval) {
      * If the game thread is stalled in an asset load or DVD read (now - s_last_send_ns >= 16 ms),
      * keep sending keepalives every 7 ms so neither peer times out. */
     bool game_thread_quiet = (now - s_last_send_ns >= 16000000ull);
-    bool need_resend = (s_loss_pct >= 2 || jitter_us() >= 4000 || s_rb_depth_recent >= 2);
+    bool need_resend = atomic_load_explicit(&s_want_resend, memory_order_relaxed);
     if (s_last_valid && (now - s_last_send_ns >= 7000000ull) && (game_thread_quiet || need_resend))
     {
+        /* The pads are frozen, but the advantage is not: a resend carrying
+         * the adv from when the packet was built would feed the peer's phase
+         * ring a sample up to a frame old (longer across a load). */
+        s_last_pkt.adv = (int8_t)atomic_load_explicit(&s_adv_pub, memory_order_relaxed);
         send_packet(&s_last_pkt);
         s_last_send_ns = now;
     }
-    int32_t seen = net.frame;
+    int32_t seen = atomic_load_explicit(&s_frame_pub, memory_order_relaxed);
     SDL_UnlockMutex(net.tx_lock);
     /* Outside the lock: the log write must not hold up the sender, and the
      * stuck thread it signals may itself be waiting on this mutex. */
@@ -398,27 +463,27 @@ static void send_inputs(void) {
     if (first <= newest64 - RING) {
         first = newest64 - RING + 1;
     }
-    /* Repeat only as many unacked frames as loss and rollback depth warrant,
-     * clamped to REDUNDANCY: a clean link ships the floor, a lossy or bursty
-     * one widens toward the full window. A reconnect refills a gap of up to
-     * a whole ring, and every packet of it costs a round trip, so it raises
-     * the floor to the top of the window for the duration. */
-    int target = s_red_floor + 2 * s_loss_pct + s_rb_depth_recent;
-    if (target < s_red_floor) {
-        target = s_red_floor;
-    }
-    if (target > REDUNDANCY) {
-        target = REDUNDANCY;
-    }
-    s_red_target = target;
+    /* Every unacked frame, up to the packet's REDUNDANCY slots. The peer
+     * keeps contiguous data only, so a packet moves its mark at most `count`
+     * frames past what it had acked a round trip ago: delivery is count
+     * frames per round trip, and 60 Hz needs 60 * RTT of them. This used to
+     * ship only as many as loss and rollback depth asked for (4 on a clean
+     * link), which starved every link over ~66 ms of round trip: the remote
+     * fell behind, the window filled, the rollbacks deepened, and the depth
+     * was the one thing that widened the packet again -- the session held 60
+     * Hz only by rolling back 8 frames deep. GGPO, GGRS and Slippi all send
+     * the whole unacked span; loss costs nothing extra because every packet
+     * already repeats everything unacked, and a reconnect's refill (a whole
+     * ring's gap) goes out at the full width with no special case. */
     int64_t count = newest64 - first + 1;
-    if (count > target) {
-        count = target;
+    if (count > REDUNDANCY) {
+        count = REDUNDANCY;
     }
     if (count < 1) {
         count = 0;
         first = newest64;
     }
+    s_red_target = (int)count;
     for (int32_t i = 0; i < count; i++) {
         pk.pads[i] = s_local_ring[(first + i) & (RING - 1)];
     }
@@ -432,6 +497,9 @@ static void send_inputs(void) {
      * further ahead gives a frame back (net_sync.c time_sync). */
     int32_t adv = net.frame - 1 - s_remote_have;
     pk.adv = (int8_t)(adv < -127 ? -127 : adv > 127 ? 127 : adv);
+    atomic_store_explicit(&s_adv_pub, pk.adv, memory_order_relaxed);
+    atomic_store_explicit(&s_want_resend,
+        s_loss_pct >= 2 || jitter_us() >= 4000 || s_rb_depth_recent >= 2, memory_order_relaxed);
     uint64_t now = SDL_GetTicksNS();
     SDL_LockMutex(net.tx_lock);
     tx_flush();
@@ -503,7 +571,8 @@ static void send_bye(uint8_t reason) {
 /* One datagram's worth of game-thread work, host order. */
 typedef struct RxMsg {
     int len;    /* message bytes */
-    int rtt_us; /* 'A': round trip timed as it landed, -1 for none */
+    int rtt_us; /* 'A': round trip timed as it landed, -1 for none;
+                 * 'M': RX_REORDERED if it arrived behind a later seq */
     union {
         Hdr h;
         Packet pk;
@@ -521,6 +590,7 @@ typedef struct RxMsg {
  * drops the surplus and counts it (rx_full): input packets and reliable
  * messages are resent, and a later ack supersedes a lost one. */
 #define RXQ 256
+#define RX_REORDERED (-2)
 static RxMsg s_rxq[RXQ]; /* under s_rx_lock */
 static int s_rxq_head, s_rxq_n;
 
@@ -572,7 +642,7 @@ static int seq_check(uint16_t seq) {
  * the game thread applies the packet because its seq is what the peer times
  * its round trip by; its frame is s_rx_have, final once the packet is queued
  * (see the top of this section). */
-static void rx_input(const Packet* pk, int n) {
+static void rx_input(const Packet* pk, int n, bool reordered) {
     int32_t frame = atomic_load(&s_frame_pub);
     int count = pk->count > REDUNDANCY ? REDUNDANCY : pk->count;
     /* A peer can be at most window + delays ahead of us; anything else is
@@ -607,7 +677,7 @@ static void rx_input(const Packet* pk, int n) {
     if (count > 0 && first <= have + 1 && last > have && last < (int64_t)frame + RING / 2) {
         have = last;
     }
-    if (rx_push(pk, n, -1)) {
+    if (rx_push(pk, n, reordered ? RX_REORDERED : -1)) {
         s_rx_have = (int32_t)have;
     }
     send_ack(s_rx_have, pk->seq);
@@ -616,7 +686,7 @@ static void rx_input(const Packet* pk, int n) {
 /* The game thread's half of a packet rx_input queued. rx_input's rule over
  * the same packets in the same order, against a net.frame never behind the
  * one it checked, so a drain leaves s_remote_have at or above s_rx_have. */
-static void on_inputs(const Packet* pk) {
+static void on_inputs(const Packet* pk, bool reordered) {
     int count = pk->count > REDUNDANCY ? REDUNDANCY : pk->count;
     int64_t last = (int64_t)pk->first + count - 1;
     if (count > 0 && pk->first <= s_remote_have + 1 && last > s_remote_have &&
@@ -637,9 +707,9 @@ static void on_inputs(const Packet* pk) {
         s_remote_have = last;
         s_progress_ns = SDL_GetTicksNS();
     }
-    if (pk->ck_frame > s_remote_ck_frame) {
-        s_remote_ck_frame = pk->ck_frame;
-        s_remote_ck = pk->ck;
+    if (pk->ck_frame >= 0) {
+        s_rck[pk->ck_frame & (RING - 1)].frame = pk->ck_frame;
+        s_rck[pk->ck_frame & (RING - 1)].ck = pk->ck;
     }
     /* The peer's frame advantage against ours. Both are measured the same
      * way against data that actually arrived, so their DIFFERENCE is the
@@ -655,8 +725,15 @@ static void on_inputs(const Packet* pk) {
      * both peers 7 ms behind each other (nobody corrects, and the pair keeps
      * whatever phase it started with -- 6 rollbacks on one side against 724
      * on the other), and a minimum-filtered trip put both 16 ms ahead of
-     * each other (both slow down, and the pair runs at 59.4 Hz). */
-    adv_note(pk->adv, net.frame - 1 - s_remote_have);
+     * each other (both slow down, and the pair runs at 59.4 Hz).
+     *
+     * A reordered packet is not sampled: its adv was measured before one
+     * that already landed, and pairing it with our current adv would read
+     * the reorder as phase error. (tx_timer restamps its resends, so those
+     * carry an adv as fresh as any.) */
+    if (!reordered) {
+        adv_note(pk->adv, net.frame - 1 - s_remote_have);
+    }
     if (pk->newest > s_remote_newest) {
         s_remote_newest = pk->newest;
     }
@@ -733,10 +810,10 @@ static void rx_dispatch(void* buf, int n) {
             break;
         case SEQ_REORDER:
             s_rx_reorders++; /* older but new: still process, its pads may fill a gap */
-            rx_input(&u->pk, n);
+            rx_input(&u->pk, n, true);
             break;
         default:
-            rx_input(&u->pk, n);
+            rx_input(&u->pk, n, false);
             break;
         }
         break;
@@ -1024,6 +1101,7 @@ static void rx_datagram(void* buf, int n, const struct sockaddr_storage* from, s
 /* Drain the socket through the gate, then release what the link simulator
  * held back. Runs on the receive thread, or on the game thread when there
  * is none. False on a hard socket error (sock_err_note logged it). */
+_Static_assert(HELD_BYTES + NET_MAC_LEN <= 512, "a full input packet must fit rx_pump's buffer");
 static bool rx_pump(void) {
     for (int budget = RX_BUDGET; budget > 0; budget--) {
         union {
@@ -1112,7 +1190,7 @@ void recv_inputs(void) {
         }
         switch (m.u.h.magic) {
         case 'M':
-            on_inputs(&m.u.pk);
+            on_inputs(&m.u.pk, m.rtt_us == RX_REORDERED);
             break;
         case 'A':
             on_ack(&m.u.ack, m.rtt_us);
@@ -1182,20 +1260,33 @@ static void dump_rings_around(int32_t f) {
         rb);
 }
 
+/* Every frame both peers have confirmed and the peer reported a checksum
+ * for, oldest first, each once. A frame the peer never reported is left for
+ * the next call until a later one is compared or it ages out of the rings. */
 static void check_desync(void) {
-    if (net.desync_reported || net.hs == HS_PENDING || s_remote_ck_frame < net.ck_from ||
-        s_remote_ck_frame > confirmed_frame() || s_remote_ck_frame <= net.frame - RING)
-    {
+    if (net.desync_reported || net.hs == HS_PENDING) {
         return;
     }
-    uint32_t mine = s_ck_ring[s_remote_ck_frame & (RING - 1)];
-    if (mine != s_remote_ck) {
-        net.desync_reported = true;
-        s_status = PC_NET_PEER_DESYNC;
-        pc_log_line("net: DESYNC at frame %d (local %08x remote %08x)", s_remote_ck_frame, mine,
-            s_remote_ck);
-        dump_rings_around(s_remote_ck_frame);
-        dump_states_around(s_remote_ck_frame);
+    int32_t upto = confirmed_frame();
+    int32_t from = s_ck_checked + 1 > net.ck_from ? s_ck_checked + 1 : net.ck_from;
+    if (from <= net.frame - RING) {
+        from = net.frame - RING + 1; /* aged out of s_ck_ring */
+    }
+    for (int32_t f = from; f <= upto; f++) {
+        int i = f & (RING - 1);
+        if (s_rck[i].frame != f) {
+            continue;
+        }
+        s_ck_checked = f;
+        if (s_ck_ring[i] != s_rck[i].ck) {
+            net.desync_reported = true;
+            s_status = PC_NET_PEER_DESYNC;
+            pc_log_line(
+                "net: DESYNC at frame %d (local %08x remote %08x)", f, s_ck_ring[i], s_rck[i].ck);
+            dump_rings_around(f);
+            dump_states_around(f);
+            return;
+        }
     }
 }
 
@@ -1210,7 +1301,7 @@ static void check_desync(void) {
  * each side that opens a phase states what it holds in exactly one reliable
  * REL_RESUME (a statement, never answered: see net_resume_rel). Both sides
  * refill the gap through the ordinary input path (send_inputs' unacked
- * window, widened to REDUNDANCY while the phase is open) and the wait ends
+ * window, which always carries up to REDUNDANCY frames) and the wait ends
  * at the frame it was waiting for, the frames that were predicted before
  * the interruption being rolled back as usual.
  *
@@ -1221,7 +1312,7 @@ static void check_desync(void) {
  *
  * None of this runs in the common case and the frame loop grows no branch
  * for it: the phase is entered from the stall path, the refill rides on the
- * redundancy floor send_inputs already loads, and a refused exchange is
+ * unacked window send_inputs already sends, and a refused exchange is
  * noticed by the very next wait (which is at most WINDOW frames away, since
  * a parked peer stops producing input).
  *
@@ -1357,7 +1448,6 @@ static bool resume_begin(uint64_t now) {
     s_rc = RSM_ACTIVE;
     s_rc_ns = now;
     s_rc_sent = false;
-    s_red_floor = REDUNDANCY; /* every refill packet costs a round trip */
     pc_log_line("net: interrupted at frame %d (peer silent %d ms), reconnecting for up to %d ms",
         net.frame, STALL_TIMEOUT_MS, s_rc_window_ms);
     resume_send();
@@ -1387,7 +1477,6 @@ static void resume_end(uint64_t now) {
         (now - s_rc_ns) / 1e9, s_remote_have, s_remote_newest);
     s_rc = RSM_NONE;
     s_rc_sent = false;
-    s_red_floor = REDUNDANCY_FLOOR;
 }
 
 /* Block until the remote input for `need` is here. False when the session is
@@ -1460,6 +1549,15 @@ static bool wait_remote(int32_t need) {
         if (now - last_send > 16000000ull) {
             send_inputs(); /* peer may be waiting on us, or lost our packets */
             last_send = now;
+            /* A stall and the resume behind it can hold the game thread for
+             * seconds, and a window whose messages go unread that long is
+             * marked "not responding" (Windows at ~5 s) and cannot be
+             * moved. Pumping only fills SDL's queue: nothing is dispatched
+             * or drawn here, mid-tick, and the next frame boundary reads the
+             * input and window events as usual. */
+            if (now - t0 > 100000000ull) {
+                SDL_PumpEvents();
+            }
         }
         /* The receive thread is draining the socket meanwhile; half a
          * millisecond is how late its queue can be seen here. */
@@ -1529,10 +1627,11 @@ void pc_net_disconnect(void);
  * releases immediately while the other is still waiting, and the sims part
  * on the frame that peer enters the next scene (measured tablet<->PC, "peer
  * 121" against an exit asked at 5775). */
-static uint32_t s_scene_seq;                     /* exits we have completed */
-static int32_t s_scene_exit_local = -1;          /* frame our scene asked to end on */
-static int32_t s_scene_exit_at = -1;             /* agreed frame, once both are in */
-static int32_t s_scene_wait_since = -1;          /* frame the incomplete wait began */
+static uint32_t s_scene_seq;            /* exits we have completed */
+static int32_t s_scene_exit_local = -1; /* frame our scene asked to end on */
+static int32_t s_scene_exit_at = -1;    /* agreed frame, once both are in */
+static int32_t s_scene_wait_since = -1; /* frame the incomplete wait began */
+static bool s_scene_settle;             /* leaving: no new predictions, corrections still allowed */
 static int32_t s_scene_exit_remote[SCENE_SLOTS]; /* the peer's, by its own seq */
 
 void net_scene_rel(const void* payload, int len) {
@@ -1573,6 +1672,7 @@ void net_scene_rel(const void* payload, int len) {
 static void scene_handoff_reset(void) {
     s_scene_seq = 0;
     s_scene_exit_local = s_scene_exit_at = -1;
+    s_scene_settle = false;
     s_scene_wait_since = -1;
     for (int i = 0; i < SCENE_SLOTS; i++) {
         s_scene_exit_remote[i] = -1;
@@ -1599,6 +1699,10 @@ bool pc_net_scene_hold(void) {
          * way resume_send() already does. */
         if (pc_net_send_reliable(REL_SCENE, &m, sizeof m)) {
             s_scene_exit_local = net.frame;
+            /* From here no new frame is predicted, so every input still
+             * outstanding arrives, and any correction it brings can still
+             * roll back: the barrier is not raised until the scene changes. */
+            s_scene_settle = true;
         }
     }
     /* A hand-off that never completes is otherwise silent: the scene simply
@@ -1632,15 +1736,12 @@ bool pc_net_scene_hold(void) {
     if (s_scene_exit_at < 0) {
         int32_t later = *remote > s_scene_exit_local ? *remote : s_scene_exit_local;
         s_scene_exit_at = later + SCENE_HANDOFF;
-        /* Nothing may still be predicted when the scene goes: the next
-         * scene's first tick raises the barrier past every outstanding
-         * frame, and snapshot_unusable() rejects those snapshots anyway, so
-         * a correction arriving then is dropped and the peers finish the
-         * match on different remote inputs. Running the last frames of the
-         * scene lockstep costs nothing -- they are the frames after the
-         * match has already been decided -- and it is the same thing the
-         * entry side does. */
-        barrier_raise(s_scene_exit_at);
+        /* Not barrier_raise(s_scene_exit_at) here: the last predicted frames may
+         * still be waiting for a remote input, and a barrier past them turns
+         * that late correction into a desync ("cannot roll back ... behind
+         * the barrier", frame 5619 of a match asked to end
+         * at 5618). Settle mode has stopped predicting since the ask; the next
+         * scene's first tick raises the barrier. */
         pc_log_line("net: scene %u ends at frame %d (asked %d, peer %d)", s_scene_seq,
             s_scene_exit_at, s_scene_exit_local, *remote);
     }
@@ -1649,6 +1750,7 @@ bool pc_net_scene_hold(void) {
     }
     *remote = -1;
     s_scene_exit_local = s_scene_exit_at = -1;
+    s_scene_settle = false;
     s_scene_seq++;
     return false;
 }
@@ -1694,8 +1796,10 @@ static void session_reset(void) {
     net.frame = 0;
     net.tick_frame = -1;
     net.resim = false;
-    s_remote_have = s_remote_newest = s_last_acked = s_rb_frame = s_remote_ck_frame = -1;
-    s_remote_ck = 0;
+    s_remote_have = s_remote_newest = s_last_acked = s_rb_frame = s_ck_checked = -1;
+    for (int i = 0; i < RING; i++) {
+        s_rck[i].frame = -1;
+    }
     net.desync_reported = s_heard = s_peer_left = s_no_progress = false;
     s_last_rx_ns = 0;
     s_progress_ns = 0;
@@ -1732,8 +1836,9 @@ static void session_reset(void) {
     s_rx_why = 0;
     s_rxq_head = s_rxq_n = 0;
     atomic_store(&s_frame_pub, 0);
+    atomic_store(&s_adv_pub, 0);
+    atomic_store(&s_want_resend, false);
     s_red_target = REDUNDANCY;
-    s_red_floor = REDUNDANCY_FLOOR;
     s_resim_run = 0;
     s_resim_eat = 0;
     s_resim_eat_logged = false;
@@ -2200,10 +2305,27 @@ static bool audio_journal_live(void) {
     return s_aj_off == 0 && s_aj_on && net.active && SDL_GetCurrentThreadID() == s_game_thread;
 }
 
+/* MELEE_NET_SFX_LOG=off: sound starts go back to the journal below. */
+static int s_sfx_off = -1;
+
+bool pc_net_sfx_on(void) {
+    if (SDL_GetCurrentThreadID() != s_game_thread) {
+        return false; /* the audio thread keys voices off too */
+    }
+    if (s_sfx_off < 0) {
+        const char* e = getenv("MELEE_NET_SFX_LOG");
+        s_sfx_off = e != NULL && strcmp(e, "off") == 0;
+    }
+    return s_sfx_off == 0 && net.active;
+}
+
 /* A frame's simulation begins (a fresh tick or a re-run of it). */
 static void audio_journal_begin(int32_t f) {
     s_aj_i = 0;
     s_aj_on = true;
+    if (net.active) {
+        net_sfx_begin(f, net.resim); /* a re-run of an older frame starts a rollback */
+    }
     struct AudioJournal* j = &s_aj[f & (RING - 1)];
     if (j->frame != f) {
         j->frame = f;
@@ -2269,7 +2391,18 @@ void pc_net_audio_deaf_note(bool live) {
     }
 }
 
+/* The sound log's numbers for the 600-frame report: session totals. */
+static void sfx_stats_report(void) {
+    NetSfxStats st;
+    net_sfx_stats(&st);
+    pc_log_line("net: sfx played %u, resim deduped %u, late %u, killed %u, cancelled %u "
+                "(revived %u), shielded %u, outside ticks %u, audio-private %u, overflow %u",
+        st.played, st.deduped, st.late, st.killed, st.cancelled, st.revived, st.shielded,
+        st.outside, st.private_starts, st.overflow);
+}
+
 static void audio_journal_reset(void) {
+    net_sfx_reset();
     memset(s_aj, 0, sizeof s_aj);
     s_aj_i = 0;
     s_aj_on = false;
@@ -2493,6 +2626,30 @@ static void head_check(void) {
     s_head_frame = -1;
 }
 
+/* Slippi's SyncRNG (InitOnlinePlay.asm): in an online fight the seed
+ * entering every tick is a function of the agreed seed and the frame alone.
+ * Otherwise one extra draw on one peer -- an out-of-tick call, a path only
+ * one timeline took -- leaves the two streams a draw apart for the rest of
+ * the match, which is what the Windows desync in plan section 5.1 was
+ * (fighters identical, seed one draw apart). Reseeded, a divergence that
+ * touched nothing but the seed heals on the next tick, and one that did
+ * touch state still shows in the fighter fields and the full-state hash.
+ * Applied before the checksum and the recording read the seed, on fresh and
+ * re-run ticks alike, so a replay restoring the recorded seed agrees. The
+ * mix is murmur3's finalizer: consecutive frames get unrelated seeds. */
+static void fight_reseed(int32_t f) {
+    if (!net.active || net.hs != HS_DONE || f <= net.start_frame || !in_fight()) {
+        return;
+    }
+    uint32_t x = net.seed ^ ((uint32_t)f * 0x9e3779b9u);
+    x ^= x >> 16;
+    x *= 0x85ebca6bu;
+    x ^= x >> 13;
+    x *= 0xc2b2ae35u;
+    x ^= x >> 16;
+    *HSD_RandSeedPtr = x;
+}
+
 /* Ports 0-3 of the queue head become the synced inputs for frame f. Each
  * machine's player and, when its handshake announced one, its couch partner
  * go to that machine's ports (pc_net_game_port: host 1+3 / guest 2+4 for
@@ -2573,6 +2730,7 @@ static bool resim_prepare(int32_t f) {
         }
     }
     write_head(head, f);
+    fight_reseed(f);
     s_ck_ring[f & (RING - 1)] = frame_checksum(head);
     /* The state ring is the last simulation of each frame, which is the
      * confirmed timeline (the desync dump and the audit's field-level diff
@@ -2602,7 +2760,10 @@ static bool rollback_to(int32_t f) {
         barrier_raise(simulated_upto());
         if (!s_rb_lost_logged) {
             s_rb_lost_logged = true;
-            pc_log_line("net: cannot roll back to frame %d (%s), expect a desync", f, why);
+            pc_log_line("net: cannot roll back to frame %d (%s), expect a desync (simulated to %d, "
+                        "slot holds frame %d, barrier %d, peer has %d)",
+                f, why, simulated_upto(), s->buf != NULL ? s->frame : -1, net.rb_barrier,
+                s_remote_have);
         }
         return false;
     }
@@ -2631,6 +2792,13 @@ static bool rollback_to(int32_t f) {
     if (depth > s_rb_depth_cur) {
         s_rb_depth_cur = depth;
     }
+    /* Frames from f on are being rewritten: until resim_prepare(f) finishes,
+     * tick_frame still names the newest frame of the timeline just discarded,
+     * and an input that lands while that call waits (a refused snapshot take
+     * makes it wait) would flag a rollback to a frame about to be re-run anyway.
+     * That request then finds the invalidated snapshot, is counted lost, and the
+     * barrier it raises makes every frame still predicted uncorrectable. */
+    net.tick_frame = f - 1;
     net.resim = true;
     return resim_prepare(f);
 }
@@ -2972,7 +3140,7 @@ static void fresh_tick(PADStatus* head, bool raw) {
              * is the measurement any fix for it has to move. */
             pc_log_line("net: scene %d -> %d at frame %d", s_scene_last, scene, net.frame);
             s_scene_last = scene;
-            int lead = in_fight() ? 10 : IO_QUIET;
+            int lead = in_fight() ? FIGHT_ENTRY_LEAD : IO_QUIET;
             barrier_raise(net.frame + lead);
         }
         /* Predict at most WINDOW frames past the remote, and only in a
@@ -2988,8 +3156,20 @@ static void fresh_tick(PADStatus* head, bool raw) {
          * (gmslomo.c sets game_speed 0.5 and declares itself GS_VS), so
          * after a rollback of odd depth the two peers advance the scene on
          * opposite ticks -- one simulates a frame the other skips. */
-        bool lockstep = s_lockstep || !in_fight() || net.frame <= net.rb_barrier ||
-                        gmVsMelee_StartData.rules.game_speed != 1.0F;
+        bool speed_1 = gmVs_IsGameSpeedNormal();
+        bool lockstep =
+            s_lockstep || !in_fight() || net.frame <= net.rb_barrier || !speed_1 || s_scene_settle;
+        /* The last lockstep frames before this fight can predict: size and
+         * page in the rollback ring now, a slot a frame, while the wait below
+         * is for the peer anyway (net_snapshot.c snaps_reserve). A barrier
+         * further off than the fight's entry lead is rollback switched off
+         * (MELEE_NET_ROLLBACK) or a long load, and reserves nothing yet. */
+        if (in_fight() && !s_lockstep && speed_1 && net.frame <= net.rb_barrier &&
+            net.rb_barrier - net.frame <= FIGHT_ENTRY_LEAD)
+        {
+            snaps_reserve();
+            pure_loads_fetch();
+        }
         int32_t need = lockstep ? net.frame : (net.frame >= WINDOW ? net.frame - WINDOW : 0);
         if (!wait_input(need)) {
             return;
@@ -3021,6 +3201,7 @@ static void fresh_tick(PADStatus* head, bool raw) {
     if (net.start_frame == net.frame && net.hs != HS_FAILED) {
         *HSD_RandSeedPtr = net.seed; /* both peers enter the match from the agreed seed */
     }
+    fight_reseed(net.frame);
     uint32_t ck = frame_checksum(head);
     s_ck_ring[net.frame & (RING - 1)] = ck;
     s_sim_n[net.frame & (RING - 1)] = 1;
@@ -3094,6 +3275,7 @@ static void fresh_tick(PADStatus* head, bool raw) {
         s_rx_bad_mac = s_rx_full = 0;
         SDL_UnlockMutex(s_rx_lock);
         snap_stats_report();
+        sfx_stats_report();
     }
 #ifdef MELEE_FP_PERTURB_NAME
     if ((net.frame % 600) == 0 && net.frame > 0) {
@@ -3355,7 +3537,8 @@ static void audit_after_run2(void) {
 
 bool pc_net_after_tick(bool scene_ending) {
     s_aj_on = false; /* the tick is over: later audio queries are not its own */
-    head_check();    /* did this tick consume the inputs write_head wrote? */
+    net_sfx_end();
+    head_check(); /* did this tick consume the inputs write_head wrote? */
     if (net.synctest) {
         return synctest_after_tick();
     }
@@ -3382,10 +3565,24 @@ bool pc_net_after_tick(bool scene_ending) {
     }
     if (net.resim) {
         if (net.tick_frame + 1 < net.frame) {
+            int32_t g = net.tick_frame + 1;
+            /* The snapshot of a frame this rollback re-runs was taken on the
+             * timeline being replaced. A frame still predicted gets a fresh
+             * one in resim_prepare; a confirmed one does not, so its old
+             * slot would restore the mispredicted state. No real rollback
+             * can target a confirmed frame, but the resim audit does, and it
+             * carried the stale state into the live session (a DESYNC at
+             * f4676 under --delay 50 --loss 3 --jitter, one frame after a
+             * rollback to 4675). Drop it instead. */
+            Snapshot* stale = snap_slot(g);
+            if (g <= s_remote_have && stale->frame == g) {
+                stale->frame = -1;
+            }
             s_resim_run++;
-            return resim_prepare(net.tick_frame + 1);
+            return resim_prepare(g);
         }
         net.resim = false;
+        net_sfx_rollback_done();     /* the re-run caught up: settle its sounds */
         resim_note(s_resim_run + 1); /* the tick that just ran was a re-run too */
         s_resim_run = 0;
         if (s_audit_running) {

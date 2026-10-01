@@ -20,8 +20,14 @@ import (
 const (
 	magic   = "MPS1"
 	version = 1
-	hdrSize = 6
-	sigSize = 64
+	// multiVersion is only ever a HELLO (and the COOKIE answering it): a
+	// client sends one beside its version-1 HELLO to ask whether this server
+	// lets one search wait on several topics at once (Direct Connect's
+	// doorbell and pair topics). An older server drops it unanswered, and
+	// the client then keeps to one topic. Every other packet stays version 1.
+	multiVersion = 2
+	hdrSize      = 6
+	sigSize      = 64
 
 	typeHello  = 'H' // client -> server: {nonce}, padded to cookieSize
 	typeCookie = 'C' // server -> client: {nonce, cookie, observed ip:port, sig}
@@ -58,7 +64,10 @@ func header(t byte, size int) []byte {
 
 // packetType returns the type byte of a well-formed header, or 0.
 func packetType(b []byte) byte {
-	if len(b) < hdrSize || string(b[:4]) != magic || b[4] != version {
+	if len(b) < hdrSize || string(b[:4]) != magic {
+		return 0
+	}
+	if b[4] != version && !(b[4] == multiVersion && b[5] == typeHello) {
 		return 0
 	}
 	return b[5]
@@ -105,8 +114,11 @@ func parseJoin(b []byte) (j joinRequest, ok bool) {
 	return j, true
 }
 
-func encodeCookie(key ed25519.PrivateKey, n nonce, cookie [cookieSize]byte, observed netip.AddrPort) []byte {
+// encodeCookie answers a HELLO in the HELLO's own version (see multiVersion);
+// the version byte is inside the signature.
+func encodeCookie(key ed25519.PrivateKey, v byte, n nonce, cookie [cookieSize]byte, observed netip.AddrPort) []byte {
 	b := header(typeCookie, cookiePacketSize)
+	b[4] = v
 	p := b[hdrSize:]
 	copy(p, n[:])
 	copy(p[nonceSize:], cookie[:])

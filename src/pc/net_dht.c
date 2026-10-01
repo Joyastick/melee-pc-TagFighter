@@ -38,6 +38,12 @@ static bool searching, cache_saved;
 static pc_dht_datagram_fn datagram;
 static void* datagram_context;
 static struct pc_dht_endpoint queue[64];
+/* Topics searched and announced beside the mode's own, every round: a direct
+ * call also waits on the pair topic both players compute from their two
+ * codes, so two friends who each dial the other still meet. */
+#define EXTRA_TOPICS 16
+static unsigned char extra_topics[EXTRA_TOPICS][20];
+static unsigned extra_count;
 static unsigned queue_count;
 struct request {
     uint32_t ip;
@@ -332,7 +338,9 @@ bool pc_dht_topic(
     if (m == PC_DHT_DIRECT) {
         if (!code || !*code || strlen(code) >= sizeof(direct_code))
             return false;
-        n = snprintf(topic, sizeof(topic), "meleepc/v1/direct/%s", code);
+        /* v2: the code's key suffix alone (net_match.c passes it), so a
+         * renamed player or a typo in the name still reaches the doorbell. */
+        n = snprintf(topic, sizeof(topic), "meleepc/v2/direct/%s", code);
     } else if (m == PC_DHT_UNRANKED && code && *code)
         n = snprintf(topic, sizeof(topic), "meleepc/v1/unranked/%s/%lld", code, (long long)minute);
     else if (m == PC_DHT_UNRANKED)
@@ -567,6 +575,7 @@ bool pc_dht_start(enum pc_dht_mode m, const char* code, int band, uint16_t port)
     started = SDL_GetTicks();
     next_search = 0;
     queue_count = 0;
+    extra_count = 0;
     searching = true;
     pc_log_line("dht: search started (%s node)", reused ? "warm" : "cold");
     return true;
@@ -658,8 +667,20 @@ void pc_dht_poll(void) {
                 if (pc_dht_topic(mode, direct_code, rating_band + offset, minute - age, hash))
                     dht_search(hash, age == 0 ? bound_port : 0, AF_INET, values, NULL);
             }
+        for (unsigned i = 0; i < extra_count; i++)
+            dht_search(extra_topics[i], bound_port, AF_INET, values, NULL);
         next_search = now + 5000;
     }
+}
+bool pc_dht_add_topic(const unsigned char hash[20]) {
+    if (fd < 0 || extra_count >= EXTRA_TOPICS)
+        return false;
+    for (unsigned i = 0; i < extra_count; i++)
+        if (!memcmp(extra_topics[i], hash, 20))
+            return true;
+    memcpy(extra_topics[extra_count++], hash, 20);
+    next_search = 0; /* search it now, not in five seconds */
+    return true;
 }
 bool pc_dht_next_candidate(struct pc_dht_endpoint* out) {
     if (!out || !queue_count)

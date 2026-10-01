@@ -217,3 +217,72 @@ func TestWireSizes(t *testing.T) {
 			cookiePacketSize, matchSize, queuedSize, joinUsed, joinSize)
 	}
 }
+
+func TestMultiVersionHelloProbe(t *testing.T) {
+	s := NewServer(testKey)
+	for _, v := range []byte{version, multiVersion} {
+		h := hello(1)
+		h[4] = v
+		out := s.Handle(h, alice, t0)
+		if len(out) != 1 || len(out[0].Data) != cookiePacketSize || out[0].Data[4] != v {
+			t.Fatalf("HELLO v%d answered with %v", v, out)
+		}
+		d := out[0].Data
+		if !ed25519.Verify(testKey.Public().(ed25519.PublicKey), d[:len(d)-sigSize], d[len(d)-sigSize:]) {
+			t.Fatalf("v%d cookie not signed", v)
+		}
+	}
+	// Only HELLO has a version 2; anything else in it is junk.
+	b := join(cookieFor(t, s, alice, t0), 1, 7, lan0, lan0)
+	b[4] = multiVersion
+	if out := s.Handle(b, alice, t0); out != nil || len(s.entries) != 0 {
+		t.Fatalf("version-2 JOIN accepted: %v", out)
+	}
+}
+
+// A Direct Connect caller waits on its friend's doorbell and on the pair
+// topic at once; a match on either takes it out of both.
+func TestOneSearchWaitsOnTwoTopics(t *testing.T) {
+	s := NewServer(testKey)
+	ca := cookieFor(t, s, alice, t0)
+	s.Handle(join(ca, 1, 7, lan0, lan0), alice, t0)
+	out := s.Handle(join(ca, 1, 9, lan0, lan0), alice, t0)
+	if len(out) != 1 || packetType(out[0].Data) != typeQueued || len(s.entries) != 2 {
+		t.Fatalf("second topic did not queue beside the first: %v (%s)", out, s.Stats())
+	}
+	// Keepalives on both keep both.
+	s.Handle(join(ca, 1, 7, lan0, lan0), alice, t0)
+	s.Handle(join(ca, 1, 9, lan0, lan0), alice, t0)
+	if len(s.entries) != 2 {
+		t.Fatalf("keepalive dropped a topic: %s", s.Stats())
+	}
+	out = s.Handle(join(cookieFor(t, s, bob, t0), 2, 9, lan0, lan0), bob, t0)
+	if len(out) != 2 || packetType(out[0].Data) != typeMatch {
+		t.Fatalf("bob on the second topic did not meet alice: %v", out)
+	}
+	if len(s.entries) != 0 || len(s.byAddr) != 0 || len(s.perIP) != 0 {
+		t.Fatalf("alice still queued on her other topic: %s", s.Stats())
+	}
+	out = s.Handle(join(cookieFor(t, s, carol, t0), 3, 7, lan0, lan0), carol, t0)
+	if len(out) != 1 || packetType(out[0].Data) != typeQueued {
+		t.Fatalf("carol was handed alice after she paired: %v", out)
+	}
+}
+
+func TestNewSearchAndLeaveClearEveryTopic(t *testing.T) {
+	s := NewServer(testKey)
+	c := cookieFor(t, s, alice, t0)
+	s.Handle(join(c, 1, 7, lan0, lan0), alice, t0)
+	s.Handle(join(c, 1, 9, lan0, lan0), alice, t0)
+	s.Handle(join(c, 2, 5, lan0, lan0), alice, t0) // a new search (new nonce)
+	if len(s.entries) != 1 || s.entries[entryKey{alice, topic{5}}] == nil {
+		t.Fatalf("new search kept the old one's topics: %s", s.Stats())
+	}
+	s.Handle(join(c, 2, 6, lan0, lan0), alice, t0)
+	b := header(typeLeave, leaveSize)
+	copy(b[hdrSize+nonceSize:], c[:])
+	s.Handle(b, alice, t0)
+	if len(s.entries) != 0 || len(s.byAddr) != 0 || len(s.perIP) != 0 {
+		t.Fatalf("LEAVE left topics queued: %s", s.Stats())
+	}
+}

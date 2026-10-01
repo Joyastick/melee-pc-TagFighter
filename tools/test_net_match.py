@@ -88,13 +88,26 @@ def run():
         server_env = {}
         if os.getenv("MATCH_PAIRING_SERVER"):
             server, server_env = start_pairing_server(Path(work))
+        codes = []
+        for player in range(2):
+            profile = Path(work) / f"p{player}"
+            profile.mkdir()
+            codes.append(subprocess.run(
+                [executable, "code"], check=True, text=True, capture_output=True,
+                env=os.environ | {"MATCH_NAME": f"P{player}", "MATCH_DIR": str(profile)}
+            ).stdout.strip())
         processes = []
         try:
             for player in range(2):
                 profile = Path(work) / f"p{player}"
-                profile.mkdir()
                 env = os.environ | server_env | {
                     "MATCH_NAME": f"P{player}", "MATCH_DIR": str(profile)}
+                if os.getenv("MATCH_DIRECT"):
+                    # Both players dial each other (the habit Slippi teaches)
+                    # and player 0 gets the name wrong: only the key suffix
+                    # identifies a player now.
+                    theirs = codes[1 - player]
+                    env["MATCH_DIAL"] = theirs if player else "WRONG" + theirs[theirs.index("#"):]
                 processes.append(subprocess.Popen(
                     [executable, str(ports[player]), str(ports[1-player])],
                     env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
@@ -120,6 +133,8 @@ def run():
         profile.mkdir()
         subprocess.run([executable, "cancel"], check=True, timeout=20,
                        env=os.environ | {"MATCH_NAME": "CANCEL", "MATCH_DIR": str(profile)})
+        subprocess.run([executable, "parse"], check=True, timeout=20,
+                       env=os.environ | {"MATCH_NAME": "CANCEL", "MATCH_DIR": str(profile)})
 
     if os.getenv("MATCH_DECLINE"):
         detail = "a declined opponent is dropped on both sides with no Offer sent"
@@ -129,6 +144,10 @@ def run():
         detail = "dual-signed durable set, immutable publication and mutable retry"
     elif os.getenv("MATCH_PROOF_TIMEOUT") or os.getenv("MATCH_PROOF_MISMATCH"):
         detail = "unverified peer state refused before socket handoff"
+    elif os.getenv("MATCH_DIRECT") and os.getenv("MATCH_PAIRING_SERVER"):
+        detail = "mutual direct dial met on the pairing server's pair topic alone"
+    elif os.getenv("MATCH_DIRECT"):
+        detail = "mutual direct dial by key suffix (one name wrong), contact saved"
     elif os.getenv("MATCH_PAIRING_SERVER"):
         detail = "paired through the Go pairing server alone (no DHT candidates)"
     elif os.getenv("MATCH_RANKED"):
@@ -136,7 +155,7 @@ def run():
     else:
         detail = ("signed pairing, X25519 session secret, socket handoff, role election "
                   "and READY barrier")
-    print(f"PASS: {detail}; cancellation and same-key name refresh")
+    print(f"PASS: {detail}; cancellation, same-key name refresh and code parsing")
 
 
 if __name__ == "__main__":

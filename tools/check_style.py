@@ -93,7 +93,7 @@ def check_whitespace_and_newline(path: Path, fix: bool = False):
 def check_banned_types(path: Path):
     errors = []
     # Only enforce banned types on platform code
-    if "src/pc" not in str(path):
+    if "src/pc" not in path.as_posix():
         return errors
 
     try:

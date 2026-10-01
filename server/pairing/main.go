@@ -7,6 +7,8 @@
 //	pairing -genkey server.key       write a new signing key, print its public half
 //	pairing -key server.key -pubkey  print the public half of an existing key
 //	pairing -check 127.0.0.1:27720   exit 0 if a server answers there (health check)
+//	pairing -probe host:27720 [-expect <public key>]
+//	                                 check a live server from outside (exit 3: no two-topic support)
 //	pairing -key server.key [-listen :27720] [-listen2 :27721]
 package main
 
@@ -79,6 +81,66 @@ func check(addr string) error {
 	return nil
 }
 
+// probe checks a server from outside, the way a client meets it: a
+// version-1 HELLO must get a COOKIE signed by the key clients have compiled
+// in (expect, when given), and a version-2 HELLO tells whether this server
+// lets one search wait on two topics (see multiVersion).
+func probe(addr, expect string) error {
+	var want ed25519.PublicKey
+	if expect != "" {
+		b, err := hex.DecodeString(expect)
+		if err != nil || len(b) != ed25519.PublicKeySize {
+			return errors.New("-expect must be 64 hex digits (a public key)")
+		}
+		want = b
+	}
+	conn, err := net.Dial("udp4", addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	answered := map[byte]bool{}
+	for _, v := range []byte{version, multiVersion} {
+		h := header(typeHello, helloSize)
+		h[4] = v
+		h[hdrSize] = v // the nonce: tells the two answers apart
+		if _, err := conn.Write(h); err != nil {
+			return err
+		}
+	}
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 256)
+	for len(answered) < 2 {
+		n, err := conn.Read(buf)
+		if err != nil {
+			break // timeout: whatever answered by now is the result
+		}
+		d := buf[:n]
+		if n != cookiePacketSize || string(d[:4]) != magic || d[5] != typeCookie ||
+			d[4] != d[hdrSize] {
+			continue
+		}
+		if want != nil && !ed25519.Verify(want, d[:n-sigSize], d[n-sigSize:]) {
+			return fmt.Errorf("version-%d cookie is NOT signed by %s: clients would refuse this server", d[4], expect)
+		}
+		answered[d[4]] = true
+	}
+	if !answered[version] {
+		return errors.New("no answer to a version-1 HELLO: server down, or UDP blocked on the way")
+	}
+	if want != nil {
+		fmt.Println("version 1: answered, signed by the expected key")
+	} else {
+		fmt.Println("version 1: answered (signature not checked: no -expect)")
+	}
+	if !answered[multiVersion] {
+		fmt.Println("version 2: no answer (an older server: one topic per search)")
+		os.Exit(3)
+	}
+	fmt.Println("version 2: answered (two topics per search)")
+	return nil
+}
+
 func main() {
 	listen := flag.String("listen", ":27720", "UDP address to listen on")
 	listen2 := flag.String("listen2", ":27721", "second UDP address for NAT checks (empty: none)")
@@ -86,7 +148,15 @@ func main() {
 	gen := flag.String("genkey", "", "write a new key to this file, print the public key, and exit")
 	pubkey := flag.Bool("pubkey", false, "print the public key of -key and exit")
 	checkAddr := flag.String("check", "", "exit 0 if a pairing server answers STATS at this address")
+	probeAddr := flag.String("probe", "", "check a server from outside: HELLO v1 and v2 (exit 3: v1 only)")
+	expect := flag.String("expect", "", "with -probe: the public key its cookies must be signed by")
 	flag.Parse()
+	if *probeAddr != "" {
+		if err := probe(*probeAddr, *expect); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *checkAddr != "" {
 		if err := check(*checkAddr); err != nil {
 			log.Fatal(err)

@@ -24,6 +24,15 @@ const std::string& get_app_version() {
     return version;
 }
 
+const std::string& get_display_version() {
+#ifdef MELEE_VERSION_LABEL
+    static const std::string version = MELEE_VERSION_LABEL;
+    return version;
+#else
+    return get_app_version();
+#endif
+}
+
 const std::string& get_upstream_pc_version() {
     static const std::string version = MELEE_UPSTREAM_PC_VERSION;
     return version;
@@ -39,6 +48,12 @@ SemVer SemVer::parse(std::string_view s) {
         s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
         s.remove_suffix(1);
+
+    // This fork's tags are MeleeVS-vX.Y.Z (see cmake/GenerateVersion.cmake).
+    constexpr std::string_view kTagPrefix = "MeleeVS-";
+    if (s.substr(0, kTagPrefix.size()) == kTagPrefix) {
+        s.remove_prefix(kTagPrefix.size());
+    }
 
     if (!s.empty() && (s.front() == 'v' || s.front() == 'V')) {
         s.remove_prefix(1);

@@ -26,3 +26,7 @@ Makefile text
 
 # Compressed binaries: never line-ending normalize
 *.gz binary
+
+# Binary assets: never normalize line endings (an .ico was corrupted by it)
+*.ico binary
+*.png binary

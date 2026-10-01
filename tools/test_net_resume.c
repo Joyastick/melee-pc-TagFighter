@@ -85,6 +85,7 @@ Uint64 SDL_GetTicksNS(void) {
     return s_now;
 }
 
+void SDL_PumpEvents(void) {}
 void SDL_DelayNS(Uint64 ns) {
     (void)ns;
     s_now += 1000000ull; /* 1 ms per wait-loop turn */
@@ -150,6 +151,17 @@ void net_watchdog_tick(int32_t frame) {
     (void)frame;
 }
 void net_watchdog_heartbeat(void) {}
+/* The sound log (pc/net_sfx.c, tools/test_net_sfx.c tests it); no sounds here. */
+void net_sfx_reset(void) {}
+void net_sfx_begin(int32_t frame, bool resim) {
+    (void)frame;
+    (void)resim;
+}
+void net_sfx_end(void) {}
+void net_sfx_rollback_done(void) {}
+void net_sfx_stats(NetSfxStats* out) {
+    memset(out, 0, sizeof *out);
+}
 int aurora_dvd_inflight(void) {
     return 0;
 }
@@ -166,6 +178,7 @@ void tx(const void* buf, size_t len) {
     net.tx_pkts++;
     if (p[0] == 'M' && len >= offsetof(Packet, pads)) {
         memcpy(&s_tx_pkt, buf, len < sizeof s_tx_pkt ? len : sizeof s_tx_pkt);
+        assert(s_tx_pkt.count <= REDUNDANCY);
         wire_packet(&s_tx_pkt);
         s_tx_pkt_valid = true;
         net.tx_inputs++;
@@ -309,6 +322,11 @@ void snapshot_restore(const Snapshot* s) {
 Snapshot* snap_slot(int32_t f) {
     return &s_snaps[f % SNAPS];
 }
+void snaps_reserve(void) {}
+bool pc_file_cache_require(const char* filename) {
+    (void)filename;
+    return true;
+}
 void snaps_free(void) {
     memset(s_snaps, 0, sizeof s_snaps);
     for (int i = 0; i < SNAPS; i++) {
@@ -368,6 +386,9 @@ struct GameSceneInfo* gm_804D6720;
  * harness never runs a match, so a default-constructed one at speed 1.0 is
  * what the tests want. */
 StartMeleeData gmVsMelee_StartData = {.rules = {.game_speed = 1.0F}};
+bool gmVs_IsGameSpeedNormal(void) {
+    return true;
+}
 PadLibData HSD_PadLibData;
 static u32 s_seed_val;
 u32* HSD_RandSeedPtr = &s_seed_val;
@@ -482,7 +503,19 @@ static void peer_pads(int32_t first, int32_t last) {
         pk.pads[i].pad[0].button = (uint16_t)(0x2000 + first + i);
     }
     peer_heard();
-    on_inputs(&pk);
+    on_inputs(&pk, false);
+}
+
+/* The peer's checksum for `frame`, as the one report an input packet
+ * carries (no pads: count 0 leaves the rings alone). */
+static void peer_ck(int32_t frame, uint32_t ck) {
+    Packet pk;
+    memset(&pk, 0, sizeof pk);
+    pk.h = hdr('M');
+    pk.newest = frame;
+    pk.ck_frame = frame;
+    pk.ck = ck;
+    on_inputs(&pk, false);
 }
 
 /* ---- cases ------------------------------------------------------------ */
@@ -498,7 +531,6 @@ static void step_resume_ok(void) {
         uint64_t waited = (s_now - s_t0) / 1000000ull;
         assert(waited >= STALL_TIMEOUT_MS && waited <= STALL_TIMEOUT_MS + 2);
         assert(pc_net_quality() == 3);
-        assert(s_red_floor == REDUNDANCY); /* refill at the top of the window */
         assert(pc_net_peer_status() == PC_NET_PEER_OK);
         assert(s_resume_sends == 1);
         /* What we told the peer we hold. */
@@ -536,8 +568,7 @@ static void case_resume_inside_ring(void) {
     assert(s_did_exchange && s_did_pads);
     assert(s_rc == RSM_NONE);
     assert(s_status == PC_NET_PEER_OK);
-    assert(pc_net_quality() == 2);           /* the stall itself, as before */
-    assert(s_red_floor == REDUNDANCY_FLOOR); /* back to the ordinary cadence */
+    assert(pc_net_quality() == 2); /* the stall itself, as before */
     assert(s_remote_have == 199);
     /* Their ring refilled into ours, frame by frame. */
     for (int32_t f = HAVE + 1; f <= 199; f++) {
@@ -1096,7 +1127,7 @@ static void deliver_changed_input(void) {
     for (int i = 0; i < pk.count; i++) {
         pk.pads[i].pad[0].button = 0x100;
     }
-    on_inputs(&pk);
+    on_inputs(&pk, false);
     s_step = NULL;
 }
 
@@ -1228,6 +1259,91 @@ static void case_seed_reset(void) {
     unsetenv("MELEE_NET_PORT");
 }
 
+/* Every unacked frame goes out, up to REDUNDANCY, on a clean link too: the
+ * peer's contiguous mark moves one packet's worth per round trip, so a
+ * window clamped to 4 (loss 0, no rollbacks) starved every link over ~66 ms
+ * of round trip into rolling back 8 deep before it widened. */
+static void case_window_carries_every_unacked_frame(void) {
+    printf("case: an input packet carries every unacked frame\n");
+    setup();
+    s_loss_pct = 0;
+    s_rb_depth_recent = 0;
+    s_last_acked = WROTE - 12;
+    send_inputs();
+    assert(s_tx_pkt_valid);
+    assert(s_tx_pkt.first == WROTE - 11 && s_tx_pkt.newest == WROTE);
+    assert(s_tx_pkt.count == 12);
+    assert(s_tx_pkt.pads[11].pad[0].button == (uint16_t)(0x1000 + WROTE));
+    assert(s_red_target == 12);
+    /* A span wider than the packet: its oldest REDUNDANCY frames, so the
+     * peer's contiguous mark can advance. */
+    s_last_acked = WROTE - 50;
+    send_inputs();
+    assert(s_tx_pkt.first == WROTE - 49 && s_tx_pkt.count == REDUNDANCY);
+    assert(s_tx_pkt.pads[0].pad[0].button == (uint16_t)(0x1000 + WROTE - 49));
+    /* Nothing unacked: an empty packet at the newest frame, as before. */
+    s_last_acked = WROTE;
+    send_inputs();
+    assert(s_tx_pkt.count == 0 && s_tx_pkt.first == WROTE);
+    pc_net_disconnect();
+}
+
+/* The peer's checksum reports are kept by frame, so one that runs ahead of
+ * our confirmed frame is compared once we confirm it rather than overwritten
+ * by the next packet; and each frame is compared exactly once. */
+/* The peer's real pads for HAVE+1..HAVE+8, predicted right: no rollback
+ * pending, so we confirm through HAVE+8. */
+static void peer_pads_as_predicted(void) {
+    for (int32_t f = HAVE + 1; f <= HAVE + 8; f++) {
+        s_remote_ring[f & (RING - 1)].pad[0].button = (uint16_t)(0x2000 + f);
+    }
+    peer_pads(HAVE + 1, HAVE + 8);
+    assert(s_rb_frame < 0);
+}
+
+static void case_desync_checks_every_reported_frame(void) {
+    printf("case: every checksum the peer reports is compared\n");
+    setup();
+    net.ck_from = 0;
+    /* confirmed_frame() is min(FRAME - 1, HAVE) = 190. */
+    assert(confirmed_frame() == HAVE);
+    s_ck_ring[HAVE & (RING - 1)] = 0x190;
+    s_ck_ring[(HAVE + 5) & (RING - 1)] = 0xBAD;
+    s_ck_ring[(HAVE + 7) & (RING - 1)] = 0x197;
+    peer_ck(HAVE, 0x190);
+    peer_ck(HAVE + 5, 0x195); /* ahead of us, and it disagrees */
+    peer_ck(HAVE + 7, 0x197); /* the next report must not bury it */
+    check_desync();
+    assert(!net.desync_reported && s_ck_checked == HAVE);
+    peer_pads_as_predicted(); /* now we confirm through 198 */
+    assert(confirmed_frame() == HAVE + 8);
+    check_desync();
+    assert(net.desync_reported);
+    assert(logged("net: DESYNC at frame 195 (local 00000bad remote 00000195)"));
+    assert(logged_count("net: DESYNC") == 1);
+    pc_net_disconnect();
+
+    /* The same frames agreeing: compared once each, nothing reported. */
+    setup();
+    net.ck_from = 0;
+    s_ck_ring[(HAVE + 5) & (RING - 1)] = 0x195;
+    s_ck_ring[(HAVE + 7) & (RING - 1)] = 0x197;
+    peer_ck(HAVE + 5, 0x195);
+    peer_ck(HAVE + 7, 0x197);
+    peer_pads_as_predicted();
+    check_desync();
+    assert(!net.desync_reported && s_ck_checked == HAVE + 7);
+    /* Before ck_from the lobbies differ by design: never compared. */
+    setup();
+    net.ck_from = HAVE + 6;
+    s_ck_ring[(HAVE + 5) & (RING - 1)] = 0xBAD;
+    peer_ck(HAVE + 5, 0x195);
+    peer_pads_as_predicted();
+    check_desync();
+    assert(!net.desync_reported);
+    pc_net_disconnect();
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         if (strcmp(argv[1], "identity") == 0)
@@ -1252,6 +1368,8 @@ int main(int argc, char** argv) {
             return 2;
         return 0;
     }
+    case_window_carries_every_unacked_frame();
+    case_desync_checks_every_reported_frame();
     case_resume_inside_ring();
     case_one_way_while_running();
     case_gap_past_ring();

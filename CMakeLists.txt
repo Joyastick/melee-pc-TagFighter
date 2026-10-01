@@ -196,6 +196,8 @@ set(PC_SOURCES
         src/pc/misc.c
         src/pc/os.c
         src/pc/region.c
+        src/pc/slp.c
+        src/pc/slp_format.c
         src/pc/stb_vorbis.c
         src/pc/thp.c
         src/pc/touch.c
@@ -232,6 +234,7 @@ set(PC_SOURCES
         src/pc/net_handshake.c
         src/pc/net_lan.c
         src/pc/net_reliable.c
+        src/pc/net_sfx.c
         src/pc/net_sim.c
         src/pc/net_snapshot.c
         src/pc/net_sync.c
@@ -523,6 +526,13 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         add_test(NAME net_chat_ui COMMAND net_chat_ui_test)
         set_tests_properties(net_chat_ui PROPERTIES LABELS melee TIMEOUT 30)
         add_dependencies(unit_tests net_chat_ui_test)
+        add_executable(slp_test EXCLUDE_FROM_ALL tools/test_slp.c src/pc/slp_format.c)
+        target_include_directories(slp_test PRIVATE src)
+        target_link_libraries(slp_test PRIVATE ${AURORA_SDL3_TARGET})
+        target_compile_options(slp_test PRIVATE -UNDEBUG)
+        add_test(NAME slp COMMAND slp_test)
+        set_tests_properties(slp PROPERTIES LABELS melee TIMEOUT 30)
+        add_dependencies(unit_tests slp_test)
         add_executable(net_chat_test EXCLUDE_FROM_ALL tools/test_net_chat.c src/pc/net_chat.c)
         target_include_directories(net_chat_test PRIVATE src extern/aurora/include)
         target_link_libraries(net_chat_test PRIVATE ${AURORA_SDL3_TARGET})
@@ -535,6 +545,12 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         add_test(NAME net_dht_bootstrap COMMAND net_dht_bootstrap_test)
         set_tests_properties(net_dht_bootstrap PROPERTIES LABELS melee TIMEOUT 30)
         add_dependencies(unit_tests net_dht_bootstrap_test)
+        add_executable(net_sfx_test EXCLUDE_FROM_ALL tools/test_net_sfx.c src/pc/net_sfx.c)
+        target_include_directories(net_sfx_test PRIVATE src)
+        target_compile_options(net_sfx_test PRIVATE -UNDEBUG)
+        add_test(NAME net_sfx COMMAND net_sfx_test)
+        set_tests_properties(net_sfx PROPERTIES LABELS melee TIMEOUT 30)
+        add_dependencies(unit_tests net_sfx_test)
         set(NET_IDENTITY_SOURCES src/pc/net_identity.c src/pc/net_dht.c src/pc/net_dht_item.c
             extern/dht/dht.c extern/dht/sha1.c extern/monocypher/monocypher.c
             extern/monocypher/monocypher-ed25519.c)
@@ -554,7 +570,7 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             set_tests_properties(${case} PROPERTIES LABELS melee TIMEOUT 60)
             add_dependencies(unit_tests ${case}_test)
         endforeach()
-        foreach(case IN ITEMS net_snapshot net_stage net_set_flow net_replay_seed net_scene_timing net_fixture_env net_rank_rules net_match net_magnify net_late_poll snapshot_platforms)
+        foreach(case IN ITEMS net_snapshot net_stage net_set_flow net_replay_seed net_scene_timing net_fixture_env net_rank_rules net_match net_magnify net_late_poll snapshot_platforms sim_prefs)
             add_test(NAME ${case} COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_${case}.py)
             set_tests_properties(${case} PROPERTIES LABELS melee TIMEOUT 60)
         endforeach()
@@ -562,12 +578,24 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
         set_tests_properties(net_match_decline PROPERTIES LABELS melee TIMEOUT 60
             ENVIRONMENT "MATCH_DECLINE=1")
+        # Direct Connect: both players dial each other, one with the wrong
+        # name; they meet by key suffix and each saves the other as a contact.
+        add_test(NAME net_match_direct COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_direct PROPERTIES LABELS melee TIMEOUT 60
+            ENVIRONMENT "MATCH_DIRECT=1")
         # Pairing server (server/pairing, Go): its own tests, and two clients
         # pairing through it with no DHT candidates. Skipped without Go.
         add_test(NAME net_match_pairing_server COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
         set_tests_properties(net_match_pairing_server PROPERTIES LABELS melee TIMEOUT 180
             ENVIRONMENT "MATCH_PAIRING_SERVER=1" SKIP_RETURN_CODE 77)
+        # Both players dial each other with no DHT candidates: only the
+        # server's pair topic (two topics per search) can bring them together.
+        add_test(NAME net_match_direct_pairing_server COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_net_match.py)
+        set_tests_properties(net_match_direct_pairing_server PROPERTIES LABELS melee TIMEOUT 180
+            ENVIRONMENT "MATCH_PAIRING_SERVER=1;MATCH_DIRECT=1" SKIP_RETURN_CODE 77)
         find_program(GO_EXECUTABLE go)
         if (GO_EXECUTABLE)
             add_test(NAME pairing_server_go COMMAND ${GO_EXECUTABLE} test ./...
@@ -614,6 +642,9 @@ if (NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         add_test(NAME gcadapter COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gcadapter.py --build ${CMAKE_BINARY_DIR})
         set_tests_properties(pad_regressions gcadapter PROPERTIES LABELS melee TIMEOUT 60)
+        add_test(NAME wobble COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_wobble.py)
+        set_tests_properties(wobble PROPERTIES LABELS melee TIMEOUT 60)
     endif ()
 
     if (NOT WIN32)

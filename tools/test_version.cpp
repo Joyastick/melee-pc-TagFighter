@@ -46,6 +46,13 @@ int main() {
     assert(v_git.build_commits == 2);
     assert(v1 < v_git);
 
+    // This fork's tag prefix, on both the running build and the release tag
+    assert(SemVer::parse("MeleeVS-v1.1.0").valid);
+    assert(is_update_available("MeleeVS-v1.0.5-beta", "MeleeVS-v1.1.0"));
+    assert(is_update_available("v1.0.4", "MeleeVS-v1.0.5-beta"));
+    assert(is_update_available("MeleeVS-v1.1.0-3-gabc1234", "MeleeVS-v1.1.1"));
+    assert(!is_update_available("MeleeVS-v1.1.0", "MeleeVS-v1.1.0"));
+
     std::cout << "PASS: SemVer parsing and update checking\n";
     return 0;
 }

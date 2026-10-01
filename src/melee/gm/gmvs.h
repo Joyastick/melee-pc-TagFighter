@@ -7,6 +7,9 @@
 
 /* 16AE38 */ VsSceneController* gmVs_GetSceneController(void);
 /* 16AE44 */ VsSceneState* gmVs_GetSceneState(void);
+#ifdef TARGET_PC
+bool gmVs_IsGameSpeedNormal(void);
+#endif
 /* 16AE50 */ struct StartMeleeRules* gm_GetStartMeleeRules(void);
 /* 16AE60 */ struct lbl_8046B488_t* fn_8016AE60(void);
 /* 16AE80 */ s32 gm_8016AE80(void);

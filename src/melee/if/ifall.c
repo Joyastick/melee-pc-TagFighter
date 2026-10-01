@@ -275,6 +275,7 @@ void ifAll_802F390C(void)
 #ifdef TARGET_PC
     ifNet_Create();
 #endif
+    NameTag_ReadyHudCreate();
 }
 
 void ifAll_802F3A64(void)
@@ -308,4 +309,5 @@ void ifAll_802F3A64(void)
 #ifdef TARGET_PC
     ifNet_Free();
 #endif
+    NameTag_ReadyHudFree();
 }

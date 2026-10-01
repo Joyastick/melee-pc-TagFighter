@@ -18,5 +18,7 @@
 /* 2FD45C */ void un_802FD45C(void);
 /* 2FD468 */ void un_802FD468(void);
 /* 2FD4C8 */ void un_802FD4C8(void);
+void NameTag_ReadyHudCreate(void);
+void NameTag_ReadyHudFree(void);
 
 #endif

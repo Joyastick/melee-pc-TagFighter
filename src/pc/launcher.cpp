@@ -63,27 +63,19 @@ std::string copy_connect_code() {
         return "";
     return code;
 }
-/* The clipboard as the friend's code: spaces dropped, upper-cased, and only
- * taken when it is a whole connect code (NAME#XXXXXXXX). */
+/* The clipboard as the friend's code: the first connect code anywhere in the
+ * text (a chat line works), any case, with 0/1/8 read as O/I/B, stored as
+ * NAME#XXXXXXXX (or #XXXXXXXX: only the part after '#' has to be right). */
 bool paste_connect_code() {
     char* clip = SDL_GetClipboardText();
     if (!clip)
         return false;
-    std::string value;
-    bool ok = true;
-    for (const char* c = clip; *c && ok; c++) {
-        char ch = *c;
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
-            continue;
-        if (ch >= 'a' && ch <= 'z')
-            ch -= 'a' - 'A';
-        ok = (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '#';
-        value += ch;
-    }
+    char suffix[9], name[9];
+    bool ok = pc_identity_parse_code(clip, suffix, name);
     SDL_free(clip);
-    if (!ok || value.size() > 17 || !pc_identity_code_valid(value.c_str()))
+    if (!ok)
         return false;
-    prefs.net_target = value;
+    prefs.net_target = std::string(name) + "#" + suffix;
     return true;
 }
 bool change_online(Rml::Event& event) {
@@ -429,7 +421,7 @@ class Launcher final : public Rml::EventListener {
         } else if (ustate.status == pc::updater::Status::Failed) {
             text("check-status", ustate.message);
         } else {
-            text("check-status", "Melee-PC is up to date (" + pc::get_app_version() + ").");
+            text("check-status", "MeleeVS is up to date (" + pc::get_display_version() + ").");
         }
         notice();
         quiet = false;
@@ -545,7 +537,7 @@ class Launcher final : public Rml::EventListener {
         }
         if (id == "discord" || id == "settings-discord") {
             status("Opening Discord in browser...");
-            SDL_OpenURL("https://discord.gg/aurt34svq");
+            SDL_OpenURL("https://discord.gg/UVsxZSUXFR");
             return;
         }
         if (tab_index(id) >= 0) {
@@ -781,9 +773,9 @@ public:
         document->AddEventListener(Rml::EventId::Keydown, this);
         document->AddEventListener(Rml::EventId::Change, this);
         document->Show();
-        text("app-version", pc::get_app_version());
+        text("app-version", pc::get_display_version());
         text("upstream-version", pc::get_upstream_pc_version());
-        text("check-status", "Current version: " + pc::get_app_version());
+        text("check-status", "Current version: " + pc::get_display_version());
         if (prefs.check_updates) {
             pc::updater::check_for_updates_async(true);
         }
@@ -1037,7 +1029,7 @@ public:
                         text("update-title", ustate.latest_release.name.empty() ?
                                                  ustate.latest_release.tag_name :
                                                  ustate.latest_release.name);
-                        std::string desc = "A newer version of Melee PC is available (" +
+                        std::string desc = "A newer version of MeleeVS is available (" +
                                            ustate.latest_release.tag_name + ").";
                         if (!ustate.target_asset_name.empty()) {
                             desc += " Ready to download: " + ustate.target_asset_name;
@@ -1452,7 +1444,7 @@ public:
         label("fps", prefs.fps ? "On" : "Off");
         slider("scale", prefs.scale * 100.0f);
         label("scale-val", std::to_string(int(prefs.scale * 100 + 0.5f)) + "%");
-        label("menu-version", pc::get_app_version());
+        label("menu-version", pc::get_display_version());
         label("menu-upstream-version", pc::get_upstream_pc_version());
         auto ustate = pc::updater::get_state();
         if (ustate.status == pc::updater::Status::UpdateAvailable) {
@@ -1462,7 +1454,7 @@ public:
         } else if (ustate.status == pc::updater::Status::Failed) {
             label("port-update-status", "Check failed");
         } else {
-            label("port-update-status", "Up to date (" + pc::get_app_version() + ")");
+            label("port-update-status", "Up to date (" + pc::get_display_version() + ")");
         }
         refresh_bindings();
         quiet = false;
@@ -1926,6 +1918,17 @@ extern "C" void pc_menu_event(const SDL_Event* event) {
         port_menu.gamepad(*event);
 }
 extern "C" void pc_menu_update(void) {
+    // Window title carries the FPS, refreshed twice a second. Skipped when
+    // MELEE_WINDOW_TITLE overrides the name (netplay test windows).
+    static uint64_t last_title = 0;
+    if (SDL_GetTicks() - last_title >= 500) {
+        last_title = SDL_GetTicks();
+        if (!getenv("MELEE_WINDOW_TITLE")) {
+            char title[64];
+            snprintf(title, sizeof title, "MeleeVS - %d FPS", int(aurora_get_fps() + 0.5f));
+            VISetWindowTitle(title);
+        }
+    }
     if (port_menu.counter) {
         if (prefs.fps) {
             if (!port_menu.counter->IsVisible())
@@ -1951,16 +1954,37 @@ extern "C" bool pc_is_custom_textures_enabled(void) {
     return prefs.custom_textures;
 }
 extern "C" bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
+extern "C" bool gmOnline_IsTeamSelect(void);
 extern "C" bool pc_is_unlock_all_enabled(void) {
     bool unlock_all, frozen;
+    /* TEAM SELECT runs no network and no simulation (only the CSS saves a
+     * team), so it can show everyone; every match forces the same. */
+    if (gmOnline_IsTeamSelect()) {
+        return true;
+    }
     return pc_net_rules(&unlock_all, &frozen) ? unlock_all : prefs.unlock_all;
 }
 extern "C" bool pc_is_frozen_stadium_enabled(void) {
     bool unlock_all, frozen;
-    return pc_net_rules(&unlock_all, &frozen) ? frozen : prefs.frozen_stadium;
+    if (pc_net_rules(&unlock_all, &frozen)) {
+        return frozen;
+    }
+    /* MELEE_FROZEN_STADIUM=0|1 overrides the preference, so a test can reach
+     * the transformations whatever the machine's launcher says. The host's
+     * value is what RULES carries, so setting it on the host is enough. */
+    static const char* env = std::getenv("MELEE_FROZEN_STADIUM");
+    return env ? env[0] != '0' : prefs.frozen_stadium;
 }
+/* Free camera and UCF are read by the simulation (camera.c's pause camera
+ * feeds offscreen damage; UCF decides dashbacks and shield drops), so a
+ * local preference must not reach it while the run has to reproduce on
+ * another machine: two peers with different settings would desync on the
+ * first dashback UCF changes. Such a run plays the competitive standard,
+ * which is Slippi's too: UCF on, free camera off. Both peers run the same
+ * build (the handshake binds it), so forcing here keeps them agreed without
+ * a RULES field. */
 extern "C" bool pc_is_free_camera_enabled(void) {
-    return prefs.free_camera;
+    return !pc_net_deterministic() && prefs.free_camera;
 }
 extern "C" uint64_t pc_install_id(void) {
     return prefs.install_id;
@@ -1973,6 +1997,9 @@ extern "C" const char* pc_app_rev(void) {
     return pc::get_app_version().c_str();
 }
 extern "C" bool pc_is_ucf_enabled(void) {
+    if (pc_net_deterministic()) {
+        return true;
+    }
     static const char* env = std::getenv("MELEE_UCF");
     return env ? env[0] != '0' : prefs.ucf;
 }

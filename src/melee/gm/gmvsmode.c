@@ -188,6 +188,15 @@ void onEnterDebugVs(GameModeState* state)
     start->players[2].slot_type = Gm_PKind_NA;
     start->players[3].slot_type = Gm_PKind_NA;
 #ifdef TARGET_PC
+    /* MELEE_DEBUG_VS_STAGE=<StKind>: the debug match on one stage instead of
+     * the last-used one, so the harness can reach a stage's mid-match loads
+     * (3 is Pokemon Stadium, whose transformations load from disc). */
+    if (getenv("MELEE_DEBUG_VS_STAGE") != NULL) {
+        int st = atoi(getenv("MELEE_DEBUG_VS_STAGE"));
+        if (st > St_Kind_Test && st < St_Kind_Last) {
+            start->rules.stkind = (StKind) st;
+        }
+    }
     if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "cpu") == 0) {
         start->players[1].slot_type = Gm_PKind_Cpu;
     } else if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "cpu4") == 0) {
@@ -211,7 +220,15 @@ void onEnterDebugVs(GameModeState* state)
     // own per-frame updates stop"), needed here since this path never runs
     // CSS at all, so TagAssist's own sPortTeamColor defaults (all zero)
     // would otherwise group all three live ports into one team.
-    if (getenv("MELEE_DEBUG_VS") != NULL && strcmp(getenv("MELEE_DEBUG_VS"), "tag") == 0) {
+    // MELEE_DEBUG_VS=tag2v2: the same, as a full 2v2 (Link+Fox vs Mario+Donkey,
+    // a CPU assist behind each human point) for the two-machine harness
+    // (tools/net_pair_test.py --tag). Stocks stay large and the match untimed,
+    // so it runs as long as the harness wants.
+    if (getenv("MELEE_DEBUG_VS") != NULL &&
+        (strcmp(getenv("MELEE_DEBUG_VS"), "tag") == 0 ||
+         strcmp(getenv("MELEE_DEBUG_VS"), "tag2v2") == 0))
+    {
+        bool two_v_two = strcmp(getenv("MELEE_DEBUG_VS"), "tag2v2") == 0;
         start->players[2].ckind = CKind_Fox;
         start->players[2].slot_type = Gm_PKind_Cpu;
         start->players[2].cpu_kind = 4;
@@ -222,14 +239,36 @@ void onEnterDebugVs(GameModeState* state)
         // point within the first couple of frames, before any real
         // gameplay. Give the three live players real stocks so the team
         // actually stays a team.
-        start->players[0].stocks = 4;
-        start->players[1].stocks = 4;
-        start->players[2].stocks = 4;
+        start->players[0].stocks = two_v_two ? 99 : 4;
+        start->players[1].stocks = two_v_two ? 99 : 4;
+        start->players[2].stocks = two_v_two ? 99 : 4;
+        if (two_v_two) {
+            start->players[3].ckind = CKind_Donkey;
+            start->players[3].slot_type = Gm_PKind_Cpu;
+            start->players[3].cpu_kind = 4;
+            start->players[3].stocks = 99;
+        }
         start->rules.is_teams = 1; // same forcing mncharsel.c does entering from the main menu
         TagAssist_EnterForcedOn();
         TagAssist_CssSyncPortTeam(0, 0);
         TagAssist_CssSyncPortTeam(2, 0);
         TagAssist_CssSyncPortTeam(1, 1);
+        if (two_v_two) {
+            TagAssist_CssSyncPortTeam(3, 1);
+        }
+    }
+    /* MELEE_DEBUG_VS_STOCKS=<n>: a stock match instead of an untimed time
+     * one, so a run can end on GAME! with stocks the replay (src/pc/slp.c)
+     * must carry. */
+    if (getenv("MELEE_DEBUG_VS_STOCKS") != NULL) {
+        int stocks = atoi(getenv("MELEE_DEBUG_VS_STOCKS"));
+        if (stocks > 0 && stocks < 100) {
+            start->rules.match_kind = MatchKind_Stock;
+            start->rules.is_stock = true;
+            for (i = 0; i < Gm_Player_NumMax; i++) {
+                start->players[i].stocks = stocks;
+            }
+        }
     }
 #endif
 

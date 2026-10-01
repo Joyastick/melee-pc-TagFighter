@@ -31,6 +31,15 @@ if (_version)
     string(APPEND _content "#define MELEE_APP_VERSION \"${_version}\"\n")
 endif ()
 
+# MELEE_VERSION_LABEL=v1.1-RC13 (environment, at build time) is a cosmetic
+# name for the launcher and settings screens. It never reaches pc_app_rev()
+# or the updater, which keep the real describe string, so it cannot make two
+# different builds look compatible or hide an update.
+if (DEFINED ENV{MELEE_VERSION_LABEL} AND NOT "$ENV{MELEE_VERSION_LABEL}" STREQUAL "")
+    string(APPEND _content "#define MELEE_VERSION_LABEL \"$ENV{MELEE_VERSION_LABEL}\"
+")
+endif ()
+
 # Skip the write when unchanged so an untagged rebuild doesn't force
 # version.cpp to recompile every single time.
 set(_existing "")

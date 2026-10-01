@@ -5,6 +5,7 @@
  * only (net_internal.h). */
 #include "compat.h"
 #include "pc/net_internal.h"
+#include "pc/slp.h"
 
 #include <dolphin/ar.h>
 #include <dolphin/dvd.h>
@@ -48,6 +49,7 @@
  *                        from "identical over 1376 frames" to "diverges at
  *                        1359"). Off by default. */
 static FILE* s_rec;
+static int32_t s_confirmed = INT32_MIN; /* newest final netplay frame, for slp.c */
 static FILE* s_rep;
 static bool s_rep_reported;
 static FILE* s_state_log;
@@ -85,9 +87,18 @@ void record_open(void) {
         s_rep = fopen(rep, "rb");
         char magic[4];
         uint32_t seed;
-        if (s_rep && (fread(magic, 4, 1, s_rep) != 1 || memcmp(magic, "MRC4", 4) != 0 ||
-                         fread(&seed, 4, 1, s_rep) != 1))
-        {
+        bool ok = s_rep && fread(magic, 4, 1, s_rep) == 1;
+        if (ok && memcmp(magic, "MRC4", 4) == 0) {
+            /* The same layout with the older checksum, which folded no
+             * velocity: replayed now, every fight frame reads as a
+             * divergence that is not one. */
+            pc_log_line("net: %s is an MRC4 recording; its checksums predate protocol 9, "
+                        "record it again",
+                rep);
+            ok = false;
+        }
+        ok = ok && memcmp(magic, "MRC5", 4) == 0 && fread(&seed, 4, 1, s_rep) == 1;
+        if (s_rep && !ok) {
             fclose(s_rep);
             s_rep = NULL;
         }
@@ -165,7 +176,7 @@ static int32_t s_rec_written = -1; /* newest frame on disk */
 
 static void record_write(const FrameRecord* r, int32_t f) {
     if (f == 0) {
-        fwrite("MRC4", 4, 1, s_rec);
+        fwrite("MRC5", 4, 1, s_rec);
         fwrite(&r->seed, 4, 1, s_rec);
     }
     fwrite(r, sizeof *r, 1, s_rec);
@@ -196,6 +207,7 @@ void record_frame(const PADStatus* head, uint32_t ck, int32_t f) {
  * A frame that aged out of the ring before it was confirmed cannot be
  * recovered, so the file stops there rather than silently skipping it. */
 void record_confirm(int32_t upto) {
+    s_confirmed = net.active ? upto : INT32_MIN;
     if (s_rec == NULL || !net.active) {
         return;
     }
@@ -239,10 +251,26 @@ bool record_replay_scene_hold(int32_t frame) {
 
 /* ---- frame checksum --------------------------------------------------- */
 
+/* For the .slp recorder (slp.c), which runs inside the tick. The frame the
+ * tick simulates: a rollback's re-run frame, otherwise the newest fresh one
+ * (net.frame counts every tick offline too, where tick_frame is not kept). */
+int32_t pc_net_sim_frame(void) {
+    return net.resim && net.active ? net.tick_frame : net.frame - 1;
+}
+
+/* The newest netplay frame no rollback can change, as record_confirm last
+ * heard it from fresh_tick; INT32_MIN offline. */
+int32_t pc_net_confirmed_frame(void) {
+    return s_confirmed;
+}
+
 uint32_t frame_checksum(const PADStatus* head) {
     /* Inputs as simulated, the RNG seed entering the frame, and each
      * fighter's position, facing, percent, stocks and action state (plan
-     * §4), so a physics divergence is caught on the frame it happens. */
+     * §4), so a physics divergence is caught on the frame it happens. The
+     * two velocities went in with protocol 9: a divergence that starts in a
+     * velocity reaches the position only a frame or more later, and one
+     * that is cancelled (a landing, a wall) never reaches it at all. */
     uint32_t ck = fnv1a(2166136261u, head, 4 * sizeof(PADStatus));
     ck = fnv1a(ck, HSD_RandSeedPtr, sizeof(u32));
     /* Player slots keep dangling entity pointers between scenes, so only
@@ -270,8 +298,40 @@ uint32_t frame_checksum(const PADStatus* head) {
         u8 tagsLeft = TagAssist_GetTagsRemaining(slot);
         ck = fnv1a(ck, &tagRole, sizeof tagRole);
         ck = fnv1a(ck, &tagsLeft, sizeof tagsLeft);
+        ck = fnv1a(ck, &fp->self_vel, sizeof fp->self_vel);
+        ck = fnv1a(ck, &fp->x8c_kb_vel, sizeof fp->x8c_kb_vel);
     }
     return ck;
+}
+
+/* MELEE_NET_RENDER_AUDIT=1: the render must not write what the simulation
+ * reads. A rollback resim and a time-sync advance run ticks with no render
+ * between them, so anything a draw callback writes into sim state is written
+ * on one peer's timeline and not on the other's -- the screen-KO position
+ * (ftDrawCommon_80080E18) was one. This takes frame_checksum's fighter
+ * fields and the seed before the render and again after, and names the
+ * frame whenever they differ. Pads are left out: the render does not read
+ * them and a zeroed set keeps both sides comparable. Debug only; one line
+ * per 60 hits so a callback that writes every frame cannot flood the log. */
+void pc_net_render_audit(bool after) {
+    static int on = -1;
+    static uint32_t before;
+    static unsigned hits;
+    if (on < 0) {
+        const char* e = getenv("MELEE_NET_RENDER_AUDIT");
+        on = e != NULL && e[0] == '1';
+    }
+    if (!on) {
+        return;
+    }
+    static const PADStatus none[4];
+    uint32_t ck = frame_checksum(none);
+    if (!after) {
+        before = ck;
+    } else if (ck != before && (hits++ % 60) == 0) {
+        pc_log_line("net: render audit: sim state changed during render at frame %d (%u so far)",
+            pc_net_frame(), hits);
+    }
 }
 
 /* What went into the checksum, one line, so two peers' logs can be diffed
@@ -292,20 +352,23 @@ static uint32_t f32bits(float f) {
  * what two platforms' logs are diffed on to name the first field that
  * differs (MELEE_NET_STATE_LOG). */
 static void log_state_bits(int32_t frame) {
-    char buf[512];
+    char buf[1024]; /* four fighters of at most 200 characters each */
     int n = snprintf(buf, sizeof buf, "f%d seed=%08x", frame, *HSD_RandSeedPtr);
-    for (int slot = 0; in_fight() && slot < 4 && n < (int)sizeof buf - 96; slot++) {
+    for (int slot = 0; in_fight() && slot < 4 && n < (int)sizeof buf - 200; slot++) {
         HSD_GObj* gobj = Player_GetEntity(slot);
         if (gobj == NULL || gobj->classifier != HSD_GOBJ_CLASS_FIGHTER) {
             continue;
         }
         const Fighter* fp = GET_FIGHTER(gobj);
         n += snprintf(buf + n, sizeof buf - (size_t)n,
-            " p%d pos=%08x/%08x/%08x dir=%08x pct=%08x mid=%d st=%d tag=%d/%d", slot,
-            f32bits(fp->cur_pos.x), f32bits(fp->cur_pos.y), f32bits(fp->cur_pos.z),
+            " p%d pos=%08x/%08x/%08x dir=%08x pct=%08x mid=%d st=%d tag=%d/%d "
+            "vel=%08x/%08x/%08x kb=%08x/%08x/%08x",
+            slot, f32bits(fp->cur_pos.x), f32bits(fp->cur_pos.y), f32bits(fp->cur_pos.z),
             f32bits(fp->facing_dir), f32bits(fp->dmg.x1830_percent), fp->motion_id,
             Player_GetStocks(slot), TagAssist_IsPortCurrentlyPoint(slot) ? 1 : 0,
-            TagAssist_GetTagsRemaining(slot));
+            TagAssist_GetTagsRemaining(slot), f32bits(fp->self_vel.x), f32bits(fp->self_vel.y),
+            f32bits(fp->self_vel.z), f32bits(fp->x8c_kb_vel.x), f32bits(fp->x8c_kb_vel.y),
+            f32bits(fp->x8c_kb_vel.z));
     }
     fprintf(s_state_log, "net: bits %s\n", buf);
 }
@@ -603,6 +666,9 @@ bool snapshot_take(Snapshot* s, int32_t frame) {
     for (int i = 0; i < s->nregions; i++) {
         memcpy(s->buf + s->used, s->regions[i].ptr, s->regions[i].len);
         s->used += s->regions[i].len;
+    }
+    if (s->used > s->faulted) {
+        s->faulted = s->used;
     }
     s->seed_ptr = HSD_RandSeedPtr;
     s->seed_val = *HSD_RandSeedPtr;
@@ -925,12 +991,58 @@ Snapshot* snap_slot(int32_t f) {
     return &s_snaps[f & (SNAPS - 1)];
 }
 
+/* Behind the barrier, on the lockstep frames just before a fight can
+ * predict (net.c fresh_tick): grow a slot to what a take would need now, with
+ * the headroom snapshot_take grows by, and write the bytes a take will copy
+ * so they are paged in. Otherwise the first takes are where the allocator
+ * runs and where ~6 MB of fresh pages per slot fault in, eight slots in a
+ * row, on exactly the frames rollback has just been armed for. Slippi's
+ * savestates allocate their region buffers once, up front; GGRS preallocates
+ * its state cells.
+ *
+ * One slot per call: all eight at once is ~50 MB written in one frame, a
+ * hitch of its own. The fight's entry barrier gives ten lockstep frames, and
+ * a slot not reached by then just grows in snapshot_take as before. Once the
+ * heaps stop growing every call is a no-op: nothing is allocated or written
+ * unless the need outgrew what that slot has already paged in. A slot keeps
+ * its contents (realloc carries them, and only bytes past everything it ever
+ * held are written), and a failed allocation leaves snapshot_take its own
+ * growth path and lockstep fallback. */
+void snaps_reserve(void) {
+    Region r[MAX_REGIONS];
+    int n = regions_now(r);
+    size_t need = 0;
+    for (int i = 0; i < n; i++) {
+        need += r[i].len;
+    }
+    for (int i = 0; i < SNAPS; i++) {
+        Snapshot* s = &s_snaps[i];
+        if (need <= s->faulted) {
+            continue;
+        }
+        if (need > s->cap) {
+            size_t cap = need * 3 / 2;
+            uint8_t* buf = realloc(s->buf, cap);
+            if (buf == NULL) {
+                return;
+            }
+            s->buf = buf;
+            s->cap = cap;
+        }
+        /* faulted >= used always (snapshot_take raises it), so this writes
+         * past every byte the slot holds. */
+        memset(s->buf + s->faulted, 0, need - s->faulted);
+        s->faulted = need;
+        return; /* one slot per frame */
+    }
+}
+
 /* Session end: the buffers go back (a snapshot is a few MB each) and no
  * old snapshot may match a frame of the next session, which restarts at 0. */
 static void snapshot_free(Snapshot* s) {
     free(s->buf);
     s->buf = NULL;
-    s->cap = s->used = 0;
+    s->cap = s->used = s->faulted = 0;
     s->frame = -1;
 }
 

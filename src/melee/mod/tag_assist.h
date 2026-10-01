@@ -124,6 +124,17 @@ bool TagAssist_IsAssistOut(int port);
 /// returns 0 otherwise.
 u32 TagAssist_GetAssistFramesLeft(int port);
 
+/// True while `port`'s team has its assist benched and ready to be called
+/// in right now (Tag Battle on, team set up, no assist out, point not
+/// permanently eliminated, the assist still has stocks, and the first-call
+/// grace period is over). Drives the "Assist Ready" HUD text and badge.
+bool TagAssist_IsAssistReady(int port);
+
+/// True while `port` is its team's lone surviving point (partner eliminated,
+/// see TagAssist_TryReviveFallenPartner) and has a spare stock to donate
+/// (more than one). Drives the "Share Stock?" HUD text.
+bool TagAssist_CanShareStock(int port);
+
 /// How many more times the point character can tag with `port`'s team's
 /// currently-called assist before TAG_MAX_TAGS_PER_CALL blocks further tag
 /// input. Only meaningful while TagAssist_IsAssistOut(port) is true;

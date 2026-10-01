@@ -113,6 +113,7 @@ void wire_ready(Ready* rd) {
     be64(&rd->nonce);
     be64(&rd->echo);
     be32(&rd->unlock_hash);
+    be32(&rd->start_frame);
     be32(&rd->hash);
 }
 

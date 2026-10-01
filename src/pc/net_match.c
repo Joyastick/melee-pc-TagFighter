@@ -43,8 +43,13 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #define MATCH_MAGIC 0x4d504d31u /* MPM1 */
 /* v4: hello signs its sender's own public and LAN address.
  * v5: hello, offer and ack carry X25519 keys for the session secret.
- * v6: MatchPing between Hello and Offer: the ping and Accept / Decline. */
-#define MATCH_VERSION 6
+ * v6: MatchPing between Hello and Offer: the ping and Accept / Decline.
+ * v7: Direct Connect is matched by the key suffix alone (upstream's v4,
+ *     "friends-first"): suffix doorbell topics, a pair topic so two players
+ *     who each dial the other meet, one pairing topic for every direct
+ *     Hello, and suffix-keyed direct and dial-back records. The name part
+ *     of a code is only a label now. */
+#define MATCH_VERSION 7
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
@@ -58,13 +63,13 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
 #define PEER_SILENT_MS 3000 /* no MatchPing for that long: the peer is gone */
 #define AVOID_MS 20000      /* a declined player is not offered again for this long */
 /* Direct connect rendezvous record (BEP44 mutable item). The slot key is
- * derived from the host's connect code, so a dialer can address it knowing
- * only the code; the value inside is signed by the host's real identity key,
- * which the dialer checks against the code the same way a Hello is. */
-#define DIRECT_SALT "meleepc/direct/v1"
+ * derived from the host's key suffix, so a dialer can address it knowing
+ * only that; the value inside is signed by the host's real identity key,
+ * which the dialer checks against the suffix the same way a Hello is. */
+#define DIRECT_SALT "meleepc/direct/v2"
 /* Dial-back: the dialer's own endpoint, under a slot derived from the host's
- * code, so the host can send toward the dialer and open its own NAT side. */
-#define DIAL_SALT "meleepc/dial/v1"
+ * suffix, so the host can send toward the dialer and open its own NAT side. */
+#define DIAL_SALT "meleepc/dial/v2"
 /* magic 4, key 32, public ip 4 + port 2, time 8, LAN ip 4 + port 2, sig 64 */
 #define DIRECT_RECORD_BYTES 120
 #define DIRECT_SIGNED_BYTES 56
@@ -126,6 +131,7 @@ static enum PcNetMatchMode mode;
 static int state = PC_MATCH_FAIL;
 static const char* failure = "not started";
 static char target[18], opponent[18];
+static char target_suffix[9]; /* direct: the key suffix we are calling, "" hosting */
 static uint8_t peer_key[32], compatibility[20], topic[20], offer_hash[20];
 static uint64_t local_nonce, peer_nonce, deadline, next_send;
 /* Ephemeral X25519 pair drawn per search, and the peer's public half. */
@@ -321,6 +327,80 @@ static bool load_identity(void) {
     return ok;
 }
 
+/* Contacts: Direct Connect opponents, newest first, in contacts.txt as
+ * "NAME#SUFFIX <unix seconds>" lines. Noted only once a match reaches
+ * PC_MATCH_READY, so a typo'd code that never answered is never kept. Keyed
+ * by the 8-character key part, so a renamed player moves to the front with
+ * the new name instead of appearing twice. */
+static PcNetContact contacts[PC_NET_CONTACTS_MAX];
+static int contact_count = -1; /* -1: not loaded */
+
+static void contacts_path(char* out, size_t n) {
+    snprintf(out, n, "%s/contacts.txt", profile_directory);
+}
+
+static void contacts_load(void) {
+    if (contact_count >= 0 || !load_identity())
+        return;
+    contact_count = 0;
+    char path[4200];
+    contacts_path(path, sizeof path);
+    FILE* f = fopen(path, "r");
+    if (!f)
+        return;
+    char line[128];
+    while (contact_count < PC_NET_CONTACTS_MAX && fgets(line, sizeof line, f)) {
+        PcNetContact c = {0};
+        long long when = 0;
+        if (sscanf(line, "%17s %lld", c.code, &when) != 2 || !pc_identity_code_valid(c.code))
+            continue;
+        c.last_played = (int64_t)when;
+        contacts[contact_count++] = c;
+    }
+    fclose(f);
+}
+
+static void contacts_note(const char* code) {
+    contacts_load();
+    if (contact_count < 0 || !pc_identity_code_valid(code))
+        return;
+    int at = contact_count < PC_NET_CONTACTS_MAX ? contact_count : PC_NET_CONTACTS_MAX - 1;
+    for (int i = 0; i < contact_count; i++)
+        if (!strcmp(pc_identity_code_suffix(contacts[i].code), pc_identity_code_suffix(code))) {
+            at = i;
+            break;
+        }
+    if (at == contact_count)
+        contact_count++;
+    memmove(&contacts[1], &contacts[0], (size_t)at * sizeof contacts[0]);
+    snprintf(contacts[0].code, sizeof contacts[0].code, "%s", code);
+    contacts[0].last_played = (int64_t)time(NULL);
+    /* Write a temp file, then swap it in, so a crash never truncates it. */
+    char path[4200], tmp[4210];
+    contacts_path(path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* f = fopen(tmp, "w");
+    if (!f) {
+        pc_log_line("match: could not write %s", tmp);
+        return;
+    }
+    for (int i = 0; i < contact_count; i++)
+        fprintf(f, "%s %lld\n", contacts[i].code, (long long)contacts[i].last_played);
+    bool ok = fclose(f) == 0;
+#ifdef _WIN32
+    remove(path); /* rename does not replace an existing file on Windows */
+#endif
+    if (!ok || rename(tmp, path) != 0)
+        pc_log_line("match: could not save %s", path);
+}
+
+int pc_net_match_contacts(PcNetContact* out, int max) {
+    contacts_load();
+    int n = contact_count < 0 ? 0 : contact_count < max ? contact_count : max;
+    memcpy(out, contacts, (size_t)n * sizeof *out);
+    return n;
+}
+
 static void digest(void) {
     char text[256];
     /* Folding the Tag Battle flag in here means a Tag Battle peer and a
@@ -347,19 +427,24 @@ static bool send_packet(const void* p, size_t n, const struct pc_dht_endpoint* e
     return sendto((MatchSocket)pc_dht_socket(), p, (int)n, 0, (struct sockaddr*)&to, sizeof to) ==
            (int)n;
 }
-static bool key_code_matches(const uint8_t key[32], const char* code) {
-    if (!pc_identity_code_valid(code))
-        return false;
+/* The key's own eight-character suffix (the part of a code it proves). */
+static void key_suffix(const uint8_t key[32], char out[9]) {
     uint8_t h[20];
     pc_dht_sha1(key, 32, h);
     static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     uint64_t bits = (uint64_t)h[0] << 32 | (uint64_t)h[1] << 24 | (uint64_t)h[2] << 16 |
                     (uint64_t)h[3] << 8 | h[4];
-    size_t n = strlen(code);
     for (int i = 0; i < 8; i++)
-        if (code[n - 8 + i] != a[(bits >> (35 - 5 * i)) & 31])
-            return false;
-    return true;
+        out[i] = a[(bits >> (35 - 5 * i)) & 31];
+    out[8] = 0;
+}
+static bool key_has_suffix(const uint8_t key[32], const char* suffix) {
+    char own[9];
+    key_suffix(key, own);
+    return suffix[0] && !strcmp(own, suffix);
+}
+static bool key_code_matches(const uint8_t key[32], const char* code) {
+    return pc_identity_code_valid(code) && key_has_suffix(key, pc_identity_code_suffix(code));
 }
 static bool signed_ok(const uint8_t key[32], const uint8_t sig[64], const void* p, size_t n) {
     return pc_identity_verify(key, sig, p, n - 64);
@@ -381,28 +466,61 @@ static void fail(const char* why) {
         pc_rank_session_abort(why);
 }
 
-static void pairing_topic(enum PcNetMatchMode m, const char* direct, uint8_t out[20]) {
+/* The context a Hello and an Offer are bound to. A direct call is found on
+ * one of several DHT topics (the callee's doorbell or the pair topic), so
+ * for Direct it binds to the mode alone, and who may pair is decided by key
+ * suffix (receive()).
+ *
+ * Direct already refuses a Tag Battle/plain-VS mismatch via digest()'s
+ * compatibility hash (fail("Peer is on a different build, disc or game
+ * mode")) - a manually-exchanged code is already scoped to one peer, so
+ * there is nothing to separate here. Ranked has no Tag Battle entry
+ * point (SEL_TAG_UNRANKED is the only online row this mod's menu adds
+ * past Direct/LAN) and stays untouched. Unranked pairs with whoever else
+ * is searching the same pool, so a Tag Battle searcher's own topic hash
+ * needs to differ from a plain-VS one - otherwise receive()'s
+ * memcmp(h->topic, topic, 20) at line 361 would pass for a plain-VS
+ * candidate, waste a MatchHello/MatchOffer round trip, and only then
+ * fail on the mode check the offer/ack path already carries (the same
+ * outcome, just later and noisier) instead of never matching at all.
+ * The DHT announce topic is split the same way (unranked_pool() below),
+ * so the two pools never even see each other as candidates. */
+static void pairing_topic(enum PcNetMatchMode m, uint8_t out[20]) {
+    const char* text = m == PC_MATCH_DIRECT      ? "meleepc/match/v2/direct" :
+                       m == PC_MATCH_RANKED      ? "meleepc/match/v1/ranked" :
+                       TagAssist_IsTagBattleOn() ? "meleepc/match/v1/unranked/tag" :
+                                                   "meleepc/match/v1/unranked";
+    pc_dht_sha1(text, strlen(text), out);
+}
+
+/* The topic two players who each dial the other both search: the two key
+ * suffixes in sorted order, so either side computes the same one. */
+static void pair_topic(const char* a, const char* b, uint8_t out[20]) {
     char text[64];
-    /* Direct already refuses a Tag Battle/plain-VS mismatch via digest()'s
-     * compatibility hash (fail("Peer is on a different build, disc or game
-     * mode")) - a manually-exchanged code is already scoped to one peer, so
-     * there is nothing to separate here. Ranked has no Tag Battle entry
-     * point (SEL_TAG_UNRANKED is the only online row this mod's menu adds
-     * past Direct/LAN) and stays untouched. Unranked pairs with whoever else
-     * is searching the same pool, so a Tag Battle searcher's own topic hash
-     * needs to differ from a plain-VS one - otherwise receive()'s
-     * memcmp(h->topic, topic, 20) at line 361 would pass for a plain-VS
-     * candidate, waste a MatchHello/MatchOffer round trip, and only then
-     * fail on the mode check the offer/ack path already carries (the same
-     * outcome, just later and noisier) instead of never matching at all.
-     * The DHT announce topic is split the same way (unranked_pool() below),
-     * so the two pools never even see each other as candidates. */
-    int n = m == PC_MATCH_DIRECT ?
-                snprintf(text, sizeof text, "meleepc/match/v1/direct/%s", direct) :
-                snprintf(text, sizeof text,
-                    m == PC_MATCH_RANKED      ? "meleepc/match/v1/ranked" :
-                    TagAssist_IsTagBattleOn() ? "meleepc/match/v1/unranked/tag" :
-                                                "meleepc/match/v1/unranked");
+    int n = strcmp(a, b) < 0 ? snprintf(text, sizeof text, "meleepc/v2/pair/%s/%s", a, b) :
+                               snprintf(text, sizeof text, "meleepc/v2/pair/%s/%s", b, a);
+    pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
+}
+
+/* The pairing server matches two clients that present the same topic, so
+ * Direct cannot hand it the mode-wide pairing topic (it would pair any two
+ * Direct players). It gets the callee's doorbell: a host its own suffix, a
+ * caller the suffix it dials. A caller also waits on the pair topic
+ * (rendezvous_pair_topic), where two players who dial each other meet, on a
+ * server that takes two topics per search (pc_rdv_add_topic). */
+static void rendezvous_topic(enum PcNetMatchMode m, const char* doorbell, uint8_t out[20]) {
+    if (m != PC_MATCH_DIRECT) {
+        pairing_topic(m, out);
+        return;
+    }
+    char text[64];
+    int n = snprintf(text, sizeof text, "meleepc/rdv/v2/direct/%s", doorbell);
+    pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
+}
+static void rendezvous_pair_topic(const char* a, const char* b, uint8_t out[20]) {
+    char text[64];
+    int n = strcmp(a, b) < 0 ? snprintf(text, sizeof text, "meleepc/rdv/v2/pair/%s/%s", a, b) :
+                               snprintf(text, sizeof text, "meleepc/rdv/v2/pair/%s/%s", b, a);
     pc_dht_sha1(text, n > 0 ? (size_t)n : 0, out);
 }
 
@@ -471,7 +589,7 @@ static bool same_public_ip(uint32_t address) {
 }
 static bool direct_record_read(
     const uint8_t* v, size_t n, struct pc_dht_endpoint* out, struct pc_dht_endpoint* lan) {
-    if (n != DIRECT_RECORD_BYTES || memcmp(v, "MPD1", 4) || !key_code_matches(v + 4, target) ||
+    if (n != DIRECT_RECORD_BYTES || memcmp(v, "MPD1", 4) || !key_has_suffix(v + 4, target_suffix) ||
         !pc_identity_verify(v + 4, v + DIRECT_SIGNED_BYTES, v, DIRECT_SIGNED_BYTES))
         return false;
     int64_t when = 0;
@@ -681,7 +799,9 @@ void pc_net_match_prepublish(void) {
     uint64_t now = SDL_GetTicks();
     if (direct_pending || now < direct_next || !pc_dht_ready() || pc_dht_item_busy())
         return;
-    direct_slot_for(identity.code);
+    char own[9];
+    key_suffix(identity.public_key, own);
+    direct_slot_for(own);
     if (!direct_publish())
         direct_next = now + 2000;
 }
@@ -798,6 +918,11 @@ static bool hello_source_ok(const MatchHello* h, uint32_t source) {
         return true;
     if (h->from_lan && source == h->from_lan)
         return true;
+    /* Double NAT at home (a mesh router behind the ISP's): the Hello arrives
+     * from the inner router's address, which neither signed IP names. Only a
+     * machine behind our own public IP can reach us from a private address. */
+    if (h->from_public && same_public_ip(h->from_public))
+        return private_ip(source);
     return !h->from_public && private_ip(source);
 }
 /* Fill in (and re-sign for) our own addresses once they are known. */
@@ -944,7 +1069,8 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         if (ntohl(h->magic) != MATCH_MAGIC || h->version != MATCH_VERSION || h->type != 'H' ||
             h->mode != (uint8_t)mode || h->nonce == local_nonce || memcmp(h->topic, topic, 20) ||
             !terminator || !key_code_matches(h->public_key, h->code) ||
-            (mode == PC_MATCH_DIRECT && target[0] && strcmp(h->code, target)) ||
+            (mode == PC_MATCH_DIRECT && target_suffix[0] &&
+                strcmp(pc_identity_code_suffix(h->code), target_suffix)) ||
             !signed_ok(h->public_key, h->signature, h, sizeof *h))
             return;
         /* A genuine, authenticated Hello for our search that only disagrees
@@ -1100,22 +1226,36 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     recovery_immutable = false;
     proof_step = 0;
     identity_loaded = false; /* Reload display code from the same persistent key. */
-    if (code && *code && (!pc_identity_code_valid(code) || strlen(code) >= sizeof target)) {
+    /* Only the key suffix names who we call; the name is kept for logs. */
+    char name[9];
+    target_suffix[0] = 0;
+    if (code && *code && !pc_identity_parse_code(code, target_suffix, name)) {
         fail("invalid connect code");
         return false;
     }
-    snprintf(target, sizeof target, "%s", code ? code : "");
+    if (target_suffix[0])
+        snprintf(target, sizeof target, "%s#%s", name, target_suffix);
+    else
+        target[0] = 0;
     if (!load_identity() || !pc_identity_random(&local_nonce, sizeof local_nonce) ||
         !pc_identity_random(kx_secret, sizeof kx_secret))
     {
         fail("identity unavailable");
         return false;
     }
+    char own[9];
+    key_suffix(identity.public_key, own);
+    if (m == PC_MATCH_DIRECT && !strcmp(target_suffix, own)) {
+        fail("That is your own code");
+        return false;
+    }
     crypto_x25519_public_key(kx_public, kx_secret);
     memset(peer_kx, 0, sizeof peer_kx);
     digest();
-    const char* direct = target[0] ? target : identity.code;
-    pairing_topic(m, direct, topic);
+    /* Direct: the doorbell is the callee's suffix, the one we dial or our
+     * own when hosting. */
+    const char* doorbell = target_suffix[0] ? target_suffix : own;
+    pairing_topic(m, topic);
     direct_get_logged = false;
     direct_next = 0;
     dial_next = m == PC_MATCH_DIRECT && target[0] ? UINT64_MAX : 0;
@@ -1127,14 +1267,21 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
         add_hello_target(peer);
     rematch_hint = false;
     if (m == PC_MATCH_DIRECT)
-        direct_slot_for(direct);
+        direct_slot_for(doorbell);
     pc_dht_keep_item_on_start(keep_publish);
     bool started = pc_dht_start((enum pc_dht_mode)m,
-        m == PC_MATCH_UNRANKED ? unranked_pool() : direct, 0, (uint16_t)pc_get_net_port());
+        m == PC_MATCH_UNRANKED ? unranked_pool() : doorbell, 0, (uint16_t)pc_get_net_port());
     pc_dht_keep_item_on_start(false);
     if (!started) {
         fail("DHT unavailable");
         return false;
+    }
+    /* A caller also waits on the pair topic, which is where two players who
+     * each dialled the other both are. */
+    if (m == PC_MATCH_DIRECT && target_suffix[0]) {
+        uint8_t pair[20];
+        pair_topic(own, target_suffix, pair);
+        pc_dht_add_topic(pair);
     }
     /* A record published earlier is still good while the node kept its port. */
     if (m == PC_MATCH_DIRECT && !target[0] && SDL_GetTicks() < direct_fresh_until &&
@@ -1155,7 +1302,13 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     memcpy(hello.kx, kx_public, sizeof hello.kx);
     sign_packet(&hello, sizeof hello);
     hello_refresh_from();
-    pc_rdv_start(topic, hello.from_lan, pc_dht_port(), send_packet);
+    uint8_t rdv_topic[20];
+    rendezvous_topic(m, doorbell, rdv_topic);
+    pc_rdv_start(rdv_topic, hello.from_lan, pc_dht_port(), send_packet);
+    if (m == PC_MATCH_DIRECT && target_suffix[0]) {
+        rendezvous_pair_topic(own, target_suffix, rdv_topic);
+        pc_rdv_add_topic(rdv_topic);
+    }
     pc_dht_set_datagram_callback(receive, NULL);
     state = PC_MATCH_SEARCH;
     deadline = 0;
@@ -1336,6 +1489,8 @@ void pc_net_match_poll(void) {
             } else {
                 state = PC_MATCH_READY;
                 pc_net_set_datagram_handler(NULL);
+                if (mode == PC_MATCH_DIRECT)
+                    contacts_note(opponent);
             }
         }
         if (pc_net_handshake_state() == 3) {
@@ -1377,6 +1532,28 @@ void pc_net_match_idle(void) {
 void pc_net_match_rematch_hint(void) {
     rematch_hint = true;
 }
+/* Windows Firewall only asks about a UDP program once another machine's
+ * packet has been dropped, so on the same network the first connect failed
+ * before any prompt showed. A TCP listen asks at once: open one on the
+ * Online menu, once per run, so Windows' own "allow access" prompt comes
+ * up there (it adds UDP rules too). No prompt once any rule exists. */
+static void firewall_prompt(void) {
+#ifdef _WIN32
+    static bool done;
+    if (done)
+        return;
+    done = true;
+    MatchSocket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET)
+        return;
+    struct sockaddr_in any = {0};
+    any.sin_family = AF_INET;
+    if (!bind(s, (struct sockaddr*)&any, sizeof any) && !listen(s, 1))
+        pc_log_line("match: opened a TCP listener so Windows asks about the firewall now");
+    closesocket(s);
+#endif
+}
+
 void pc_net_match_warm(void) {
     static uint64_t next_attempt;
     if (state == PC_MATCH_SEARCH || state == PC_MATCH_CONNECT || state == PC_MATCH_READY ||
@@ -1390,6 +1567,7 @@ void pc_net_match_warm(void) {
         if (!pc_dht_warm((uint16_t)pc_get_net_port()))
             return;
     }
+    firewall_prompt(); /* after the DHT node: Winsock is up */
     pc_dht_poll();
 }
 int pc_net_match_state(const char** why) {

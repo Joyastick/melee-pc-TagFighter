@@ -19,7 +19,14 @@
  *                peer lan ip 4 + port 2, sig 64}                      (110)
  * IPs in network order, ports big-endian. sig is the server's Ed25519
  * signature over everything before it; nonce is ours, echoed, so a reply
- * from an earlier search is refused. */
+ * from an earlier search is refused.
+ *
+ * Version 2 exists only for HELLO and the COOKIE answering it: sent beside
+ * the version-1 HELLO, it asks whether the server lets one search wait on
+ * several topics at once (a version-2 COOKIE says yes; an older server
+ * drops it). Only then does pc_rdv_add_topic's second topic get JOINed:
+ * against an older server, alternating JOINs would keep swapping one entry
+ * between the topics. */
 #include "net_dht.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -33,6 +40,9 @@ typedef bool (*PcRdvSend)(const void* data, size_t size, const struct pc_dht_end
  * MELEE_PAIRING_SERVER=host:port and MELEE_PAIRING_KEY=<64 hex digits>
  * override the built-in server; MELEE_PAIRING_SERVER=off turns it off. */
 void pc_rdv_start(const uint8_t topic[20], uint32_t lan_ip, uint16_t lan_port, PcRdvSend send);
+/* After pc_rdv_start: also wait on this topic (one extra; Direct Connect's
+ * pair topic), when the server supports it. A MATCH on either ends both. */
+void pc_rdv_add_topic(const uint8_t topic[20]);
 /* Leave the queue (if in it) and go idle. */
 void pc_rdv_stop(void);
 void pc_rdv_poll(uint64_t now_ms);

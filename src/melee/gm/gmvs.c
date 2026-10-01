@@ -50,6 +50,9 @@
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/gobjproc.h>
 #include <stdlib.h>
+#ifdef TARGET_PC
+#include "pc/slp.h"
+#endif
 
 static u32 lbl_803D5620[] = {
     0x7C859,
@@ -73,6 +76,15 @@ VsSceneState* gmVs_GetSceneState(void)
 {
     return &controller.state;
 }
+
+#ifdef TARGET_PC
+/* net.c is built without the game sources' bitfield layout, so it cannot read
+ * StartMeleeRules itself (game_speed sits at a different offset there). */
+bool gmVs_IsGameSpeedNormal(void)
+{
+    return controller.start.game_speed == 1.0F;
+}
+#endif
 
 struct StartMeleeRules* gm_GetStartMeleeRules(void)
 {
@@ -2018,6 +2030,9 @@ void fn_8016E730(StartMeleeData* arg0)
     HSD_GObj* temp_r30;
     VsSceneController* r30;
 
+#ifdef TARGET_PC
+    pc_slp_match_start(arg0); /* Slippi's SendGameInfo hooks here too */
+#endif
     db_Setup();
     gm_SetDbPauseInputHandlers(gm_AnyControllerPressedStart,
                                gm_AnyControllerPressedZ);
@@ -2116,6 +2131,9 @@ void gm_Scene_Vs_OnExit(void* user_data)
     VsSceneController* tmp = &controller;
     int i;
 
+#ifdef TARGET_PC
+    pc_slp_match_end();
+#endif
     if (controller.state.match_over == 0) {
         data->xC = controller.state.x24C;
         data->xC.is_teams = controller.start.is_teams;
