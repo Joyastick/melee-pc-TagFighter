@@ -53,6 +53,11 @@ int main() {
     assert(is_update_available("MeleeVS-v1.1.0-3-gabc1234", "MeleeVS-v1.1.1"));
     assert(!is_update_available("MeleeVS-v1.1.0", "MeleeVS-v1.1.0"));
 
+    // A modified tree ("-dirty") is the same release, never an older one
+    assert(!is_update_available("MeleeVS-v1.1.0-dirty", "MeleeVS-v1.1.0"));
+    assert(is_update_available("MeleeVS-v1.1.0-dirty", "MeleeVS-v1.1.1"));
+    assert(!is_update_available("MeleeVS-v1.1.0-3-gabc1234-dirty", "MeleeVS-v1.1.0"));
+
     std::cout << "PASS: SemVer parsing and update checking\n";
     return 0;
 }
