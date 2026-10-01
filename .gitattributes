@@ -30,3 +30,14 @@ Makefile text
 # Binary assets: never normalize line endings (an .ico was corrupted by it)
 *.ico binary
 *.png binary
+
+# More binaries the "* text eol=lf" rule above would treat as text. A tagged CI
+# build derived "-dirty" from these showing as modified on a fresh Linux
+# checkout (cmake/GenerateVersion.cmake logged them).
+*.jpg binary
+*.gif binary
+*.icns binary
+*.ttf binary
+*.jar binary
+# CRLF is stored as-is (it is a Windows script); do not renormalize it.
+platforms/android/gradlew.bat -text
