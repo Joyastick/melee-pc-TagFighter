@@ -1,7 +1,7 @@
 # MeleeVS - Melee Tag Fighter
 
 ![Tag Fighter gameplay](docs/screenshots/tagfighter-demo.gif)
-https://ko-fi.com/joyastick
+https://ko-fi.com/joyastick | [MeleeVS Discord](https://discord.gg/UVsxZSUXFR)
 
 A gameplay mod for Super Smash Bros. Melee
 (NTSC-U 1.02) adding a 2-vs-2 tag mode: each human "point" fighter can call in
@@ -31,24 +31,21 @@ You need your own disc image. **No game data ships here.** Details under
 
 ## MeleeVS Features and Roadmap
 
-### It features: 
-[x] Assists for every character - Press D-Pad Down to perform a predetermined assist move for each character
+### It features
 
-[x] Active Tag - When both characters are on the screen at the same time, press D-Pad Down to swap 'Point' between them
-
-[x] Multiple 'Freestyle' tags - Ability to active tag 3 times per assist call
-
-[x] 2XKO-Like Duos - Team up with your friends to create crazy combos
-
-[x] Tag Animation Canceling - Cancel any animation the character was in (besides getting hit/grabbed) into full control of the character
+- [x] Assists for every character - Press D-Pad Down to perform a predetermined assist move for each character
+- [x] Active Tag - When both characters are on the screen at the same time, press D-Pad Down to swap 'Point' between them
+- [x] Multiple 'Freestyle' tags - Ability to active tag 3 times per assist call
+- [x] 2XKO-Like Duos - Team up with your friends to create crazy combos
+- [x] Tag Animation Canceling - Cancel any animation the character was in (besides getting hit/grabbed) into full control of the character
+- [x] 2 Player Online Play (very early, can be buggy) - LAN, Direct Connect (with a recent opponents list) and Matchmaking, all with Rollback Netcode
+- [x] Team Select - Pick the team you take into Matchmaking
 
 ### Planned Roadmap
 
 The full list, including known issues, is in [ROADMAP.md](ROADMAP.md).
 
-[] Early Fall 2026 - 2 Player Online Play (Direct Connect): Can connect to one other MeleeVS player with Rollback Netcode
-
-[] Late Fall 2026 - 4 Player Online Play (Direct Connect): Can connect with up to 4 total MeleeVS players with Rollback Netcode
+- [ ] Late Fall 2026 - 4 Player Online Play: Can connect with up to 4 total MeleeVS players with Rollback Netcode
 
 ## Download
 
@@ -71,13 +68,16 @@ Battle match plays exactly like vanilla Melee and is unaffected by any of
 this.
 
 **Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
-ONLINE). This drops straight into character select - its own two-tone
-"MeleeVS" title replaces the usual mode banner - with all 4 doors already
-open and paired up 2v2 - ports 1 and 3 on Red, ports 2 and 4 on Blue, each
-Human if a controller is plugged into that port or CPU otherwise - so you can
-go straight to picking characters instead of opening doors one at a time.
-Switching to a different VS Mode entry (Melee, Tournament, Special Melee)
-leaves Tag Battle behind; there's no in-CSS toggle for it anymore.
+ONLINE). It opens its own menu: **LOCAL**, **LAN PLAY**, **DIRECT CONNECT**,
+**TEAM SELECT** and **MATCHMAKING**. **LOCAL** drops straight into character
+select - its own two-tone "MeleeVS" title replaces the usual mode banner -
+with all 4 doors already open and paired up 2v2 - ports 1 and 3 on Red, ports
+2 and 4 on Blue, each Human if a controller is plugged into that port or CPU
+otherwise - so you can go straight to picking characters instead of opening
+doors one at a time. The other entries are covered under
+[Online Tag Battle](#online-tag-battle). Switching to a different VS Mode
+entry (Melee, Tournament, Special Melee) leaves Tag Battle behind; there's no
+in-CSS toggle for it anymore.
 
 **Pick your team**: each door's team-color button cycles between Red and Blue
 only (Green is unavailable - a 2v2 mode has no room for a third team), and a
@@ -98,8 +98,12 @@ each team is point by default.
 
 - **Call an assist**: D-Pad Down. The assist spawns already performing its
   assigned move (grounded or airborne, depending on the point character's own
-  state). While it's out, both fighters get a nametag showing everything you
-  need to track the call at a glance:
+  state). You can't call one while you have no control: held in a grab, in
+  hitstun (ground or air, tumble, spin), frozen, asleep or bound, in
+  shield-break stagger, buried, or flying after a throw. The press is simply
+  ignored. Air dodging, grabbing someone yourself, and getting up from a plain
+  knockdown still allow a call. While it's out, both fighters get a nametag
+  showing everything you need to track the call at a glance:
   - **Point: N** over the active fighter, where `N` is how many more tags
     are still allowed this call (starts at 3, counts down as you use them).
   - A live countdown over the assist, showing how long until it auto-benches
@@ -156,15 +160,42 @@ first if a mapping below goes stale.
 | Young Link | Side Special (Boomerang) | Same as grounded |
 | Ness | Side Special (PK Fire) | Same as grounded |
 
-## Online Tag Battle (in progress)
+## Online Tag Battle
 
-Online Tag Battle is under active development: 2-player matches work over LAN,
-Direct Connect, and Matchmaking (MELEE VS → MATCHMAKING). Matchmaking uses its
-own pool, so you are only matched with other MeleeVS players in Tag Battle,
-never with a plain VS Unranked search. Both players need the same MeleeVS
-build and the same disc image. Ranked has no Tag Battle entry. For how
-melee-pc's netplay works (ports, firewall, environment variables, test
-harnesses), see [melee-pc](https://github.com/999sian/melee-pc).
+**Online is very early and can be buggy.** Expect connection failures,
+desyncs and rough edges, and please report what you hit on the
+[MeleeVS Discord](https://discord.gg/UVsxZSUXFR) or the
+[issue tracker](https://github.com/Joyastick/melee-pc-TagFighter/issues).
+
+2-player Tag Battle works over three routes, all under MELEE VS:
+
+- **LAN PLAY**: another player on your local network.
+- **DIRECT CONNECT**: connect to a friend with their connect code. Your
+  recent opponents are listed under your own code (UP/DOWN to pick one, START
+  to dial); the 8-character key part of the code is what matches, so a
+  renamed friend still connects, and two players who dial each other meet in
+  one match.
+- **MATCHMAKING**: find an opponent online. It uses its own pool, so you are
+  only matched with other MeleeVS players in Tag Battle, never with a plain VS
+  Unranked search. **TEAM SELECT** picks the team you queue with; it shows
+  every character whether or not you have them unlocked, and every online
+  match unlocks everything for both players anyway.
+
+Both players need the same MeleeVS build and the same disc image. Ranked has
+no Tag Battle entry.
+
+**Strict NAT.** Matches connect straight between the two machines, with no
+relay. A router that gives every destination its own public port (a "strict"
+or symmetric NAT) can't be reached by an opponent, and the lobby says so while
+searching: `Strict NAT: enable router UPnP or forward UDP <port>`. Turn on
+UPnP in your router (the launcher's "Automatic port forwarding (UPnP)" is on
+by default), or forward that UDP port to your PC. Two players who are both
+strict cannot connect, and neither can a router sitting behind another NAT
+(carrier-grade NAT, a second router) unless the outer one forwards the port.
+
+For how melee-pc's netplay works (ports, firewall, environment variables,
+test harnesses), see [melee-pc](https://github.com/999sian/melee-pc). Questions
+and matches: the [MeleeVS Discord](https://discord.gg/UVsxZSUXFR).
 
 ## Contributing
 
