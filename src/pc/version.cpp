@@ -49,6 +49,20 @@ SemVer SemVer::parse(std::string_view s) {
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
         s.remove_suffix(1);
 
+    // `git describe --dirty` appends this for a modified tree. It is build
+    // metadata, not a pre-release: left in, "v1.1.0-dirty" sorts below the
+    // real v1.1.0 and the updater would offer the release it is already on.
+    constexpr std::string_view kDirty = "-dirty";
+    if (s.size() >= kDirty.size() && s.substr(s.size() - kDirty.size()) == kDirty) {
+        s.remove_suffix(kDirty.size());
+    }
+
+    // This fork's tags are MeleeVS-vX.Y.Z (see cmake/GenerateVersion.cmake).
+    constexpr std::string_view kTagPrefix = "MeleeVS-";
+    if (s.substr(0, kTagPrefix.size()) == kTagPrefix) {
+        s.remove_prefix(kTagPrefix.size());
+    }
+
     if (!s.empty() && (s.front() == 'v' || s.front() == 'V')) {
         s.remove_prefix(1);
     }

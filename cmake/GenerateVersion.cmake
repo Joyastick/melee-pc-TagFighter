@@ -24,6 +24,17 @@ if (GIT_FOUND)
     if (NOT _result EQUAL 0)
         set(_version "")
     endif ()
+    # A tagged CI build reading "-dirty" means something modified a tracked
+    # file before this ran; name it in the log instead of guessing.
+    if (_version MATCHES "-dirty$")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --short --untracked-files=no
+            WORKING_DIRECTORY "${SRC_DIR}"
+            OUTPUT_VARIABLE _modified
+            ERROR_QUIET)
+        message(WARNING "version is ${_version}; modified tracked files:
+${_modified}")
+    endif ()
 endif ()
 
 set(_content "// Generated at build time by cmake/GenerateVersion.cmake, do not edit.\n")
