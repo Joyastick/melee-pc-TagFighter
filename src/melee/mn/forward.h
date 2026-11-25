@@ -120,6 +120,12 @@ typedef enum MenuKind {
 #ifdef TARGET_PC
     /* PC: VS Mode > Online. Its row is appended to mnmain.c's tables. */
     MENU_KIND_ONLINE = 34,
+    /* PC: the pages of MAIN MENU > MELEE VS (mnonline.c), each its own kind so
+     * a page change plays the panel's exit and enter animations. */
+    MENU_KIND_MV_ROOT = 35,
+    MENU_KIND_MV_ONLINE = 36,
+    MENU_KIND_MV_PARTY = 37,
+    MENU_KIND_MV_CREDITS = 38,
 #endif
 } MenuKind;
 
@@ -140,6 +146,10 @@ typedef enum MainMenuSelection {
     SEL_MAIN_TOY = 2,
     SEL_MAIN_SETTINGS = 3,
     SEL_MAIN_DATA = 4,
+#ifdef TARGET_PC
+    /// MELEE VS (Tag Fighter): LOCAL / ONLINE / CREDITS, see mnonline.c.
+    SEL_MAIN_MELEEVS = 5,
+#endif
 } MainMenuSelection;
 
 typedef enum OnePlayerMenuSelection {
@@ -170,10 +180,6 @@ typedef enum VsMenuSelection {
     SEL_VS_NAME = 4,
 #ifdef TARGET_PC
     SEL_VS_ONLINE = 5,
-    /// Tag Fighter: jumps into VS mode's CSS with Tag Battle forced on and
-    /// all 4 doors pre-opened (see TagAssist_EnterForcedOn). Appended past
-    /// melee-pc's own PC-only ONLINE row.
-    SEL_VS_TAG_BATTLE = 6,
 #endif
 } VsMenuSelection;
 
@@ -186,16 +192,6 @@ typedef enum OnlineMenuSelection {
     SEL_ONLINE_PROFILE = 4,
 } OnlineMenuSelection;
 
-/// MELEE VS's own submenu (still MENU_KIND_ONLINE - see
-/// mnOnline_SetEnteredFromTagBattle - reusing its rendering/table entry
-/// rather than adding a whole new MenuKind's worth of per-kind tables).
-typedef enum TagBattleMenuSelection {
-    SEL_TAG_LOCAL = 0,
-    SEL_TAG_LAN = 1,
-    SEL_TAG_DIRECT = 2,
-    SEL_TAG_TEAM_SELECT = 3,
-    SEL_TAG_UNRANKED = 4,
-} TagBattleMenuSelection;
 #endif
 
 typedef enum SpecialVsMenuSelection {

@@ -69,7 +69,7 @@ this.
 
 **Start a Tag Battle**: Main Menu → VS Mode → **MELEE VS** (the entry below
 ONLINE). It opens its own menu: **LOCAL**, **LAN PLAY**, **DIRECT CONNECT**,
-**TEAM SELECT** and **MATCHMAKING**. **LOCAL** drops straight into character
+**PARTY**, **TEAM SELECT** and **MATCHMAKING**. **LOCAL** drops straight into character
 select - its own two-tone "MeleeVS" title replaces the usual mode banner -
 with all 4 doors already open and paired up 2v2 - ports 1 and 3 on Red, ports
 2 and 4 on Blue, each Human if a controller is plugged into that port or CPU

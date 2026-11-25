@@ -42,11 +42,13 @@ Hdr hdr(uint8_t magic) {
 void wire_rel(Rel* r) {
     (void)r;
 }
-void tx(const void* buf, size_t len) {
+void tx_to(int peer, const void* buf, size_t len) {
+    (void)peer;
     memcpy(s_out, buf, len);
     s_out_len = len;
 }
-void handshake_msg(uint8_t type, const uint8_t* p, int len) {
+void handshake_msg_from(int peer, uint8_t type, const uint8_t* p, int len) {
+    (void)peer;
     (void)type;
     (void)p;
     (void)len;
@@ -61,6 +63,16 @@ void net_resume_rel(const void* payload, int len) {
 static int s_delay_msgs;
 /* Dispatched like REL_DELAY; this harness only exercises the channel. */
 void net_scene_rel(const void* payload, int len) {
+    (void)payload;
+    (void)len;
+}
+void net_scene_rel_from(int peer, const void* payload, int len) {
+    (void)peer;
+    net_scene_rel(payload, len);
+}
+/* REL_DROP (3-4 machine matches): not part of this channel test. */
+void net_drop_rel(int peer, const void* payload, int len) {
+    (void)peer;
     (void)payload;
     (void)len;
 }
@@ -126,29 +138,29 @@ int main(void) {
         round_trip(0x10, i);
         round_trip(0x01, i);
     }
-    assert(s_hs_msgs == 300 && s_rel_expect[0] == 300 % 128 && s_rel_expect[1] == 300 % 128);
-    assert(s_rel_tx[0].n == 0 && s_rel_tx[1].n == 0 && recv_user() < 0);
+    assert(s_hs_msgs == 300 && s_rel_expect[0][0] == 300 % 128 && s_rel_expect[0][1] == 300 % 128);
+    assert(s_rel_tx[0][0].n == 0 && s_rel_tx[0][1].n == 0 && recv_user() < 0);
 
     /* duplicate of the last one (its 'K' was lost): re-acked, not re-processed */
     Rel dup = s_last;
     on_rel(&dup, (int)s_last_len);
     assert(s_out[0] == 'K' && s_out[offsetof(RelAck, seq)] == dup.seq && s_hs_msgs == 300);
     s_out[0] = 0;
-    dup.seq = (uint8_t)((s_rel_expect[0] - REL_REACK) & REL_SEQ_MASK); /* oldest re-acked */
+    dup.seq = (uint8_t)((s_rel_expect[0][0] - REL_REACK) & REL_SEQ_MASK); /* oldest re-acked */
     on_rel(&dup, (int)s_last_len);
     assert(s_out[0] == 'K' && s_hs_msgs == 300 && s_unexpected == 0);
     s_out[0] = 0;
 
     /* out of window: 9 back and 1 ahead are dropped, logged once per session */
-    dup.seq = (uint8_t)((s_rel_expect[0] - REL_REACK - 1) & REL_SEQ_MASK);
+    dup.seq = (uint8_t)((s_rel_expect[0][0] - REL_REACK - 1) & REL_SEQ_MASK);
     on_rel(&dup, (int)s_last_len);
-    dup.seq = (uint8_t)((s_rel_expect[0] + 1) & REL_SEQ_MASK);
+    dup.seq = (uint8_t)((s_rel_expect[0][0] + 1) & REL_SEQ_MASK);
     on_rel(&dup, (int)s_last_len);
-    dup.seq = (uint8_t)(0x80 | ((s_rel_expect[1] + 1) & REL_SEQ_MASK));
+    dup.seq = (uint8_t)(0x80 | ((s_rel_expect[0][1] + 1) & REL_SEQ_MASK));
     on_rel(&dup, (int)s_last_len);
     assert(s_out[0] == 0 && s_hs_msgs == 300 && recv_user() < 0 && s_unexpected == 1);
     rel_reset();
-    assert(s_rel_expect[0] == 0 && s_rel_tx[1].seq == 0 && s_rel_tx[1].sent_ns == 0);
+    assert(s_rel_expect[0][0] == 0 && s_rel_tx[0][1].seq == 0 && s_rel_tx[0][1].sent_ns == 0);
     dup.seq = 0x85;
     on_rel(&dup, (int)s_last_len);
     assert(s_unexpected == 2); /* the once-flag was cleared */
@@ -185,7 +197,7 @@ int main(void) {
     assert(pc_net_send_reliable(0x11, NULL, 0));        /* the lobby's ready barrier: uncapped */
     assert(pc_net_send_reliable(REL_SCENE, "sc", 2));   /* and so is a scene hand-off */
     assert(!pc_net_send_reliable(REL_RESUME, "rs", 2)); /* only now is the lane full */
-    assert(s_rel_tx[1].n == REL_QUEUE);
+    assert(s_rel_tx[0][1].n == REL_QUEUE);
     assert(pc_net_send_reliable(0x02, NULL, 0) && out_seq() == 1 && deliver());
     assert(s_hs_msgs == 302);
     ack(); /* clear the handshake lane so only the user lane resends below */
@@ -195,7 +207,7 @@ int main(void) {
         s_now += REL_RESEND_NS;
         rel_service();
     }
-    assert(s_rel_tx[1].resends == 70 && s_resend_logs == 1 + 4);
+    assert(s_rel_tx[0][1].resends == 70 && s_resend_logs == 1 + 4);
 
     /* REL_RESUME is net.c's own lane-1 type: dispatched inline and acked,
      * never queued for the caller, and the lane's sequence keeps running so

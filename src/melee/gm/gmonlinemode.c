@@ -37,6 +37,8 @@ extern const char* pc_get_net_target(void);
 extern void pc_set_net_target(const char* code);
 extern bool pc_get_meleevs_team(uint8_t out[9]);
 extern void pc_set_meleevs_team(const uint8_t team[9]);
+extern int pc_get_party_pick(void);
+extern void pc_set_party_pick(int ckind);
 #include "pc/pc.h"
 #include <time.h>
 #endif
@@ -62,6 +64,28 @@ enum {
 };
 
 static bool awaiting_rank_result;
+static bool party_queue;  /* this lobby is a party leader's Matchmaking search */
+static bool party_follow; /* this lobby joins the match our leader found */
+/* After a party match (four machines): each machine's pick from its synced
+ * pad, REMATCH or BACK TO PARTY, and its cursor. */
+enum { PAM_SAME_REMATCH, PAM_CHANGE_REMATCH, PAM_SAME_SEARCH, PAM_CHANGE_SEARCH, PAM_MENU };
+static int pam_my_fighter;     /* our fighter in the last party match */
+static int pam_machines = 4;   /* machines in it */
+static bool pam_solo;          /* our team is one machine (solo or couch) */
+static bool pam_mixed;         /* ... or the other one is */
+static bool party_after_css;   /* the party pick CSS was opened from the after-match lobby */
+static bool party_queue_pending;   /* the leader searches once that CSS is done */
+static bool party_rematch_pending; /* ... or all four meet again */
+static bool party_rematch_view;    /* this lobby is waiting for the other three */
+static int pam_local;
+static bool pam_active; /* the after-match lobby is a party match's */
+static int pam_pick[4];
+static int pam_cursor[4];
+static bool partyMatchActive(void)
+{
+    PcNetGroupMatch gmatch;
+    return pc_net_group_match(&gmatch);
+}
 static void onEnterLobby(GameModeState*);
 static void onEnterCss(GameModeState*);
 static void onExitCss(GameModeState*);
@@ -227,6 +251,18 @@ bool gmOnline_IsTeamSelect(void)
     return team_select_css;
 }
 
+static bool party_select; /* this TEAM SELECT is the Party page's fighter pick */
+static int party_picked = -1; /* what that pick just chose, for a rematch that follows it */
+bool gmOnline_IsPartySelect(void)
+{
+    return team_select_css && party_select;
+}
+
+void gmOnline_SetPartySelect(bool value)
+{
+    party_select = value;
+}
+
 void gmOnline_SetTeamSelectThenSearch(bool value)
 {
     team_select_then_search = value;
@@ -262,6 +298,19 @@ static void teamSelectPrefill(void)
     PlayerInitData* p = online_vs.start.players;
     PcNetTeam team;
     bool saved = loadSavedTeam(&team);
+    if (party_select) {
+        /* One fighter: door 1, on the saved party pick. */
+        int pick = pc_get_party_pick();
+        for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+            p[i].slot_type = i == 0 ? Gm_PKind_Human : Gm_PKind_NA;
+            p[i].team = 0;
+        }
+        if (pick >= 0 && pick < CKind_Playable_Count) {
+            p[0].ckind = pick;
+        }
+        TagAssist_SetExplicitPoint(0, 0);
+        return;
+    }
     for (int i = 0; i < 2; i++) {
         p[i].slot_type = i == 0 || (saved && team.fighter[1].human) ? Gm_PKind_Human
                                                                     : Gm_PKind_Cpu;
@@ -280,6 +329,26 @@ static void teamSelectPrefill(void)
 static void teamSelectSave(const PlayerInitData* p)
 {
     PcNetTeam team;
+    if (!party_select) {
+        const char* forced = getenv("MELEE_TEAM_TEST_PICK"); /* test tooling: "a,b" */
+        int a, b;
+        if (forced && sscanf(forced, "%d,%d", &a, &b) == 2 && a >= 0 && b >= 0 &&
+            a < CKind_Playable_Count && b < CKind_Playable_Count) {
+            ((PlayerInitData*) p)[0].ckind = a;
+            ((PlayerInitData*) p)[1].ckind = b;
+        }
+    }
+    if (party_select) {
+        int pick = p[0].ckind;
+        const char* forced = getenv("MELEE_PARTY_TEST_PICK"); /* test tooling: a fixed fighter */
+        if (forced && atoi(forced) >= 0 && atoi(forced) < CKind_Playable_Count) {
+            pick = atoi(forced);
+        }
+        pc_set_party_pick(pick);
+        party_picked = pick;
+        pc_log_line("online: party pick saved %d", pick);
+        return;
+    }
     memset(&team, 0, sizeof team);
     for (int i = 0; i < 2; i++) {
         team.fighter[i].ckind = (int8_t) p[i].ckind;
@@ -311,7 +380,7 @@ void onEnterLobby(UNUSED GameModeState* state)
     awaiting_rank_result = online_kind == ONLINE_KIND_RANKED &&
         (pc_rank_session_set_complete() ||
          pc_rank_session_state(NULL) == PC_RANK_SESSION_FAILED);
-    if (!awaiting_rank_result && !after_match) {
+    if (!awaiting_rank_result && !after_match && !party_follow) {
         if (pc_net_active()) {
             pc_log_line("lobby: entering the lobby scene drops the active session");
         }
@@ -342,6 +411,10 @@ void onEnterLobby(UNUSED GameModeState* state)
         am_cursor[0] = am_cursor[1] = 0;
         am_pick[0] = am_pick[1] = -1;
         am_outcome = AM_OUT_NONE;
+        for (int i = 0; i < 4; i++) {
+            pam_pick[i] = -1;
+            pam_cursor[i] = PAM_SAME_REMATCH;
+        }
     }
 #endif
 }
@@ -397,14 +470,36 @@ void onExitCss(GameModeState* state)
         CSSData* css = gm_GetGameModeStateExitData(state);
         bool search = team_select_then_search;
         bool rematch = team_select_then_rematch;
-        team_select_css = false;
-        team_select_then_search = false;
-        team_select_then_rematch = false;
+        bool party_ctx = party_after_css;
+        party_after_css = false;
         if (css->pending_scene_change == CSSPendingSceneChange_2) {
+            team_select_css = false;
+            party_select = false;
+            team_select_then_search = false;
+            team_select_then_rematch = false;
             gm_ChangeGameModeAfterCurrentScene(GM_MENU); /* backed out */
             return;
         }
         teamSelectSave(css->vs.start.players);
+        team_select_css = false;
+        party_select = false;
+        team_select_then_search = false;
+        team_select_then_rematch = false;
+        if (party_ctx) {
+            /* A new party fighter from the after-match lobby: meet the other
+             * three again, or (the leader) search, or (the partner) wait. */
+            online_kind = ONLINE_KIND_UNRANKED;
+            if (rematch) {
+                party_rematch_pending = true;
+                gm_SetNextGameModeStateId(state_lobby);
+            } else if (pc_net_party_is_leader()) {
+                party_queue_pending = true;
+                gm_SetNextGameModeStateId(state_lobby);
+            } else {
+                gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+            }
+            return;
+        }
         if (rematch) {
             /* Change team + rematch: back to the same opponent. */
             online_kind = ONLINE_KIND_DIRECT;
@@ -562,7 +657,8 @@ void onExitVs(GameModeState* state)
 #ifdef TARGET_PC
     /* Matchmaking skips RESULTS: the after-match lobby says who won and
      * asks what next. A tie still goes through sudden death first. */
-    if (pc_net_matchmade() && !gm_MatchHasMultipleWinners(&mei->match_end)) {
+    if ((pc_net_matchmade() || partyMatchActive()) &&
+        !gm_MatchHasMultipleWinners(&mei->match_end)) {
         matchmadeFinish(&mei->match_end);
     }
 #endif
@@ -583,7 +679,7 @@ void onExitSuddenDeath(GameModeState* state)
 #endif
     gmVsMelee_ExitSuddenDeath(state);
 #ifdef TARGET_PC
-    if (pc_net_matchmade()) {
+    if (pc_net_matchmade() || partyMatchActive()) {
         matchmadeFinish(&gmVsMelee_VsExitInfo.match_end);
     }
 #endif
@@ -608,7 +704,7 @@ void onExitResults(GameModeState* state)
     gmVsMelee_ExitResults(state, &online_vs, state_css);
 #ifdef TARGET_PC
     /* Matchmaking has no online CSS to go back to: the lobby asks what next. */
-    if (pc_net_matchmade()) {
+    if (pc_net_matchmade() || partyMatchActive()) {
         after_match = true;
         gm_SetNextGameModeStateId(state_lobby);
     }
@@ -699,7 +795,8 @@ static bool internetLobby(void) {
  * to Fox/Falco for a missing pick. */
 static bool matchmadeMode(void)
 {
-    return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn();
+    return online_kind == ONLINE_KIND_UNRANKED && TagAssist_IsTagBattleOn() && !party_queue &&
+           !party_follow && !party_rematch_view && !pam_active;
 }
 
 static PcNetTeam matchmadeLocalTeam(void)
@@ -726,15 +823,59 @@ static PcNetTeam matchmadeLocalTeam(void)
     return team;
 }
 
-/* Character names for the lobby's team lines, in CharacterKind order. */
+/* Character names for the lobby's team lines and the Party page, in
+ * CharacterKind order; the long ones are short forms so they fit a row. */
 static const char* const ckind_name[CKind_Playable_Count] = {
-    "Captain Falcon", "Donkey Kong", "Fox",        "Mr. Game & Watch", "Kirby",
-    "Bowser",         "Link",        "Luigi",      "Mario",            "Marth",
-    "Mewtwo",         "Ness",        "Peach",      "Pikachu",          "Ice Climbers",
-    "Jigglypuff",     "Samus",       "Yoshi",      "Zelda",            "Sheik",
-    "Falco",          "Young Link",  "Dr. Mario",  "Roy",              "Pichu",
+    "C.Falcon",   "DK",    "Fox",      "Mr.G&W", "Kirby",
+    "Bowser",     "Link",  "Luigi",    "Mario",  "Marth",
+    "Mewtwo",     "Ness",  "Peach",    "Pikachu", "Icies",
+    "Jigglypuff", "Samus", "Yoshi",    "Zelda",  "Sheik",
+    "Falco",      "Y.Link", "Dr.Mario", "Roy",   "Pichu",
     "Ganondorf",
 };
+
+/* The saved Matchmaking team as the Duo Party page shows it: both fighters'
+ * names ("" when none is saved), whether the partner is a second player, and
+ * which fighter starts on point. */
+bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, int* point)
+{
+    PcNetTeam team;
+    if (!loadSavedTeam(&team)) {
+        snprintf(you, (size_t) size, "%s", "");
+        snprintf(mate, (size_t) size, "%s", "");
+        *mate_human = false;
+        *point = 0;
+        return false;
+    }
+    snprintf(you, (size_t) size, "%s", ckind_name[team.fighter[0].ckind]);
+    snprintf(mate, (size_t) size, "%s", ckind_name[team.fighter[1].ckind]);
+    *mate_human = team.fighter[1].human != 0;
+    *point = team.point;
+    return true;
+}
+
+int gmOnline_SavedFighter(void)
+{
+    int pick = pc_get_party_pick();
+    return pick >= 0 && pick < CKind_Playable_Count ? pick : -1;
+}
+
+const char* gmOnline_FighterName(int ckind)
+{
+    return ckind >= 0 && ckind < CKind_Playable_Count ? ckind_name[ckind] : "-";
+}
+
+/* Swap who starts on point. Only a team with a second player has the choice:
+ * a human+CPU team always starts with the human. */
+void gmOnline_TogglePoint(void)
+{
+    PcNetTeam team;
+    if (!loadSavedTeam(&team) || !team.fighter[1].human) {
+        return;
+    }
+    team.point = team.point ? 0 : 1;
+    pc_set_meleevs_team((const uint8_t*) &team);
+}
 
 /* "Your team: Fox (point) + Falco CPU": both fighters, which starts on
  * point, and whether the partner is a CPU or a second player on the same
@@ -759,10 +900,35 @@ static void teamLine(char* out, size_t size, const char* label, const PcNetTeam*
              team->fighter[1].human ? " (Couch)" : " CPU");
 }
 
+/* "Your team: Kirby (point) + Fox" for a party's two fighters. */
+static void partyTeamLine(char* out, size_t size, const char* label, const int f[2], int point,
+                          bool first_is_you, int second)
+{
+    if (f[0] < 0) {
+        out[0] = '\0';
+        return;
+    }
+    /* "Your team: Kirby (you, point) + Fox": which fighter is ours, and who is point */
+    const char* you = first_is_you ? (point == 0 ? " (you, point)" : " (you)") :
+                                     (point == 0 ? " (point)" : "");
+    if (f[1] < 0) {
+        snprintf(out, size, "%s: %s%s", label, gmOnline_FighterName(f[0]), you);
+        return;
+    }
+    snprintf(out, size, "%s: %s%s + %s%s%s", label, gmOnline_FighterName(f[0]), you,
+             gmOnline_FighterName(f[1]), point == 1 ? " (point)" : "",
+             second == 0 ? " CPU" : second == 1 ? " (Couch)" : "");
+}
+
 /* Every search starts here, so the netcode always knows whether this side
  * is joining a Matchmaking game (and with which team) before it connects. */
 static void startMatch(enum PcNetMatchMode mode, const char* code)
 {
+    if (mode == PC_MATCH_UNRANKED && party_queue) {
+        pc_net_set_matchmade(false, NULL);
+        pc_net_match_party_search();
+        return;
+    }
     if (mode == PC_MATCH_UNRANKED && matchmadeMode()) {
         PcNetTeam team = matchmadeLocalTeam();
         pc_net_set_matchmade(true, &team);
@@ -782,9 +948,11 @@ static const u8 matchmade_stages[] = { 2, 3, 8, 28, 31, 32 };
  * player 1 on 3+4 in blue), point from each team's choice, each fighter in
  * its team color's costume the way a vanilla team battle dresses it, and a
  * stage picked from the shared seed. */
+static void matchmadeTail(u32 seed);
 static void matchmadeBuild(u32 seed)
 {
     StartMeleeData* start = &online_vs.start;
+    pam_active = false;
     am_leaver = -1; /* the last game's after-match title has been shown */
     start->rules.is_teams = 1;
     for (int i = 0; i < GM_MAX_PLAYERS; i++) {
@@ -808,6 +976,84 @@ static void matchmadeBuild(u32 seed)
         }
         TagAssist_SetExplicitPoint((u8) m, pc_net_game_port(m, team->point));
     }
+    matchmadeTail(seed);
+}
+
+/* A party match: four machines, one fighter each, on the port of their machine
+ * number (teams are machines 0-1 and 2-3), point as each party agreed. */
+/* One fighter of a team match on its game port, on its team's colour. */
+static void partyPort(StartMeleeData* start, int port, int ckind, int team, bool human,
+                      int cpu_level)
+{
+    PlayerInitData* p = &start->players[port];
+    p->ckind = ckind;
+    p->color = team == 0 ? gm_80169264((u8) ckind) : gm_801692BC((u8) ckind);
+    p->sub_color = 0;
+    p->slot_type = human ? Gm_PKind_Human : Gm_PKind_Cpu;
+    if (!human) {
+        p->cpu_level = (u8) cpu_level;
+    }
+    p->team = (u8) team;
+    TagAssist_CssSyncPortTeam(port, (u8) team);
+}
+
+/* A team match of three or four machines: a party is one fighter per machine
+ * on the port its team gives it; a solo or couch team is one machine holding
+ * both of its team's ports (the second a CPU assist or a couch player). Point
+ * as each team agreed. */
+static void matchmadePartyBuild(u32 seed)
+{
+    StartMeleeData* start = &online_vs.start;
+    PcNetGroupMatch gmatch;
+    am_leaver = -1;
+    start->rules.is_teams = 1;
+    for (int i = 0; i < GM_MAX_PLAYERS; i++) {
+        start->players[i].slot_type = Gm_PKind_NA;
+    }
+    if (!pc_net_group_match(&gmatch)) {
+        return;
+    }
+    int myteam = gmatch.local < gmatch.team_size[0] ? 0 : 1;
+    pam_local = gmatch.local;
+    pam_machines = gmatch.machines;
+    pam_solo = gmatch.team_size[myteam] == 1;
+    pam_mixed = gmatch.team_size[0] == 1 || gmatch.team_size[1] == 1;
+    pam_my_fighter = gmatch.fighter[myteam * 2 + (gmatch.local - (myteam == 0 ? 0 : gmatch.team_size[0]))];
+    pam_active = true;
+    for (int team = 0; team < 2; team++) {
+        int first = team == 0 ? 0 : gmatch.team_size[0];
+        int point_port;
+        if (gmatch.team_size[team] == 2) {
+            for (int k = 0; k < 2; k++) {
+                partyPort(start, pc_net_game_port(first + k, 0), gmatch.fighter[team * 2 + k],
+                          team, true, 0);
+            }
+            point_port = pc_net_game_port(first + gmatch.point[team], 0);
+        } else {
+            int p0 = pc_net_game_port(first, 0), p1 = pc_net_game_port(first, 1);
+            partyPort(start, p0, gmatch.fighter[team * 2], team, true, 0);
+            partyPort(start, p1, gmatch.fighter[team * 2 + 1], team, gmatch.human1[team],
+                      gmatch.cpu_level[team]);
+            point_port = gmatch.point[team] ? p1 : p0;
+        }
+        TagAssist_SetExplicitPoint((u8) team, point_port);
+    }
+    pc_log_line("online: team match of %d machines (teams of %d and %d), ports: %s %s %s %s",
+                gmatch.machines, gmatch.team_size[0], gmatch.team_size[1],
+                start->players[0].slot_type == Gm_PKind_Human ? "human" :
+                start->players[0].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[1].slot_type == Gm_PKind_Human ? "human" :
+                start->players[1].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[2].slot_type == Gm_PKind_Human ? "human" :
+                start->players[2].slot_type == Gm_PKind_Cpu   ? "cpu" : "-",
+                start->players[3].slot_type == Gm_PKind_Human ? "human" :
+                start->players[3].slot_type == Gm_PKind_Cpu   ? "cpu" : "-");
+    matchmadeTail(seed);
+}
+
+static void matchmadeTail(u32 seed)
+{
+    StartMeleeData* start = &online_vs.start;
     {
         u32 h = seed * 2654435761u;
         start->rules.stkind = matchmade_stages[(h >> 16) % ARRAY_SIZE(matchmade_stages)];
@@ -862,6 +1108,26 @@ static char direct_entry[DIRECT_CODE_SLOTS + 1];
 static int direct_cursor;
 static bool direct_editing;   /* on the code page */
 static bool direct_code_edit; /* X pressed: the D-pad changes the code */
+/* Y on the code page: the same code entry starts a 3-4 machine group (the
+ * host leaves the code empty, the others enter its code) instead of a 2
+ * player match. The host presses START once everyone is in. */
+static bool direct_group;
+/* The Party page sent us here to link a partner: the same screen with the
+ * group on, until the link is made (the lobby then goes back to the menu). */
+static bool party_link;
+static int party_done_frames;
+void gmOnline_SetPartyQueue(bool value)
+{
+    party_queue = value;
+}
+void gmOnline_SetPartyFollow(bool value)
+{
+    party_follow = value;
+}
+void gmOnline_SetPartyLink(bool value)
+{
+    party_link = value;
+}
 static int direct_blink;
 static char direct_error[ONLINE_LOBBY_MSG_LEN];
 /* Recent opponents under "YOU": outside code editing, up/down walks them
@@ -959,8 +1225,221 @@ static void afterMatchExecute(int me)
     }
 }
 
+/* Another session on the same four machines, or a new search, changes who is
+ * where: these end the session for this machine and go on its own way. */
+static void partyEndSession(void)
+{
+    am_live = false;
+    pc_net_match_idle();
+    pc_net_peer_status_clear();
+}
+
+/* The Party page's one-fighter pick from the after-match lobby. */
+static void partyAfterChange(bool then_rematch)
+{
+    online_kind = ONLINE_KIND_TEAM_SELECT;
+    after_match = false; /* coming back to the lobby is not another choice */
+    pam_active = false;
+    party_select = !pam_solo; /* a solo or couch team picks both its fighters */
+    party_after_css = true;
+    team_select_then_search = !then_rematch;
+    team_select_then_rematch = then_rematch;
+    TagAssist_EnterForcedOn();
+    gm_InitVsMode(&online_vs);
+    for (int i = 0; i < GM_MAX_PLAYERS; ++i) {
+        online_vs.start.players[i].slot_type = Gm_PKind_NA;
+    }
+    teamSelectPrefill();
+    gm_SetNextGameModeStateId(state_css);
+    gm_801A4B60();
+}
+
+/* The session is over and there is no rematch: this machine goes on with its
+ * own pick, as the Matchmaking version does. Our teammate is linked again; a
+ * team's leader searches (straight away or after a new fighter), its partner
+ * waits on the Party page and is brought into the match when it is found. */
+static void partyAfterFollow(int pick)
+{
+    bool leader = pc_net_party_is_leader();
+    after_match = false;
+    pam_active = false;
+    pc_net_party_restore(); /* a solo or couch team has no teammate to link with */
+    switch (pick) {
+    case PAM_SAME_REMATCH:
+    case PAM_SAME_SEARCH:
+        if (leader) {
+            party_queue = !pam_solo; /* a solo team searches as itself */
+            online_kind = ONLINE_KIND_UNRANKED;
+            startMatch(PC_MATCH_UNRANKED, NULL);
+            return;
+        }
+        break;
+    case PAM_CHANGE_REMATCH:
+    case PAM_CHANGE_SEARCH:
+        if (pam_solo) {
+            afterMatchTeamSelect(false); /* the regular team select, then search */
+        } else {
+            partyAfterChange(false);
+        }
+        return;
+    default:
+        break;
+    }
+    gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+    gm_801A4B60();
+}
+
+/* All four wanted a rematch and someone changes fighter: the ones who did pick
+ * a new fighter, the rest go straight to waiting for the others. */
+/* Meet the other machines again: a solo or couch team brings the Matchmaking
+ * team the game has now (the team select may have changed it), a party member
+ * its one fighter. */
+static void partyRematchStart(int fighter)
+{
+    if (pam_solo) {
+        PcNetTeam team = matchmadeLocalTeam();
+        pc_net_set_matchmade(true, &team);
+    } else {
+        pc_net_set_matchmade(false, NULL);
+    }
+    pc_net_match_party_rematch(fighter);
+}
+
+static void partyRematchExecute(int pick)
+{
+    if (pick == PAM_CHANGE_REMATCH) {
+        partyAfterChange(true);
+        return;
+    }
+    after_match = false;
+    pam_active = false;
+    party_rematch_view = true;
+    partyRematchStart(pam_my_fighter);
+}
+
+/* The after-match choice of a party match, the same four as a Matchmaking
+ * rematch: every machine picks from its own synced pad, so all four read the
+ * same picks on the same frame. A rematch needs all four to want one; anyone
+ * who wants out, or drops, ends it and each machine goes on with its own pick. */
+static void partyAfterFrame(OnlineLobbyView* view)
+{
+    static const char* const label[4] = { "SAME FIGHTER - REMATCH", "CHANGE FIGHTER - REMATCH",
+                                          "SAME FIGHTER - MATCHMAKE",
+                                          "CHANGE FIGHTER - MATCHMAKE" };
+    static char tag[4][12];
+    int team = pam_local / 2;
+
+    view->title = am_result == AM_RESULT_NONE ? "MATCH OVER" :
+                  am_result == team           ? "Your team won!" :
+                                                "Your team lost.";
+    view->phase = LOBBY_PHASE_FOUND;
+    view->menu_count = 4;
+    for (int i = 0; i < 4; i++) {
+        view->menu[i] = label[i];
+    }
+
+    if (am_outcome != AM_OUT_NONE) {
+        view->phase = LOBBY_PHASE_CONNECTING;
+        snprintf(view->message, sizeof view->message, "%s",
+                 am_outcome == AM_OUT_LEAVE ? "No rematch" : "Rematch with a new fighter...");
+        if (pc_net_frame() >= am_leave_frame || !pc_net_active()) {
+            int outcome = am_outcome;
+            int mine = pam_pick[pam_local] < 0 ? PAM_MENU : pam_pick[pam_local];
+            am_outcome = AM_OUT_NONE;
+            partyEndSession();
+            if (outcome == AM_OUT_LEAVE) {
+                partyAfterFollow(mine);
+            } else {
+                partyRematchExecute(mine);
+            }
+        }
+        return;
+    }
+    if (!pc_net_active() || pc_net_machines_gone() > 0) {
+        pam_pick[pam_local] = PAM_MENU; /* someone is gone: back to the party */
+        am_outcome = AM_OUT_LEAVE;
+        am_leave_frame = 0;
+        return;
+    }
+    for (int m = 0; m < pam_machines; m++) {
+        u8 port = (u8) pc_net_game_port(m, 0);
+        u64 rep = gm_801A36C0(port);
+        u64 trg = gm_GetButtonsTriggered(port);
+        int before = pam_pick[m];
+        if (pam_pick[m] < 0) {
+            if (rep & (PAD_ANY_UP | PAD_ANY_DOWN)) {
+                int step = (rep & PAD_ANY_UP) ? 3 : 1;
+                pam_cursor[m] = (pam_cursor[m] + step) % 4;
+                if (m == pam_local) sfxMove();
+            } else if (trg & HSD_PAD_A) {
+                pam_pick[m] = pam_cursor[m];
+            } else if (trg & HSD_PAD_B) {
+                pam_pick[m] = PAM_MENU;
+            }
+        } else if (trg & HSD_PAD_B) {
+            pam_pick[m] = -1;
+        }
+        if (m == pam_local && pam_pick[m] != before) {
+            if (pam_pick[m] >= 0 && pam_pick[m] != PAM_MENU) sfxForward();
+            else sfxBack();
+        }
+    }
+    int picked = 0, leavers = 0, change = 0;
+    for (int i = 0; i < 4; i++) {
+        int n = 0;
+        for (int m = 0; m < pam_machines; m++) {
+            n += pam_pick[m] == i;
+        }
+        snprintf(tag[i], sizeof tag[i], "%s%d/%d", pam_pick[pam_local] == i ? "YOU " : "", n,
+                 pam_machines);
+        view->menu_tag[i] = tag[i];
+    }
+    for (int m = 0; m < pam_machines; m++) {
+        picked += pam_pick[m] >= 0;
+        leavers += pam_pick[m] >= PAM_SAME_SEARCH;
+        change += pam_pick[m] == PAM_CHANGE_REMATCH;
+    }
+    view->menu_cursor = pam_pick[pam_local] >= 0 && pam_pick[pam_local] < 4 ?
+                            pam_pick[pam_local] :
+                            pam_cursor[pam_local];
+    snprintf(view->message, sizeof view->message, "%s",
+             pam_pick[pam_local] < 0 ? "A rematch needs every player" :
+             picked < pam_machines   ? "Waiting for the others..." : "");
+    view->hint = pam_pick[pam_local] < 0 ? "D-PAD: choose    A: confirm    B: back to party" :
+                                           "B: change your pick";
+    if (leavers > 0) {
+        /* Someone wants out: no rematch; each machine goes on with its own pick. */
+        pc_log_line("after match: party, no rematch (%d want out)", leavers);
+        am_outcome = AM_OUT_LEAVE;
+        am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
+        return;
+    }
+    if (picked < pam_machines) {
+        return;
+    }
+    if (change == 0) {
+        /* Same fighters, same session: straight back in on a new stage. */
+        u32 seed = pc_net_match_seed() + ++am_game * 0x9E3779B9u;
+        pc_log_line("after match: party rematch %u, seed %u", am_game, seed);
+        after_match = false;
+        *HSD_RandSeedPtr = seed;
+        matchmadePartyBuild(seed);
+        gm_SetNextGameModeStateId(state_vs);
+        gm_801A4B60();
+        return;
+    }
+    /* A fighter changes: end the session, pick offline, and meet again. */
+    pc_log_line("after match: party rematch with a fighter change (%d changing)", change);
+    am_outcome = AM_OUT_TEAM_REMATCH;
+    am_leave_frame = pc_net_frame() + AM_HOLD_FRAMES;
+}
+
 static void afterMatchFrame(OnlineLobbyView* view)
 {
+    if (pam_active) {
+        partyAfterFrame(view);
+        return;
+    }
     static const char* const label[4] = { "SAME TEAM - REMATCH", "CHANGE TEAM - REMATCH",
                                           "SAME TEAM - MATCHMAKE",
                                           "CHANGE TEAM - MATCHMAKE" };
@@ -1104,7 +1583,10 @@ static void afterMatchFrame(OnlineLobbyView* view)
 
 static void directEntryBegin(void)
 {
-    snprintf(direct_entry, sizeof direct_entry, "%s", pc_get_net_target());
+    /* MELEE_DIRECT_TARGET (test tooling; set-but-empty means "host") beats
+     * the saved code, so instances sharing one config can take both sides. */
+    const char* forced = getenv("MELEE_DIRECT_TARGET");
+    snprintf(direct_entry, sizeof direct_entry, "%s", forced ? forced : pc_get_net_target());
     direct_cursor = (int) strlen(direct_entry);
     if (direct_cursor >= DIRECT_CODE_SLOTS) {
         direct_cursor = DIRECT_CODE_SLOTS - 1;
@@ -1193,6 +1675,12 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
     mnOnlineLobby_Create();
 #ifdef TARGET_PC
     direct_editing = false;
+    direct_group = party_link;
+    party_done_frames = 0;
+    if (party_queue_pending) {
+        party_queue = true;
+        party_queue_pending = false;
+    }
     if (online_kind == ONLINE_KIND_TEAM_SELECT) {
         /* offline: the first frame goes straight on to the CSS */
     } else if (online_kind == ONLINE_KIND_PROFILE) {
@@ -1211,8 +1699,18 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
                (online_kind != ONLINE_KIND_RANKED ||
                                   pc_net_match_publication(NULL) == 0)) {
         if (pc_net_peer_status() == PC_NET_PEER_OK) {
-            startMatch(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
-                               PC_MATCH_RANKED, NULL);
+            if (party_rematch_pending) {
+                party_rematch_pending = false;
+                party_rematch_view = true;
+                partyRematchStart(party_picked >= 0 ? party_picked : pam_my_fighter);
+                party_picked = -1;
+            } else if (party_follow) {
+                pc_net_set_matchmade(false, NULL);
+                pc_net_match_party_follow();
+            } else {
+                startMatch(online_kind == ONLINE_KIND_UNRANKED ? PC_MATCH_UNRANKED :
+                                   PC_MATCH_RANKED, NULL);
+            }
         }
     } else if (!internetLobby()) {
         pc_net_match_stop(); /* free the port the online menu's DHT node holds */
@@ -1224,6 +1722,10 @@ void gm_Scene_OnlineLobby_OnEnter(UNUSED void* unused)
 
 void gm_Scene_OnlineLobby_OnExit(UNUSED void* unused)
 {
+    party_link = false;
+    party_queue = false;
+    party_follow = false;
+    party_rematch_view = false;
     mnOnlineLobby_Destroy();
 }
 
@@ -1361,11 +1863,15 @@ void gm_Scene_OnlineLobby_OnFrame(void)
     if (online_kind == ONLINE_KIND_PROFILE || internetLobby()) {
         bool choosing = after_match;
         memset(&view, 0, sizeof view);
-        view.title = online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
+        view.title = party_rematch_view ? "PARTY REMATCH" :
+                     (party_queue || party_follow) ? "PARTY MATCHMAKING" :
+                     online_kind == ONLINE_KIND_PROFILE ? "PROFILE" :
                      online_kind == ONLINE_KIND_UNRANKED ?
                          (TagAssist_IsTagBattleOn() ? "MATCHMAKING" : "UNRANKED") :
                      online_kind == ONLINE_KIND_RANKED ? "RANKED" :
-                     rematch_direct ? "REMATCH" : "DIRECT CONNECT";
+                     rematch_direct ? "REMATCH" :
+                     party_link ? "PARTY LINK" :
+                     direct_group ? "DIRECT GROUP" : "DIRECT CONNECT";
         view.player_count = 1;
         view.players[0].is_local = true;
         view.players[0].ping_ms = -1;
@@ -1393,6 +1899,9 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 } else if (direct_contact_count > 0 &&
                            (repeat & (PAD_ANY_UP | PAD_ANY_DOWN))) {
                     directContactStep((repeat & PAD_ANY_DOWN) ? 1 : -1);
+                    sfxMove();
+                } else if ((input & HSD_PAD_Y) && !party_link) {
+                    direct_group = !direct_group;
                     sfxMove();
                 }
             } else if (input & (HSD_PAD_X | HSD_PAD_B | PAD_CANCEL)) {
@@ -1457,6 +1966,10 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                                  direct_contacts[i].last_played);
             }
             view.hint = direct_code_edit ? "D-PAD: move and change    X: done    START: connect" :
+                        party_link ? (direct_entry[0] ? "START: link with your partner    X: edit code    B: back" :
+                                                        "START: host a link    X: edit code    B: back") :
+                        direct_group ? (direct_entry[0] ? "START: join group    Y: 2 players    X: edit    B: back" :
+                                                          "START: host group    Y: 2 players    X: edit    B: back") :
                         direct_contact_count > 0 ?
                             (direct_entry[0] ? "START: connect    UP/DOWN: recent    X: edit    B: back" :
                                                "START: host    UP/DOWN: recent    X: edit    B: back") :
@@ -1496,8 +2009,16 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     pc_log_line("lobby: direct connect %s '%s'",
                                 direct_entry[0] ? "dialing" : "hosting as",
                                 direct_entry[0] ? direct_entry : pc_net_match_local_code());
-                    startMatch(PC_MATCH_DIRECT,
-                                       direct_entry[0] ? direct_entry : NULL);
+                    if (party_link) {
+                        pc_net_set_matchmade(false, NULL);
+                        pc_net_match_party_start(direct_entry[0] ? direct_entry : NULL);
+                    } else if (direct_group) {
+                        pc_net_set_matchmade(false, NULL);
+                        pc_net_match_group_start(direct_entry[0] ? direct_entry : NULL);
+                    } else {
+                        startMatch(PC_MATCH_DIRECT,
+                                           direct_entry[0] ? direct_entry : NULL);
+                    }
                 }
             }
         } else if (awaiting_rank_result && pc_net_match_publication(NULL) == 0) {
@@ -1587,9 +2108,70 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                     view.hint = "B: back";
                 }
             }
+            if (party_rematch_view && state == PC_MATCH_SEARCH && reason == PC_NET_PEER_OK) {
+                snprintf(view.message, sizeof view.message,
+                         "Waiting for your team and the other team...");
+            }
+            if (direct_group && online_kind == ONLINE_KIND_DIRECT && state == PC_MATCH_SEARCH &&
+                reason == PC_NET_PEER_OK) {
+                if (direct_entry[0]) {
+                    snprintf(view.message, sizeof view.message, party_link ?
+                             "Linking with your partner..." : "Joining the group...");
+                } else {
+                    int count = pc_net_match_group_count();
+                    for (int i = 1; i < count && i < ONLINE_LOBBY_MAX_PLAYERS; i++) {
+                        if (!pc_net_match_group_member(i, view.players[i].name)) {
+                            snprintf(view.players[i].name, sizeof view.players[i].name, "PLAYER %d", i + 1);
+                        }
+                        view.players[i].ping_ms = -1;
+                    }
+                    view.player_count = count > 0 ? count : 1;
+                    if (count >= 2 && party_link) {
+                        view.phase = LOBBY_PHASE_CONNECTING;
+                        snprintf(view.message, sizeof view.message, "Partner found. Linking...");
+                    } else if (count >= 2) {
+                        view.phase = LOBBY_PHASE_FOUND;
+                        snprintf(view.message, sizeof view.message, "%d players in.", count);
+                        view.hint = "START: begin the match    B: back";
+                        if (input & HSD_PAD_START) {
+                            sfxForward();
+                            pc_net_match_group_begin();
+                        }
+                    } else {
+                        snprintf(view.message, sizeof view.message, party_link ?
+                                 "Waiting for your partner to enter your code..." :
+                                 "Waiting for players to join your code...");
+                    }
+                }
+            }
+            if (state == PC_MATCH_PARTY) {
+                /* Linked: back to the Party page, keeping the DHT node (and
+                 * with it the link) alive. */
+                view.phase = LOBBY_PHASE_STARTING;
+                snprintf(view.message, sizeof view.message, "Linked! Back to the party page...");
+                if (++party_done_frames > 45) {
+                    sfxForward();
+                    gm_ChangeGameModeAfterCurrentScene(GM_MENU);
+                    gm_801A4B60();
+                }
+            }
             if (state == PC_MATCH_READY && pc_net_frame() >= pc_net_match_start_frame()) {
                 *HSD_RandSeedPtr = pc_net_match_seed();
-                if (pc_net_matchmade()) {
+                PcNetGroupMatch party_match;
+                if (pc_net_group_match(&party_match)) {
+                    matchmadePartyBuild(pc_net_match_seed());
+                    am_game = 0;
+                    rematch_direct = false;
+                    if (getenv("MELEE_PARTY_TEST_AFTER")) {
+                        /* test tooling: straight to the after-match lobby */
+                        after_match = true;
+                        gm_SetNextGameModeStateId(state_lobby);
+                    } else {
+                        gm_SetNextGameModeStateId(state_vs);
+                    }
+                    pc_log_line("lobby: entering party match at frame %d, seed %u", pc_net_frame(),
+                                pc_net_match_seed());
+                } else if (pc_net_matchmade()) {
                     /* Matchmaking: no CSS/SSS, straight into the match. */
                     matchmadeBuild(pc_net_match_seed());
                     am_game = 0;
@@ -1617,6 +2199,18 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 }
             }
         }
+        if (party_queue || party_follow || party_rematch_view || pam_active) {
+            /* A party: its fighters and who is point, not the Matchmaking team. */
+            int f[2], point, second;
+            if (pc_net_party_team(true, f, &point, &second)) {
+                partyTeamLine(view.team[0], sizeof view.team[0], "Your team", f, point, true,
+                              second);
+            }
+            if (pc_net_party_team(false, f, &point, &second)) {
+                partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false,
+                              second);
+            }
+        }
         if (matchmadeMode()) {
             /* What this machine queues with (saved TEAM SELECT team, or
              * the CSS fallback), and the opponent's once matched. */
@@ -1626,6 +2220,13 @@ void gm_Scene_OnlineLobby_OnFrame(void)
                 pc_net_matchmade() ? pc_net_team(pc_net_match_is_host() ? 1 : 0) : NULL;
             if (theirs != NULL) {
                 teamLine(view.team[1], sizeof view.team[1], "Opponent", theirs);
+            } else {
+                /* a party found us: its two fighters, from the team swap */
+                int f[2], point, second;
+                if (pc_net_party_team(false, f, &point, &second)) {
+                    partyTeamLine(view.team[1], sizeof view.team[1], "Opponent", f, point, false,
+                                  second);
+                }
             }
         }
         mnOnlineLobby_Update(&view);
@@ -1633,7 +2234,11 @@ void gm_Scene_OnlineLobby_OnFrame(void)
             sfxBack();
             rematch_direct = false;
             pc_net_peer_status_clear();
-            pc_net_match_stop();
+            if (party_queue || party_follow) {
+                pc_net_match_idle(); /* the party link outlives the search */
+            } else {
+                pc_net_match_stop();
+            }
             gm_ChangeGameModeAfterCurrentScene(GM_MENU);
             gm_801A4B60();
         }

@@ -425,6 +425,11 @@ Preferences load_preferences(const std::filesystem::path& path) {
             if (row >> value && value.size() == 18 &&
                 value.find_first_not_of("0123456789abcdef") == std::string::npos)
                 prefs.meleevs_team = value;
+        } else if (key == "party_pick") {
+            std::string value;
+            if (row >> value && value.size() == 2 &&
+                value.find_first_not_of("0123456789abcdef") == std::string::npos)
+                prefs.party_pick = value;
         }
     }
     return prefs;
@@ -459,6 +464,8 @@ bool save_preferences(
     text << "reverb " << prefs.reverb << '\n';
     if (!prefs.meleevs_team.empty())
         text << "meleevs_team " << prefs.meleevs_team << '\n';
+    if (!prefs.party_pick.empty())
+        text << "party_pick " << prefs.party_pick << '\n';
     auto data = text.str();
     size_t done = 0;
     bool ok = true;

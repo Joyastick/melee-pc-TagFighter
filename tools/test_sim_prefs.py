@@ -26,6 +26,10 @@ PINNED = {
     # MeleeVS: the saved TEAM SELECT team; online the sim uses the team each
     # side sent in the handshake (Rules/Ready.team), not this read
     "pc_get_meleevs_team": "RULES/READY team (net_handshake.c)",
+    # MeleeVS Party: the fighter picked on the Party page; online the sim uses
+    # the fighters the two leaders swap and the leader sends its partner
+    # (net_match.c), not this read
+    "pc_get_party_pick": "team swap / MATCHGO fighters (net_match.c)",
 }
 PRESENTATION = {
     "pc_get_hud_mode": "widescreen HUD placement (ifall.c)",

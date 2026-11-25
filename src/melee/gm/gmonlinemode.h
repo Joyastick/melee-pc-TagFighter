@@ -27,8 +27,29 @@ OnlineKind gmOnline_GetKind(void);
 /* True while the TEAM SELECT CSS is up (mncharsel.c restricts it to the
  * two local ports, one team, no costume or team changes). */
 bool gmOnline_IsTeamSelect(void);
+/* True while that CSS is the Party page's one-fighter pick: only door 1 is
+ * open and confirming saves the party pick, not a team. */
+bool gmOnline_IsPartySelect(void);
+/* The next TEAM SELECT is the Party page's one-fighter pick. */
+void gmOnline_SetPartySelect(bool value);
 /* A Matchmaking team has been saved by TEAM SELECT. */
 bool gmOnline_HasSavedTeam(void);
+/* The saved team for the Duo Party page: both fighters' names, whether the
+ * partner is a second player, and who starts on point (0 you, 1 partner).
+ * False, with empty names, when none is saved. */
+bool gmOnline_SavedTeamText(char* you, char* mate, int size, bool* mate_human, int* point);
+void gmOnline_TogglePoint(void); /* swap point, for a team with a second player */
+/* The saved team's first fighter (a CharacterKind, -1 when none is saved) and
+ * a fighter's short name for menu rows. */
+int gmOnline_SavedFighter(void);
+const char* gmOnline_FighterName(int ckind);
+/* The next Direct-style lobby scene links a party partner instead of
+ * starting a match (the Party page's PARTNER row). */
+void gmOnline_SetPartyLink(bool value);
+/* The next lobby scene searches Matchmaking as a linked party (the leader), or
+ * joins the match our party's leader found (the partner). */
+void gmOnline_SetPartyQueue(bool value);
+void gmOnline_SetPartyFollow(bool value);
 /* Confirming TEAM SELECT goes straight on into Matchmaking instead of back
  * to the menu (set when MATCHMAKING had no saved team to queue with). */
 void gmOnline_SetTeamSelectThenSearch(bool value);

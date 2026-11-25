@@ -3,6 +3,7 @@
 #include "net_dht.h"
 #include "net_dht_item.h"
 #include "net.h"
+#include "net_group_lobby.h"
 #include "net_lan.h"
 #include "net_rank_session.h"
 #include "net_rendezvous.h"
@@ -49,7 +50,7 @@ __attribute__((weak)) void pc_log_line(const char* fmt, ...) {
  *     who each dial the other meet, one pairing topic for every direct
  *     Hello, and suffix-keyed direct and dial-back records. The name part
  *     of a code is only a label now. */
-#define MATCH_VERSION 7
+#define MATCH_VERSION 8 /* 8: the Hello says whether the searcher is a party */
 #define RETRY_MS 250
 /* How long a peer that answered our Hello gets to finish Offer/Ack before we
  * drop it and keep searching. The exchange is one round trip retried every
@@ -186,6 +187,36 @@ static struct {
     uint64_t until;
 } avoided[4];
 static unsigned avoided_cursor;
+/* Group lobby (a 3-4 machine Direct match) over the DHT socket: the host's
+ * direct record is how guests find it, the lobby's JOIN/roster/GO messages
+ * (MPG1) share the socket with the DHT, and once the roster is agreed the
+ * session opens on that same socket. */
+static GroupLobby glob;
+static bool group_mode, group_lobby_up, group_target_known;
+static bool party_mode;                         /* the group lobby is a party link */
+static bool party_search, party_search_pending; /* a party leader queued / about to */
+static bool peer_party;                         /* the opponent's Hello says it is a party leader */
+#define NET_NO_PARTNER_BIND 0xFF
+static void party_match_begin(void);
+static bool pm_connect(void);
+static struct pc_dht_endpoint group_target; /* the host's endpoint, network order */
+/* A second place the host may be: the DHT record and the pairing server each
+ * name one, and the server may instead have paired us with another guest, so
+ * a guest sends what it says to the host to both. */
+static struct pc_dht_endpoint group_alt;
+static bool group_alt_known;
+static struct pc_dht_endpoint group_rdv_peer; /* the server's match, until the host answers */
+static uint64_t group_rdv_at;
+static bool group_rdv_open;
+static void group_note_target(struct pc_dht_endpoint ep) {
+    if (!group_target_known) {
+        group_target = ep;
+        group_target_known = true;
+    } else if (ep.address != group_target.address || ep.port != group_target.port) {
+        group_alt = ep;
+        group_alt_known = true;
+    }
+}
 static int64_t public_sequence(const uint8_t* p) {
     return (int64_t)((uint32_t)p[16] << 24 | (uint32_t)p[17] << 16 | (uint32_t)p[18] << 8 | p[19]);
 }
@@ -315,7 +346,10 @@ static char identity_name[9]; /* the player name identity.code was made with */
 static bool load_identity(void) {
     if (identity_loaded)
         return true;
-    char* dir = SDL_GetPrefPath(NULL, "melee-pc_TagFighter");
+    /* MELEE_IDENTITY_DIR (test tooling): a second instance on one machine
+     * needs its own key, and SDL's pref path cannot be moved on Windows. */
+    const char* over = getenv("MELEE_IDENTITY_DIR");
+    char* dir = over && *over ? SDL_strdup(over) : SDL_GetPrefPath(NULL, "melee-pc_TagFighter");
     const char* name = pc_get_net_name();
     snprintf(identity_name, sizeof identity_name, "%s", name && *name ? name : "PLAYER");
     bool ok = dir && pc_identity_load(&identity, dir, identity_name);
@@ -632,15 +666,20 @@ static void direct_get_result(const PcDhtItemResult* r, void* context) {
         pc_log_line("match: direct record for %s -> %u.%u.%u.%u:%u%s", target, ip >> 24,
             (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep.port,
             local ? " (same network, also dialing its LAN address)" : "");
-        add_hello_target(ep);
-        if (local)
-            add_hello_target(lan);
+        if (group_mode) {
+            /* the lobby dials the host's LAN address when it is on our network */
+            group_note_target(local ? lan : ep);
+        } else {
+            add_hello_target(ep);
+            if (local)
+                add_hello_target(lan);
+        }
         direct_next = SDL_GetTicks() + DIRECT_REPOLL_MS; /* pick up a host re-publish */
     } else {
         pc_log_line("match: no direct record for %s yet (status=%d)", target, (int)r->status);
         direct_next = SDL_GetTicks() + 2000;
     }
-    if (dial_next == UINT64_MAX)
+    if (dial_next == UINT64_MAX && !group_mode)
         dial_next = 0; /* first lookup done: now tell the host where we are */
 }
 /* Dial-back record: "MPB1", the dialer's identity key, public endpoint,
@@ -854,6 +893,10 @@ static bool accept_ack(const MatchAck* a) {
     ack_received = true;
     if (mode == PC_MATCH_RANKED && !proofs_ready)
         return true;
+    if (party_search || peer_party) {
+        party_match_begin();
+        return true;
+    }
     pc_rdv_stop();
     intptr_t fd = pc_dht_take_socket();
     char ip[INET_ADDRSTRLEN];
@@ -1057,10 +1100,812 @@ static void drop_peer(const char* why, bool avoid) {
     next_send = 0; /* peer attempt expired: remain queued in DHT */
     failure = why;
 }
+static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused);
+/* ---- party link
+ * Two machines that met in a group lobby stay linked over the DHT socket: no
+ * game session, just a signed datagram twice a second each way carrying our
+ * fighter and who is point, so the Party page can show both and either
+ * player can change the point. The link is bound to the lobby's nonce and
+ * the partner's key, and ends when the partner goes silent, on
+ * pc_net_party_leave, or when the DHT node is stopped. */
+#define PARTY_MAGIC 0x4d505031u /* MPP1 */
+#define PARTY_SEND_MS 500
+#define PARTY_SILENT_MS 20000
+#pragma pack(push, 1)
+typedef struct PartyMsg {
+    uint32_t magic;
+    uint8_t ver, machine; /* the sender's machine number */
+    uint64_t lobby_nonce;
+    int8_t fighter; /* the sender's CharacterKind, -1 unknown */
+    uint8_t point;  /* the machine that is point */
+    uint8_t point_seq;
+    uint8_t searching; /* the sender is queued for a Matchmaking party match */
+    uint8_t sig[64];
+} PartyMsg;
+#pragma pack(pop)
+static struct {
+    bool linked;
+    GroupRoster roster;
+    int local;
+    uint64_t nonce, last_rx, next_send;
+    struct pc_dht_endpoint peer; /* network order; follows the partner's source address */
+    int mate_fighter;
+    uint8_t point, seq;
+    bool searching, mate_searching, heard;
+    unsigned tx, rx;
+    uint64_t next_log;
+} party;
+static int party_my_fighter = -1;
+static void party_drop(void) {
+    if (party.linked)
+        pc_log_line("match: party link closed (state %d)", (int)state);
+    memset(&party, 0, sizeof party);
+    party.mate_fighter = -1;
+}
+static void party_make(const GroupRoster* r, int local, uint64_t now, uint64_t nonce) {
+    party_drop();
+    party.linked = true;
+    party.roster = *r;
+    party.local = local;
+    party.nonce = nonce;
+    party.last_rx = now;
+    const GroupMember* m = &r->m[1 - local];
+    bool lan = m->lan_ip && m->pub_ip == r->m[local].pub_ip;
+    party.peer.address = htonl(lan ? m->lan_ip : m->pub_ip);
+    party.peer.port = lan ? m->lan_port : m->pub_port;
+    uint32_t pip = ntohl(party.peer.address);
+    pc_log_line("match: party linked, we are machine %d (partner at %u.%u.%u.%u:%u)", local,
+        pip >> 24, (pip >> 16) & 0xFF, (pip >> 8) & 0xFF, pip & 0xFF, party.peer.port);
+}
+static void party_send(void) {
+    PartyMsg p;
+    memset(&p, 0, sizeof p);
+    p.magic = PARTY_MAGIC;
+    p.ver = 1;
+    p.machine = (uint8_t)party.local;
+    p.lobby_nonce = party.nonce;
+    p.fighter = (int8_t)party_my_fighter;
+    p.point = party.point;
+    p.point_seq = party.seq;
+    p.searching = party.searching;
+    sign_packet(&p, sizeof p);
+    if (send_packet(&p, sizeof p, &party.peer))
+        party.tx++;
+}
+static bool party_receive(const void* data, size_t n, const struct pc_dht_endpoint* ep) {
+    PartyMsg p;
+    uint32_t magic;
+    if (!party.linked || n != sizeof p)
+        return false;
+    memcpy(&magic, data, 4);
+    if (magic != PARTY_MAGIC)
+        return false;
+    memcpy(&p, data, sizeof p);
+    if (p.ver != 1 || p.machine != 1 - party.local || p.lobby_nonce != party.nonce ||
+        !signed_ok(party.roster.m[1 - party.local].key, p.sig, &p, sizeof p))
+    {
+        static uint64_t logged;
+        uint64_t t = SDL_GetTicks();
+        if (t - logged > 5000) {
+            logged = t;
+            pc_log_line("match: party message refused (machine %d vs %d, nonce %s)", p.machine,
+                1 - party.local, p.lobby_nonce == party.nonce ? "ok" : "differs");
+        }
+        return true; /* ours to drop */
+    }
+    if (!party.heard) {
+        party.heard = true;
+        uint32_t ip = ntohl(ep->address);
+        pc_log_line("match: party heard the partner from %u.%u.%u.%u:%u", ip >> 24,
+            (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF, ep->port);
+    }
+    party.peer = *ep;
+    party.rx++;
+    party.last_rx = SDL_GetTicks();
+    if (party.mate_fighter != p.fighter)
+        pc_log_line("match: party mate's fighter is %d", (int)p.fighter);
+    party.mate_fighter = p.fighter;
+    party.mate_searching = p.searching != 0;
+    /* the higher sequence wins; a tie goes to the host's view */
+    if (p.point_seq > party.seq || (p.point_seq == party.seq && p.machine == 0)) {
+        if (party.point != (p.point & 1))
+            pc_log_line("match: party point is now machine %d", p.point & 1);
+        party.point = p.point & 1, party.seq = p.point_seq;
+    }
+    return true;
+}
+bool pc_net_party_linked(void) {
+    return party.linked;
+}
+bool pc_net_party_partner(char label[10], int* fighter, bool* partner_is_point) {
+    if (!party.linked)
+        return false;
+    const GroupMember* m = &party.roster.m[1 - party.local];
+    if (m->name[0]) {
+        snprintf(label, 10, "%s", m->name);
+    } else {
+        char suffix[9];
+        key_suffix(m->key, suffix);
+        snprintf(label, 10, "%s", suffix);
+    }
+    *fighter = party.mate_fighter;
+    *partner_is_point = party.point != party.local;
+    return true;
+}
+void pc_net_party_set_pick(int fighter) {
+    party_my_fighter = fighter;
+}
+void pc_net_party_toggle_point(void) {
+    if (!party.linked)
+        return;
+    party.point ^= 1;
+    party.seq++;
+    party.next_send = 0;
+}
+void pc_net_party_leave(void) {
+    pc_log_line("match: leaving the party");
+    party_drop();
+}
+void pc_net_party_poll(void) {
+    if (!party.linked)
+        return;
+    if (state != PC_MATCH_SEARCH && state != PC_MATCH_CONNECT && state != PC_MATCH_READY) {
+        pc_dht_set_datagram_callback(receive, NULL); /* idle() clears it */
+        pc_dht_poll();
+    }
+    uint64_t now = SDL_GetTicks(); /* after the poll: its datagrams stamp last_rx */
+    if (now > party.last_rx && now - party.last_rx > PARTY_SILENT_MS) {
+        pc_log_line("match: party partner went silent, link dropped");
+        party_drop();
+        return;
+    }
+    if (now >= party.next_log) {
+        party.next_log = now + 8000;
+        pc_log_line("match: party link tx %u rx %u, last heard %u ms ago (state %d)", party.tx,
+            party.rx, (unsigned)(now - party.last_rx), (int)state);
+    }
+    if (now >= party.next_send) {
+        party_send();
+        party.next_send = now + PARTY_SEND_MS;
+    }
+}
+/* ---- party match: leaders pair, swap parties, everyone connects */
+#define PINFO_MAGIC 0x4d504931u /* MPI1: leader to leader */
+#define PGO_MAGIC 0x4d504f31u   /* MPO1: leader to its partner */
+#define PM_EXCHANGE_MS 20000
+enum { PM_NONE, PM_EXCHANGE, PM_DONE };
+/* One side of a match as its leader describes it: a party (two machines, a
+ * fighter each) or a solo / couch team (one machine, two fighters). */
+typedef struct PartySide {
+    GroupMember m[2]; /* leader first */
+    int n;            /* machines: 1 or 2 */
+    int8_t fighter[2];
+    uint8_t human1;       /* a team of one: its second fighter is a couch player ... */
+    uint8_t cpu_level;    /* ... else a CPU assist at this level */
+    uint8_t partner_bind; /* the couch player's Tag Bind */
+    uint8_t point;        /* which of the two starts on point */
+} PartySide;
+typedef struct PartyDesc {
+    GroupRoster roster;
+    int8_t fighter[4]; /* team A's two fighters, then team B's */
+    uint8_t point[2];
+    uint8_t team_size[2]; /* machines per team */
+    uint8_t human1[2], cpu_level[2], partner_bind[2];
+    uint32_t seed;
+} PartyDesc;
+#pragma pack(push, 1)
+typedef struct PartyInfoMsg {
+    uint32_t magic;
+    uint8_t ver;
+    uint8_t offer_hash[20];
+    uint8_t rlen;
+    uint8_t wire[1 + 2 * GROUP_MEMBER_WIRE];
+    int8_t fighter[2];
+    uint8_t point;
+    uint8_t n, human1, cpu_level, partner_bind;
+    uint8_t sig[64];
+} PartyInfoMsg;
+typedef struct PartyGoMsg {
+    uint32_t magic;
+    uint8_t ver;
+    uint64_t nonce; /* the party link's */
+    uint32_t seed;
+    uint8_t rlen;
+    uint8_t wire[GROUP_WIRE_MAX];
+    int8_t fighter[4];
+    uint8_t point[2];
+    uint8_t team_size[2], human1[2], cpu_level[2], partner_bind[2];
+    uint8_t sig[64];
+} PartyGoMsg;
+#pragma pack(pop)
+static struct {
+    int phase;
+    bool have_theirs, desc_valid, go_pending, desc_built, leader;
+    uint64_t next_send, got_at, deadline;
+    PartySide mine, theirs;
+    PartyDesc desc;
+    int local;
+} pm;
+static void pm_reset(void) {
+    memset(&pm, 0, sizeof pm);
+}
+static int pm_team_of(int machine) {
+    return machine < pm.desc.team_size[0] ? 0 : 1;
+}
+static int pm_first(int team) {
+    return team == 0 ? 0 : pm.desc.team_size[0];
+}
+/* The fighter slot (0-3) a machine's own fighter sits in: team A's two, then B's. */
+static int pm_slot_of(int machine) {
+    int t = pm_team_of(machine);
+    return t * 2 + (machine - pm_first(t));
+}
+static void pm_side_party(PartySide* s) {
+    memset(s, 0, sizeof *s);
+    s->n = 2;
+    s->m[0] = party.roster.m[party.local];
+    s->m[1] = party.roster.m[1 - party.local];
+    s->fighter[0] = (int8_t)party_my_fighter;
+    s->fighter[1] = (int8_t)party.mate_fighter;
+    s->point = party.point == party.local ? 0 : 1;
+    s->partner_bind = NET_NO_PARTNER_BIND;
+}
+/* A solo or couch team: this machine, with its Matchmaking team's second
+ * fighter as a CPU assist or (a second controller plugged in) a couch player. */
+static bool pm_side_solo(PartySide* s) {
+    struct pc_dht_endpoint pub;
+    if (!public_endpoint(&pub))
+        return false;
+    memset(s, 0, sizeof *s);
+    GroupMember* m = &s->m[0];
+    memcpy(m->key, identity.public_key, 32);
+    m->pub_ip = ntohl(pub.address);
+    m->pub_port = pub.port;
+    m->lan_ip = ntohl(lan_address());
+    m->lan_port = pc_dht_port();
+    {
+        char suffix[9], name[9];
+        if (pc_identity_parse_code(identity.code, suffix, name))
+            memcpy(m->name, name, 8);
+    }
+    PcNetTeam t;
+    int pb;
+    pc_net_local_team(&t, &pb);
+    s->n = 1;
+    s->fighter[0] = t.fighter[0].ckind;
+    s->fighter[1] = t.fighter[1].ckind;
+    s->human1 = pb >= 0;
+    s->cpu_level =
+        t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ? t.fighter[1].cpu_level : 9;
+    s->partner_bind = pb >= 0 ? (uint8_t)pb : NET_NO_PARTNER_BIND;
+    s->point = pb >= 0 ? t.point & 1 : 0; /* a lone human starts on point */
+    return true;
+}
+static void pm_info_send(void) {
+    PartyInfoMsg m;
+    GroupRoster r;
+    memset(&m, 0, sizeof m);
+    memset(&r, 0, sizeof r);
+    r.n = (uint8_t)pm.mine.n;
+    for (int i = 0; i < pm.mine.n; i++)
+        r.m[i] = pm.mine.m[i];
+    m.magic = PINFO_MAGIC;
+    m.ver = 2;
+    memcpy(m.offer_hash, offer_hash, 20);
+    m.rlen = (uint8_t)group_roster_encode(&r, m.wire, sizeof m.wire);
+    m.fighter[0] = pm.mine.fighter[0];
+    m.fighter[1] = pm.mine.fighter[1];
+    m.point = pm.mine.point;
+    m.n = (uint8_t)pm.mine.n;
+    m.human1 = pm.mine.human1;
+    m.cpu_level = pm.mine.cpu_level;
+    m.partner_bind = pm.mine.partner_bind;
+    sign_packet(&m, sizeof m);
+    send_packet(&m, sizeof m, &peer);
+}
+/* The one description every machine builds the match from: the host leader's
+ * team is team A, its machines in order leader, partner. */
+static bool pm_build(PartyDesc* d) {
+    const PartySide* a = host ? &pm.mine : &pm.theirs;
+    const PartySide* b = host ? &pm.theirs : &pm.mine;
+    const GroupMember* parties[2] = {a->m, b->m};
+    int sizes[2] = {a->n, b->n};
+    memset(d, 0, sizeof *d);
+    if (sizes[0] + sizes[1] < 3 || !group_from_parties(&d->roster, parties, sizes, 2))
+        return false; /* two solo teams play the two-machine match instead */
+    const PartySide* side[2] = {a, b};
+    for (int t = 0; t < 2; t++) {
+        d->fighter[t * 2] = side[t]->fighter[0];
+        d->fighter[t * 2 + 1] = side[t]->fighter[1];
+        d->point[t] = side[t]->point;
+        d->team_size[t] = (uint8_t)side[t]->n;
+        d->human1[t] = side[t]->human1;
+        d->cpu_level[t] = side[t]->cpu_level;
+        d->partner_bind[t] = side[t]->partner_bind;
+    }
+    d->seed = seed;
+    return true;
+}
+static void pm_go_send(void) {
+    PartyGoMsg g;
+    memset(&g, 0, sizeof g);
+    g.magic = PGO_MAGIC;
+    g.ver = 2;
+    g.nonce = party.nonce;
+    g.seed = pm.desc.seed;
+    g.rlen = (uint8_t)group_roster_encode(&pm.desc.roster, g.wire, sizeof g.wire);
+    memcpy(g.fighter, pm.desc.fighter, 4);
+    memcpy(g.point, pm.desc.point, 2);
+    memcpy(g.team_size, pm.desc.team_size, 2);
+    memcpy(g.human1, pm.desc.human1, 2);
+    memcpy(g.cpu_level, pm.desc.cpu_level, 2);
+    memcpy(g.partner_bind, pm.desc.partner_bind, 2);
+    sign_packet(&g, sizeof g);
+    send_packet(&g, sizeof g, &party.peer);
+}
+/* ---- party rematch: the same machines meet again */
+#define PRR_MAGIC 0x50525231u /* PRR1 */
+#define PRR_WAIT_MS 180000
+#pragma pack(push, 1)
+typedef struct PartyReadyMsg {
+    uint32_t magic;
+    uint8_t ver, machine;
+    int8_t fighter;
+    uint8_t heard; /* bit i: we have the ready of machine i */
+    uint64_t match_id;
+    /* A solo or couch team is one machine: its second fighter and how it is
+     * played (a CPU assist at cpu_level, or a couch player with a Tag Bind). */
+    int8_t fighter2;
+    uint8_t human1, cpu_level, partner_bind, point;
+    uint8_t sig[64];
+} PartyReadyMsg;
+#pragma pack(pop)
+static struct {
+    bool active;
+    uint64_t match_id, next_send, done_at, deadline;
+    struct pc_dht_endpoint peer[4];
+    bool have[4];
+    uint8_t heard_by[4]; /* what machine i told us it has heard */
+    int8_t fighter[4];
+    int8_t fighter2[4];
+    uint8_t human1[4], cpu_level[4], partner_bind[4], point[4]; /* solo machines' teams */
+} prm;
+static uint32_t party_games; /* rematch sessions so far: part of the next one's id and seed */
+static uint32_t prm_seed(void) {
+    return pm.desc.seed + (party_games + 1) * 0x9E3779B9u;
+}
+/* The fighter in a slot: what its machine just announced while meeting again. */
+static int prm_fighter(int slot) {
+    int t = slot / 2, k = slot % 2;
+    if (prm.active && pm.desc.team_size[t] == 2) {
+        int machine = pm_first(t) + k;
+        if (prm.have[machine])
+            return prm.fighter[machine];
+    } else if (prm.active && prm.have[pm_first(t)]) {
+        return k ? prm.fighter2[pm_first(t)] : prm.fighter[pm_first(t)];
+    }
+    return pm.desc.fighter[slot];
+}
+bool pc_net_party_team(bool ours, int fighter[2], int* point, int* second) {
+    if (pm.desc_valid) {
+        int team = pm_team_of(pm.local);
+        if (!ours)
+            team = 1 - team;
+        fighter[0] = prm_fighter(team * 2);
+        fighter[1] = prm_fighter(team * 2 + 1);
+        *point = pm.desc.point[team];
+        *second = pm.desc.team_size[team] == 2 ? 2 : pm.desc.human1[team] ? 1 : 0;
+        if (ours && pm.desc.team_size[team] == 2 && pm.local != pm_first(team)) {
+            int t = fighter[0]; /* ourselves first */
+            fighter[0] = fighter[1];
+            fighter[1] = t;
+            *point ^= 1;
+        }
+        return true;
+    }
+    if (ours && party.linked) {
+        fighter[0] = party_my_fighter;
+        fighter[1] = party.mate_fighter;
+        *point = party.point == party.local ? 0 : 1;
+        *second = 2;
+        return true;
+    }
+    if (!ours && pm.phase == PM_EXCHANGE && pm.have_theirs) {
+        fighter[0] = pm.theirs.fighter[0];
+        fighter[1] = pm.theirs.fighter[1];
+        *point = pm.theirs.point;
+        *second = pm.theirs.n == 2 ? 2 : pm.theirs.human1 ? 1 : 0;
+        return true;
+    }
+    return false;
+}
+bool pc_net_party_is_leader(void) {
+    return pm.desc_valid && pm.leader;
+}
+static bool prm_receive(const void* data, size_t n, const struct pc_dht_endpoint* ep) {
+    uint32_t magic;
+    if (n != sizeof(PartyReadyMsg))
+        return false;
+    memcpy(&magic, data, 4);
+    if (magic != PRR_MAGIC)
+        return false;
+    PartyReadyMsg m;
+    memcpy(&m, data, sizeof m);
+    if (!prm.active || m.ver != 2 || m.machine >= pm.desc.roster.n || m.machine == pm.local ||
+        m.match_id != prm.match_id ||
+        !signed_ok(pm.desc.roster.m[m.machine].key, m.sig, &m, sizeof m))
+        return true;
+    (void)ep;
+    if (!prm.have[m.machine])
+        pc_log_line("match: party rematch, machine %d is back", m.machine);
+    prm.have[m.machine] = true;
+    prm.fighter[m.machine] = m.fighter;
+    prm.fighter2[m.machine] = m.fighter2;
+    prm.human1[m.machine] = m.human1 != 0;
+    prm.cpu_level[m.machine] = m.cpu_level >= 1 && m.cpu_level <= 9 ? m.cpu_level : 9;
+    prm.partner_bind[m.machine] = m.partner_bind;
+    prm.point[m.machine] = m.point & 1;
+    prm.heard_by[m.machine] = m.heard;
+    return true;
+}
+static bool pm_connect(void);
+static void prm_poll(uint64_t now) {
+    int machines = pm.desc.roster.n;
+    if (now > prm.deadline) {
+        prm.active = false;
+        fail("Your team did not come back");
+        return;
+    }
+    if (now >= prm.next_send) {
+        PartyReadyMsg m;
+        memset(&m, 0, sizeof m);
+        m.magic = PRR_MAGIC;
+        m.ver = 2;
+        m.machine = (uint8_t)pm.local;
+        m.fighter = prm.fighter[pm.local];
+        m.fighter2 = prm.fighter2[pm.local];
+        m.human1 = prm.human1[pm.local];
+        m.cpu_level = prm.cpu_level[pm.local];
+        m.partner_bind = prm.partner_bind[pm.local];
+        m.point = prm.point[pm.local];
+        for (int i = 0; i < machines; i++)
+            m.heard |= (uint8_t)((prm.have[i] ? 1 : 0) << i);
+        m.match_id = prm.match_id;
+        sign_packet(&m, sizeof m);
+        for (int i = 0; i < machines; i++)
+            if (i != pm.local)
+                send_packet(&m, sizeof m, &prm.peer[i]);
+        prm.next_send = now + 300;
+    }
+    bool all = true;
+    for (int i = 0; i < machines; i++)
+        if (i != pm.local && (!prm.have[i] || !(prm.heard_by[i] & (1 << pm.local))))
+            all = false;
+    if (all && !prm.done_at)
+        prm.done_at = now;
+    /* keep answering for a moment so the slowest machine hears that we heard it */
+    if (prm.done_at && now - prm.done_at > 1500) {
+        prm.active = false;
+        for (int i = 0; i < machines; i++) {
+            int t = pm_team_of(i);
+            if (pm.desc.team_size[t] == 2) {
+                pm.desc.fighter[pm_slot_of(i)] = prm.fighter[i];
+            } else { /* a solo or couch team brings its whole team */
+                pm.desc.fighter[t * 2] = prm.fighter[i];
+                pm.desc.fighter[t * 2 + 1] = prm.fighter2[i];
+                pm.desc.human1[t] = prm.human1[i];
+                pm.desc.cpu_level[t] = prm.cpu_level[i];
+                pm.desc.partner_bind[t] = prm.partner_bind[i];
+                pm.desc.point[t] = prm.point[i];
+            }
+        }
+        pm.desc.seed = prm_seed();
+        party_games++;
+        if (!pm_connect()) {
+            fail("connection failed");
+            return;
+        }
+        state = PC_MATCH_CONNECT;
+        pc_net_set_datagram_handler(NULL);
+    }
+}
+bool pc_net_match_party_rematch(int fighter) {
+    if (!pm.desc_valid)
+        return false;
+    mode = PC_MATCH_UNRANKED;
+    failure = NULL;
+    start_frame = -1;
+    opponent[0] = 0;
+    have_peer = false;
+    handshake_done = barrier_sent = barrier_received = false;
+    group_mode = party_search = false;
+    party_drop();
+    pm.phase = PM_NONE;
+    pm.go_pending = false;
+    if (!load_identity() || !pc_dht_warm((uint16_t)pc_get_net_port())) {
+        fail("connection failed");
+        return false;
+    }
+    pc_dht_set_datagram_callback(receive, NULL);
+    memset(&prm, 0, sizeof prm);
+    uint8_t material[8], h[20];
+    uint32_t game = party_games + 1;
+    memcpy(material, &pm.desc.seed, 4);
+    memcpy(material + 4, &game, 4);
+    pc_dht_sha1(material, sizeof material, h);
+    memcpy(&prm.match_id, h, 8);
+    const GroupRoster* r = &pm.desc.roster;
+    for (int i = 0; i < r->n; i++) {
+        const GroupMember* m = &r->m[i];
+        bool lan = m->lan_ip && m->pub_ip == r->m[pm.local].pub_ip;
+        prm.peer[i].address = htonl(lan ? m->lan_ip : m->pub_ip);
+        prm.peer[i].port = lan ? m->lan_port : m->pub_port;
+        int t = pm_team_of(i);
+        prm.fighter[i] = pm.desc.fighter[pm_slot_of(i)];
+        prm.fighter2[i] = pm.desc.fighter[t * 2 + 1];
+        prm.human1[i] = pm.desc.human1[t];
+        prm.cpu_level[i] = pm.desc.cpu_level[t];
+        prm.partner_bind[i] = pm.desc.partner_bind[t];
+        prm.point[i] = pm.desc.point[t];
+    }
+    prm.fighter[pm.local] = (int8_t)fighter;
+    if (pm.desc.team_size[pm_team_of(pm.local)] == 1) {
+        /* our own team as the game now has it (the regular team select may
+         * have changed it, both fighters and the point) */
+        PcNetTeam t;
+        int pb;
+        pc_net_local_team(&t, &pb);
+        prm.fighter[pm.local] = t.fighter[0].ckind;
+        prm.fighter2[pm.local] = t.fighter[1].ckind;
+        prm.human1[pm.local] = pb >= 0;
+        prm.cpu_level[pm.local] =
+            t.fighter[1].cpu_level >= 1 && t.fighter[1].cpu_level <= 9 ? t.fighter[1].cpu_level : 9;
+        prm.partner_bind[pm.local] = pb >= 0 ? (uint8_t)pb : NET_NO_PARTNER_BIND;
+        prm.point[pm.local] = pb >= 0 ? t.point & 1 : 0;
+    }
+    prm.have[pm.local] = true;
+    prm.deadline = SDL_GetTicks() + PRR_WAIT_MS;
+    prm.active = true;
+    state = PC_MATCH_SEARCH;
+    pc_log_line("match: party rematch, waiting for the other %d", r->n - 1);
+    return true;
+}
+static void party_match_begin(void) {
+    pc_rdv_stop();
+    pm_reset();
+    pm.phase = PM_EXCHANGE;
+    pm.leader = true;
+    bool ok;
+    if (party_search) {
+        pm_side_party(&pm.mine);
+        ok = true;
+    } else {
+        ok = pm_side_solo(&pm.mine);
+    }
+    if (!ok) {
+        fail("No public address yet");
+        return;
+    }
+    pm.deadline = SDL_GetTicks() + PM_EXCHANGE_MS;
+    state = PC_MATCH_CONNECT;
+    pc_log_line("match: paired with %s (%s), swapping teams", opponent,
+        party_search ? "as a party" : "as a solo team");
+}
+/* Connect this machine's session for the agreed description. */
+static bool pm_connect(void) {
+    int local = -1;
+    for (int i = 0; i < pm.desc.roster.n; i++)
+        if (!memcmp(pm.desc.roster.m[i].key, identity.public_key, 32))
+            local = i;
+    if (local < 0)
+        return false;
+    pm.local = local;
+    seed = pm.desc.seed;
+    host = local == 0;
+    pc_rdv_stop();
+    intptr_t fd = pc_dht_take_socket();
+    party_drop(); /* the link's socket becomes the match session */
+    if (!group_connect(&pm.desc.roster, local, fd, seed, &identity))
+        return false;
+    /* Who sits on which game port: team t owns ports 2t and 2t+1; a team of one
+     * machine has its second fighter (assist or couch player) on the next. */
+    int port0[GROUP_MAX], partner[GROUP_MAX];
+    bool slot1[GROUP_MAX];
+    for (int m = 0; m < pm.desc.roster.n; m++) {
+        int t = pm.desc.roster.m[m].team;
+        port0[m] = group_port(&pm.desc.roster, m);
+        slot1[m] = pm.desc.team_size[t] == 1;
+        partner[m] = slot1[m] && pm.desc.human1[t] ? (int)pm.desc.partner_bind[t] : -1;
+    }
+    pc_net_set_group_layout(pm.desc.roster.n, port0, slot1, partner);
+    pm.desc_valid = true;
+    pm.phase = PM_DONE;
+    pc_log_line("match: team match, we are machine %d of %d", local, (int)pm.desc.roster.n);
+    return true;
+}
+static bool pm_receive(const void* data, size_t n, const struct pc_dht_endpoint* ep) {
+    uint32_t magic;
+    if (n < 4)
+        return false;
+    memcpy(&magic, data, 4);
+    if (magic == PINFO_MAGIC && n == sizeof(PartyInfoMsg)) {
+        PartyInfoMsg m;
+        memcpy(&m, data, sizeof m);
+        GroupRoster r;
+        if (!(party_search || peer_party) || pm.phase != PM_EXCHANGE || m.ver != 2 ||
+            ep->address != peer.address || ep->port != peer.port ||
+            memcmp(m.offer_hash, offer_hash, 20) || !signed_ok(peer_key, m.sig, &m, sizeof m) ||
+            m.n < 1 || m.n > 2 || group_roster_decode(&r, m.wire, m.rlen) != m.rlen || r.n != m.n ||
+            memcmp(r.m[0].key, peer_key, 32))
+            return true;
+        if (!pm.have_theirs) {
+            memset(&pm.theirs, 0, sizeof pm.theirs);
+            pm.theirs.n = m.n;
+            for (int i = 0; i < m.n; i++)
+                pm.theirs.m[i] = r.m[i];
+            pm.theirs.fighter[0] = m.fighter[0];
+            pm.theirs.fighter[1] = m.fighter[1];
+            pm.theirs.point = m.point & 1;
+            pm.theirs.human1 = m.n == 1 && m.human1;
+            pm.theirs.cpu_level = m.cpu_level >= 1 && m.cpu_level <= 9 ? m.cpu_level : 9;
+            pm.theirs.partner_bind = m.partner_bind;
+            if (m.n == 1 && !m.human1)
+                pm.theirs.point = 0; /* a lone human starts on point */
+            pm.have_theirs = true;
+            pm.got_at = SDL_GetTicks();
+            pc_log_line("match: got the opposing team (%d machine%s)", m.n, m.n == 1 ? "" : "s");
+        }
+        return true;
+    }
+    if (magic == PGO_MAGIC && n == sizeof(PartyGoMsg)) {
+        PartyGoMsg g;
+        memcpy(&g, data, sizeof g);
+        if (!party.linked || pm.go_pending || pm.phase != PM_NONE || g.ver != 2 ||
+            g.nonce != party.nonce ||
+            !signed_ok(party.roster.m[1 - party.local].key, g.sig, &g, sizeof g))
+            return true;
+        PartyDesc d;
+        memset(&d, 0, sizeof d);
+        if (group_roster_decode(&d.roster, g.wire, g.rlen) != g.rlen ||
+            group_roster_check(&d.roster) != NULL || d.roster.n < 3 || g.team_size[0] < 1 ||
+            g.team_size[0] > 2 || g.team_size[1] < 1 || g.team_size[1] > 2 ||
+            g.team_size[0] + g.team_size[1] != d.roster.n)
+            return true;
+        memcpy(d.fighter, g.fighter, 4);
+        memcpy(d.point, g.point, 2);
+        memcpy(d.team_size, g.team_size, 2);
+        memcpy(d.human1, g.human1, 2);
+        memcpy(d.cpu_level, g.cpu_level, 2);
+        memcpy(d.partner_bind, g.partner_bind, 2);
+        d.seed = g.seed;
+        pm.desc = d;
+        pm.go_pending = true;
+        pc_log_line("match: our party's leader found a match");
+        return true;
+    }
+    return false;
+}
+/* Leader: swap teams with the opposing leader, tell our partner (if we have
+ * one) the agreed roster while doing so, and connect once the other side has
+ * had time to hear ours too. */
+static void party_match_poll(uint64_t now) {
+    if (now > pm.deadline) {
+        fail("Could not set up the team match");
+        return;
+    }
+    if (pm.have_theirs && !pm.desc_built) {
+        if (!pm_build(&pm.desc)) {
+            fail("These teams cannot play together");
+            return;
+        }
+        pm.desc_built = true;
+    }
+    /* now was read before this poll's datagrams, which stamp got_at: never
+     * let the difference wrap (it skipped the wait and left our partner with
+     * no word of the match). */
+    now = SDL_GetTicks();
+    if (!pm.have_theirs || (now > pm.got_at && now - pm.got_at < 1500) || now <= pm.got_at) {
+        if (now >= pm.next_send) {
+            pm_info_send();
+            if (pm.desc_built && party_search)
+                pm_go_send();
+            pm.next_send = now + 300;
+        }
+        return;
+    }
+    if (!pm_connect())
+        fail("connection failed");
+}
+bool pc_net_match_party_search(void) {
+    if (!party.linked)
+        return false;
+    party_search_pending = true;
+    bool ok = pc_net_match_start(PC_MATCH_UNRANKED, NULL);
+    party_search_pending = false;
+    if (ok)
+        party.searching = true;
+    return ok;
+}
+bool pc_net_party_partner_searching(void) {
+    return party.linked && party.mate_searching;
+}
+bool pc_net_party_go_pending(void) {
+    return pm.go_pending;
+}
+/* The partner's side: join the session our leader's agreed roster describes. */
+bool pc_net_match_party_follow(void) {
+    if (!pm.go_pending)
+        return false;
+    pm.go_pending = false;
+    pm.leader = false;
+    mode = PC_MATCH_UNRANKED;
+    failure = NULL;
+    start_frame = -1;
+    opponent[0] = 0;
+    have_peer = false;
+    handshake_done = barrier_sent = barrier_received = false;
+    group_mode = false;
+    if (!load_identity() || !pm_connect()) {
+        fail("connection failed");
+        return false;
+    }
+    state = PC_MATCH_CONNECT;
+    pc_net_set_datagram_handler(NULL);
+    return true;
+}
+bool pc_net_party_restore(void) {
+    if (!pm.desc_valid)
+        return false;
+    int team = pm_team_of(pm.local);
+    if (pm.desc.team_size[team] != 2)
+        return false; /* a solo or couch team has no teammate to link with */
+    int first = pm_first(team);
+    GroupRoster r;
+    memset(&r, 0, sizeof r);
+    r.n = 2;
+    r.m[0] = pm.desc.roster.m[first];
+    r.m[1] = pm.desc.roster.m[first + 1];
+    /* Both sides derive the same nonce from what they already share. */
+    uint8_t material[64 + 4], h[20];
+    memcpy(material, r.m[0].key, 32);
+    memcpy(material + 32, r.m[1].key, 32);
+    memcpy(material + 64, &pm.desc.seed, 4);
+    pc_dht_sha1(material, sizeof material, h);
+    uint64_t nonce;
+    memcpy(&nonce, h, 8);
+    int mine = pm.local - first;
+    party_make(&r, mine, SDL_GetTicks(), nonce);
+    party.point = pm.desc.point[team];
+    party.seq = 0;
+    party.mate_fighter = pm.desc.fighter[team * 2 + (1 - mine)];
+    return true;
+}
+bool pc_net_group_match(PcNetGroupMatch* out) {
+    if (!pm.desc_valid || !pc_net_active())
+        return false;
+    out->machines = pm.desc.roster.n;
+    out->local = pm.local;
+    for (int t = 0; t < 2; t++) {
+        out->team_size[t] = pm.desc.team_size[t];
+        out->point[t] = pm.desc.point[t];
+        out->human1[t] = pm.desc.human1[t] != 0;
+        out->cpu_level[t] = pm.desc.cpu_level[t];
+    }
+    for (int i = 0; i < 4; i++)
+        out->fighter[i] = pm.desc.fighter[i];
+    return true;
+}
 static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep, void* unused) {
     (void)unused;
     if (pc_rdv_receive(data, n, ep))
         return;
+    if (party_receive(data, n, ep) || pm_receive(data, n, ep) || prm_receive(data, n, ep))
+        return;
+    if (group_mode) {
+        if (group_lobby_up)
+            group_lobby_receive(&glob, data, (int)n, ntohl(ep->address), ep->port, SDL_GetTicks());
+        return; /* a group lobby has no Hello / Offer / Ping */
+    }
     if (n == sizeof(MatchPing)) {
         receive_ping(data, ep);
     } else if (n == sizeof(MatchHello)) {
@@ -1108,6 +1953,7 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         have_peer = true;
         failure = NULL;
         memcpy(opponent, h->code, sizeof opponent);
+        peer_party = h->reserved != 0;
         host = memcmp(identity.public_key, peer_key, 32) < 0;
         uint32_t rip = ntohl(ep->address);
         pc_log_line("match: recv valid MatchHello from %u.%u.%u.%u:%u (peer=%s host=%d fresh=%d)",
@@ -1173,6 +2019,11 @@ static void receive(const void* data, size_t n, const struct pc_dht_endpoint* ep
         for (int p = 0; p < 3; p++) {
             send_packet(&ack, sizeof ack, ep);
         }
+        if (party_search || peer_party) {
+            host = false;
+            party_match_begin();
+            return;
+        }
         pc_rdv_stop();
         intptr_t fd = pc_dht_take_socket();
         char ip[INET_ADDRSTRLEN];
@@ -1219,6 +2070,14 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     seed = 0;
     opponent[0] = 0;
     have_peer = agreed = false;
+    group_mode = group_lobby_up = group_target_known = false;
+    group_alt_known = group_rdv_open = false;
+    party_mode = false;
+    peer_party = false;
+    if (!party_search_pending)
+        party_drop();
+    party_search = party_search_pending;
+    pm_reset();
     handshake_done = barrier_sent = barrier_received = false;
     publication = 0;
     publication_reason = NULL;
@@ -1294,6 +2153,7 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     hello.version = MATCH_VERSION;
     hello.type = 'H';
     hello.mode = (uint8_t)m;
+    hello.reserved = party_search ? 1 : 0; /* 1: a party's leader */
     hello.nonce = local_nonce;
     memcpy(hello.public_key, identity.public_key, 32);
     memcpy(hello.compatibility, compatibility, 20);
@@ -1313,6 +2173,129 @@ bool pc_net_match_start(enum PcNetMatchMode m, const char* code) {
     state = PC_MATCH_SEARCH;
     deadline = 0;
     next_send = 0;
+    return true;
+}
+static void group_send(void* ctx, uint32_t ip, uint16_t port, const void* data, int len) {
+    (void)ctx;
+    struct pc_dht_endpoint to = {htonl(ip), port};
+    send_packet(data, (size_t)len, &to);
+    if (!glob.host && group_alt_known)
+        send_packet(data, (size_t)len, &group_alt);
+}
+/* Bring the lobby up once we know our own public endpoint (and, as a guest,
+ * the host's), then drive it; when the roster is agreed open the session. */
+static void group_poll(uint64_t now) {
+    direct_poll(now);
+    /* The pairing server's part: it pairs two queued players on the host's
+     * topic and both send at once, which opens their NATs. A guest takes the
+     * match as the host's endpoint; the host sends the guest a first packet
+     * (which is what opens its side) and queues again for the next one. */
+    pc_rdv_poll(now);
+    struct pc_dht_endpoint mate, mate_lan;
+    if (pc_rdv_take_match(&mate, &mate_lan)) {
+        bool same = mate_lan.address && mate_lan.port && mate.address == pc_rdv_public_ip();
+        struct pc_dht_endpoint use = same ? mate_lan : mate;
+        if (target[0]) {
+            group_note_target(use);
+            group_rdv_peer = mate;
+            group_rdv_at = now;
+            group_rdv_open = true;
+        } else {
+            for (int i = 0; i < 3; i++)
+                send_packet("MPG0", 4, &use);
+            pc_rdv_retry_avoiding(&mate);
+        }
+    }
+    if (group_rdv_open && group_lobby_up && glob.state != GL_COLLECTING)
+        group_rdv_open = false; /* the host answered */
+    else if (group_rdv_open && now - group_rdv_at > 6000) {
+        /* Probably another guest: ask the server for someone else. */
+        group_rdv_open = false;
+        pc_rdv_retry_avoiding(&group_rdv_peer);
+    }
+    if (!group_lobby_up) {
+        struct pc_dht_endpoint pub;
+        bool guest = target[0] != 0;
+        if (!public_endpoint(&pub) || (guest && !group_target_known))
+            return;
+        GroupMember self = {0};
+        self.pub_ip = ntohl(pub.address);
+        self.pub_port = pub.port;
+        self.lan_ip = ntohl(lan_address());
+        self.lan_port = pc_dht_port();
+        {
+            char suffix[9], name[9];
+            if (pc_identity_parse_code(identity.code, suffix, name))
+                memcpy(self.name, name, 8);
+        }
+        if (guest)
+            group_lobby_join(&glob, &identity, &self, target_suffix, ntohl(group_target.address),
+                group_target.port, group_send, NULL, now, 120000);
+        else
+            group_lobby_host(&glob, &identity, &self, group_send, NULL, now, 120000);
+        group_lobby_up = true;
+        pc_log_line("match: group lobby %s", guest ? "joining" : "hosting");
+        return;
+    }
+    group_lobby_poll(&glob, now);
+    if (party_mode && glob.host && glob.state == GL_COLLECTING && group_lobby_count(&glob) >= 2) {
+        group_lobby_start(&glob, now); /* a party is just the two of us */
+        pc_rdv_stop();
+    }
+    if (glob.state == GL_FAILED) {
+        fail(glob.why ? glob.why : "group lobby failed");
+    } else if (glob.state == GL_READY) {
+        int local;
+        const GroupRoster* r = group_lobby_roster(&glob, &local);
+        host = local == 0;
+        seed = 0;
+        if (host && !pc_identity_random(&seed, sizeof seed)) {
+            fail("no random source");
+            return;
+        }
+        pc_rdv_stop();
+        if (party_mode) {
+            party_make(r, local, now, glob.lobby_nonce);
+            state = PC_MATCH_PARTY;
+            return;
+        }
+        pc_log_line("match: group of %d agreed, we are machine %d", r->n, local);
+        if (!group_connect(r, local, pc_dht_take_socket(), seed, &identity)) {
+            fail("group connect failed");
+            return;
+        }
+        state = PC_MATCH_CONNECT;
+        pc_net_set_datagram_handler(NULL);
+    }
+}
+bool pc_net_match_group_start(const char* host_code) {
+    if (!pc_net_match_start(PC_MATCH_DIRECT, host_code))
+        return false;
+    group_mode = true;
+    return true;
+}
+int pc_net_match_group_count(void) {
+    return group_mode && group_lobby_up && glob.host ? group_lobby_count(&glob) : 0;
+}
+bool pc_net_match_group_member(int i, char out[18]) {
+    const GroupMember* m = group_mode && group_lobby_up ? group_lobby_member(&glob, i) : NULL;
+    if (!m)
+        return false;
+    char suffix[9];
+    key_suffix(m->key, suffix);
+    snprintf(out, 18, "%s#%s", m->name, suffix);
+    return true;
+}
+bool pc_net_match_party_start(const char* host_code) {
+    if (!pc_net_match_group_start(host_code))
+        return false;
+    party_mode = true;
+    return true;
+}
+bool pc_net_match_group_begin(void) {
+    if (!group_mode || !group_lobby_up || !group_lobby_start(&glob, SDL_GetTicks()))
+        return false;
+    pc_rdv_stop(); /* nobody else joins now */
     return true;
 }
 void pc_net_match_poll(void) {
@@ -1339,6 +2322,14 @@ void pc_net_match_poll(void) {
                         return;
                 }
             }
+        }
+        if (prm.active) {
+            prm_poll(now);
+            return;
+        }
+        if (group_mode) {
+            group_poll(now);
+            return;
         }
         direct_poll(now);
         pc_rdv_poll(now);
@@ -1442,6 +2433,11 @@ void pc_net_match_poll(void) {
     } else if (state == PC_MATCH_FAIL) {
         pc_net_match_warm();
     } else if (state == PC_MATCH_CONNECT) {
+        if (pm.phase == PM_EXCHANGE) {
+            pc_dht_poll();
+            party_match_poll(now);
+            return;
+        }
         pc_net_poll();
         if (!handshake_done)
             handshake_done = host ? pc_net_host_match(seed, &start_frame) :
@@ -1504,13 +2500,16 @@ void pc_net_match_poll(void) {
  * retry skips bootstrap; it still needs polling to keep its table fresh. */
 static void reset(bool keep_node) {
     pc_rdv_stop();
+    party.searching = false;
     if (pc_net_active())
         pc_log_line("match: reset (keep node %d) drops the active session, state was %d",
             (int)keep_node, (int)state);
     if (keep_node)
         pc_dht_idle();
-    else
+    else {
         pc_dht_stop();
+        party_drop(); /* its socket is gone */
+    }
     direct_pending = direct_put_inflight = false;
     hello_target_count = 0;
     publication = 0;

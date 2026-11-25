@@ -56,6 +56,7 @@ bool pc_net_pure_load(const char* filename); /* served from memory, no barrier *
 bool pc_net_scene_hold(void);
 /* Controller port the local player drives (0 = P1/host, 1 = P2/guest). */
 int pc_net_local_player(void);
+int pc_net_machines(void); /* machines in the match: 2 to 4 (peers + us) */
 
 /* Frame of the tick being simulated (-1 before the first); identical on both
  * peers, so a scene change scheduled for a given frame lands in sync. */
@@ -72,10 +73,21 @@ bool pc_net_local_pause(int* leave_hold, int* leave_needed);
  * transfers on success only; no new NAT mapping is created. */
 bool pc_net_connect_socket(
     intptr_t socket, const char* ip, uint16_t port, int player, uint32_t seed);
+/* A 3 or 4 machine match on one socket: ips/ports indexed by machine number
+ * (`machines` entries, our own ignored), machine 0 hosts. socket -1 binds a
+ * new one. Peers end up in ascending machine order. */
+bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
+    const uint16_t* ports, uint32_t seed);
 /* The 32-byte secret pairing agreed for the next session (NULL clears it).
  * Set just before pc_net_connect_socket(); the handshake's datagram key is
  * then derived under it, and it is wiped when that session ends. */
 void pc_net_set_session_secret(const uint8_t* secret);
+/* For a group match: our identity secret key and every machine's identity key
+ * (indexed by machine number). Set just before pc_net_connect_group(); each
+ * link's datagram key is then derived under the X25519 secret between the two
+ * machines' identities. NULL clears it; any other connect and disconnect do. */
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines);
 /* Offered every IPv4 datagram on the session socket before the session sees
  * it; true consumes it. Runs on net.c's receive thread, and
  * pc_net_set_datagram_handler() returns only once no call into the previous
@@ -106,6 +118,7 @@ bool pc_net_rules(bool* unlock_all, bool* frozen_stadium);
  * pc_net_rules's fields, each peer keeps their own. 0 (Off) before the
  * handshake completes or when netplay is inactive. */
 int pc_net_remote_tag_bind(void);
+int pc_net_tag_bind_of(int machine); /* any machine's pinned Tag Bind */
 
 /* This machine's own MeleeVS: Tag Bind index, pinned at the moment it went
  * on the wire (Rules.tag_bind if we're the host, Ready.tag_bind if we're
@@ -152,6 +165,23 @@ const PcNetTeam* pc_net_team(int machine);
  * partner or assist. Direct/LAN keep MeleeVS's CSS layout (host 1+3, guest
  * 2+4); Matchmaking puts each team together (host 1+2, guest 3+4). */
 int pc_net_game_port(int machine, int slot);
+int pc_net_partner_bind_of(int machine); /* couch partner's Tag Bind, or < 0 */
+
+/* A 3-4 machine match whose teams were settled before connecting (a party,
+ * alone or against a solo or couch team): each machine's own game port, which
+ * machines are a team of one (their second fighter is on the next port: a CPU
+ * assist, or a couch player when partner_bind >= 0) and that couch partner's
+ * Tag Bind (-1 none). Set after pc_net_connect_group succeeds; cleared by
+ * pc_net_disconnect. Without it a group seats one player per machine on the
+ * port of its machine number. */
+void pc_net_set_group_layout(
+    int machines, const int port0[], const bool slot1[], const int partner_bind[]);
+void pc_net_clear_group_layout(void);
+/* This machine's own team as it would go on the wire (the Matchmaking team
+ * with the couch partner decided by whether a second controller is plugged
+ * in): fighters, human flags, CPU level and point. partner_bind is the
+ * couch partner's Tag Bind or -1. */
+void pc_net_local_team(PcNetTeam* out, int* partner_bind);
 
 /* Whether game port 0-3 is a human in this session: ports 0/1 always, 2/3
  * only for a machine that announced a couch partner. The CSS uses it to
@@ -261,6 +291,9 @@ enum {
     PC_NET_PEER_RESUME
 };
 int pc_net_peer_status(void);
+/* 3-4 machine sessions: how many of the other machines have left or been
+ * dropped (the match goes on without them; the after-match lobby ends). */
+int pc_net_machines_gone(void);
 void pc_net_peer_status_clear(void);
 
 #ifdef __cplusplus

@@ -117,6 +117,14 @@ void wire_ready(Ready* rd) {
     be32(&rd->hash);
 }
 
+void wire_go(Go* go) {
+    for (int i = 0; i < NET_MAX_MACHINES; i++) {
+        be64(&go->nonce[i]);
+    }
+    be32(&go->start_frame);
+    be32(&go->hash);
+}
+
 /* Hash of a handshake payload's wire image (everything before .hash) with
  * the session id folded in after it, big-endian like every wire field. The
  * session binding is what stops a captured RULES/READY from validating in a
@@ -131,6 +139,11 @@ static uint32_t hs_hash(const void* image, size_t n, uint32_t session) {
 uint32_t rules_hash(Rules ru, uint32_t session) {
     wire_rules(&ru);
     return hs_hash(&ru, offsetof(Rules, hash), session);
+}
+
+uint32_t go_hash(Go go, uint32_t session) {
+    wire_go(&go);
+    return hs_hash(&go, offsetof(Go, hash), session);
 }
 
 uint32_t ready_hash(Ready rd, uint32_t session) {
@@ -158,11 +171,24 @@ uint32_t ready_hash(Ready rd, uint32_t session) {
 static const char KEY_LABEL[] = "melee-pc netplay session key v1";
 static const char KEY_LABEL_SECRET[] = "melee-pc netplay session key v2";
 static const char KEY_LABEL_DIRECT[] = "melee-pc netplay direct key v1";
-static uint8_t s_key[32];
+/* One key per peer: a link between two machines is keyed by its own two
+ * nonces, so a 3 or 4 machine match holds up to NET_MAX_PEERS of them. */
+static uint8_t s_key[NET_MAX_PEERS][32];
 static uint8_t s_secret[32];
-static bool s_secret_on;  /* s_secret holds pairing's secret for this session */
-static bool s_key_on;     /* s_key holds a key for the session in progress */
-static bool s_key_pinned; /* from MELEE_NET_KEY: the handshake must not rekey */
+static bool s_secret_on;             /* s_secret holds pairing's secret for this session */
+static bool s_key_on[NET_MAX_PEERS]; /* s_key[i] holds a key for the session in progress */
+static bool s_key_pinned;            /* from MELEE_NET_KEY: the handshake must not rekey */
+/* A group match keys each link under X25519 between the two machines' identity
+ * keys (the roster the lobby signed names them all), so a guest-to-guest link
+ * has a secret the host never sees on the wire either. Set before connecting
+ * and kept through net_key_clear (a session reset wipes keys, not this); it
+ * goes at pc_net_set_group_identity(NULL). Static-static, so no forward
+ * secrecy, which a MAC key whose session is over has no use for. */
+static const char KEY_LABEL_GROUP[] = "melee-pc netplay group link v1";
+static uint8_t s_gx_secret[32];
+static uint8_t s_gx_public[NET_MAX_MACHINES][32]; /* identity keys, as X25519 */
+static uint8_t s_gx_id[NET_MAX_MACHINES][32];     /* identity keys as given */
+static int s_gx_machines;
 
 static void put32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24);
@@ -176,7 +202,57 @@ static void put64(uint8_t* p, uint64_t v) {
     put32(p + 4, (uint32_t)v);
 }
 
-void net_key_session(uint64_t host_nonce, uint64_t guest_nonce) {
+/* The secret of our link to `machine`: X25519 of our identity scalar and its
+ * identity key, hashed with both identities in machine order. False for an
+ * unknown machine or a low-order key (the result would be public). */
+static bool group_link_secret(int machine, uint8_t out[32]) {
+    if (machine < 0 || machine >= s_gx_machines || machine == net.local) {
+        return false;
+    }
+    uint8_t shared[32];
+    crypto_x25519(shared, s_gx_secret, s_gx_public[machine]);
+    unsigned any = 0;
+    for (int i = 0; i < 32; i++) {
+        any |= shared[i];
+    }
+    if (!any) {
+        return false;
+    }
+    int lo = machine < net.local ? machine : net.local;
+    int hi = machine < net.local ? net.local : machine;
+    crypto_blake2b_ctx ctx;
+    crypto_blake2b_init(&ctx, 32);
+    crypto_blake2b_update(&ctx, (const uint8_t*)KEY_LABEL_GROUP, sizeof KEY_LABEL_GROUP - 1);
+    crypto_blake2b_update(&ctx, shared, sizeof shared);
+    crypto_blake2b_update(&ctx, s_gx_id[lo], 32);
+    crypto_blake2b_update(&ctx, s_gx_id[hi], 32);
+    crypto_blake2b_final(&ctx, out);
+    crypto_wipe(&ctx, sizeof ctx);
+    crypto_wipe(shared, sizeof shared);
+    return true;
+}
+
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines) {
+    crypto_wipe(s_gx_secret, sizeof s_gx_secret);
+    s_gx_machines = 0;
+    if (secret_key == NULL || ids == NULL || machines < 2 || machines > NET_MAX_MACHINES) {
+        return;
+    }
+    /* The scalar EdDSA signs with is the first half of BLAKE2b(seed); X25519
+     * clamps it the same way, and the public side is the same curve point. */
+    uint8_t h[64];
+    crypto_blake2b(h, sizeof h, secret_key, 32);
+    memcpy(s_gx_secret, h, 32);
+    crypto_wipe(h, sizeof h);
+    for (int i = 0; i < machines; i++) {
+        memcpy(s_gx_id[i], ids[i], 32);
+        crypto_eddsa_to_x25519(s_gx_public[i], ids[i]);
+    }
+    s_gx_machines = machines;
+}
+
+void net_key_session_peer(int peer, uint64_t host_nonce, uint64_t guest_nonce) {
     if (s_key_pinned) {
         return;
     }
@@ -184,17 +260,33 @@ void net_key_session(uint64_t host_nonce, uint64_t guest_nonce) {
      * must feed the same bytes in the same order, and local/remote is the
      * one ordering they disagree about. */
     uint8_t m[sizeof KEY_LABEL - 1 + 20], *p = m + sizeof KEY_LABEL - 1;
-    memcpy(m, s_secret_on ? KEY_LABEL_SECRET : KEY_LABEL, sizeof KEY_LABEL - 1);
+    uint8_t link[32];
+    const uint8_t* secret = s_secret;
+    bool keyed = s_secret_on;
+    if (s_gx_machines > 0) {
+        if (!group_link_secret(net.peers[peer].machine, link)) {
+            s_key_on[peer] = false; /* no secret for this link: it stays unkeyed */
+            return;
+        }
+        secret = link;
+        keyed = true;
+    }
+    memcpy(m, keyed ? KEY_LABEL_SECRET : KEY_LABEL, sizeof KEY_LABEL - 1);
     put32(p, net.session);
     put64(p + 4, host_nonce);
     put64(p + 12, guest_nonce);
-    if (s_secret_on) {
-        crypto_blake2b_keyed(s_key, sizeof s_key, s_secret, sizeof s_secret, m, sizeof m);
+    if (keyed) {
+        crypto_blake2b_keyed(s_key[peer], sizeof s_key[peer], secret, 32, m, sizeof m);
+        crypto_wipe(link, sizeof link);
     } else {
-        crypto_blake2b(s_key, sizeof s_key, m, sizeof m);
+        crypto_blake2b(s_key[peer], sizeof s_key[peer], m, sizeof m);
     }
     crypto_wipe(m, sizeof m);
-    s_key_on = true;
+    s_key_on[peer] = true;
+}
+
+void net_key_session(uint64_t host_nonce, uint64_t guest_nonce) {
+    net_key_session_peer(0, host_nonce, guest_nonce);
 }
 
 void pc_net_set_session_secret(const uint8_t* secret) {
@@ -208,43 +300,55 @@ void pc_net_set_session_secret(const uint8_t* secret) {
 }
 
 void net_key_direct(const char* secret) {
-    crypto_blake2b_ctx ctx;
-    crypto_blake2b_init(&ctx, sizeof s_key);
-    crypto_blake2b_update(&ctx, (const uint8_t*)KEY_LABEL_DIRECT, sizeof KEY_LABEL_DIRECT - 1);
-    crypto_blake2b_update(&ctx, (const uint8_t*)secret, strlen(secret));
-    crypto_blake2b_final(&ctx, s_key);
-    crypto_wipe(&ctx, sizeof ctx);
-    s_key_on = s_key_pinned = true;
+    for (int i = 0; i < NET_MAX_PEERS; i++) {
+        crypto_blake2b_ctx ctx;
+        crypto_blake2b_init(&ctx, sizeof s_key[i]);
+        crypto_blake2b_update(&ctx, (const uint8_t*)KEY_LABEL_DIRECT, sizeof KEY_LABEL_DIRECT - 1);
+        crypto_blake2b_update(&ctx, (const uint8_t*)secret, strlen(secret));
+        crypto_blake2b_final(&ctx, s_key[i]);
+        crypto_wipe(&ctx, sizeof ctx);
+        s_key_on[i] = true;
+    }
+    s_key_pinned = true;
 }
 
 void net_key_clear(void) {
     crypto_wipe(s_key, sizeof s_key);
-    s_key_on = s_key_pinned = false;
+    memset(s_key_on, 0, sizeof s_key_on);
+    s_key_pinned = false;
+}
+
+bool net_key_ready_peer(int peer) {
+    return s_key_on[peer];
 }
 
 bool net_key_ready(void) {
-    return s_key_on;
+    return net_key_ready_peer(0);
 }
 
 bool net_key_pinned(void) {
     return s_key_pinned;
 }
 
-void net_mac_stamp(void* buf, size_t len) {
+void net_mac_stamp_peer(int peer, void* buf, size_t len) {
     uint8_t* mac = (uint8_t*)buf + len;
-    if (!s_key_on) {
+    if (!s_key_on[peer]) {
         memset(mac, 0, NET_MAC_LEN);
         return;
     }
-    crypto_blake2b_keyed(mac, NET_MAC_LEN, s_key, sizeof s_key, buf, len);
+    crypto_blake2b_keyed(mac, NET_MAC_LEN, s_key[peer], sizeof s_key[peer], buf, len);
 }
 
-bool net_mac_ok(const void* buf, size_t len) {
-    if (!s_key_on) {
+void net_mac_stamp(void* buf, size_t len) {
+    net_mac_stamp_peer(0, buf, len);
+}
+
+bool net_mac_ok_peer(int peer, const void* buf, size_t len) {
+    if (!s_key_on[peer]) {
         return false;
     }
     uint8_t want[NET_MAC_LEN];
-    crypto_blake2b_keyed(want, NET_MAC_LEN, s_key, sizeof s_key, buf, len);
+    crypto_blake2b_keyed(want, NET_MAC_LEN, s_key[peer], sizeof s_key[peer], buf, len);
     const uint8_t* got = (const uint8_t*)buf + len;
     /* Compared without an early exit: a tag is rejected in the same time
      * whichever byte of it is wrong, so resends cannot be timed into a
@@ -255,6 +359,10 @@ bool net_mac_ok(const void* buf, size_t len) {
     }
     crypto_wipe(want, sizeof want);
     return diff == 0;
+}
+
+bool net_mac_ok(const void* buf, size_t len) {
+    return net_mac_ok_peer(0, buf, len);
 }
 
 /* A header in wire order, ready to send. */

@@ -15,6 +15,7 @@
 #include <sysdolphin/baselib/memory.h>
 #ifdef TARGET_PC
 #include "gmonlinemode.h"
+#include <melee/mn/mnonline.h>
 #endif
 
 struct DebugSoundTestData {
@@ -179,6 +180,17 @@ void onEnter(GameModeState* scene)
         data->hovered_selection = SEL_1P_TRAINING;
         return;
     case GM_VS:
+#ifdef TARGET_PC
+        {
+            /* LOCAL on the MELEE VS page comes back to that page. */
+            int kind, row;
+            if (mnOnline_ReturnFromLocal(&kind, &row)) {
+                data->menu_kind = kind;
+                data->hovered_selection = row;
+                return;
+            }
+        }
+#endif
         data->menu_kind = MENU_KIND_VS;
         data->hovered_selection = SEL_VS_MELEE;
         return;
@@ -188,10 +200,12 @@ void onEnter(GameModeState* scene)
         return;
 #ifdef TARGET_PC
     case GM_ONLINE:
-        data->menu_kind = MENU_KIND_ONLINE;
-        data->hovered_selection = gmOnline_GetKind() == ONLINE_KIND_DIRECT
-                                      ? SEL_ONLINE_DIRECT
-                                      : SEL_ONLINE_LAN;
+        {
+            int kind, row;
+            mnOnline_ReturnMenu(gmOnline_GetKind(), &kind, &row);
+            data->menu_kind = kind;
+            data->hovered_selection = row;
+        }
         return;
 #endif
     case GM_CAMERA_MODE:

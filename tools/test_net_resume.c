@@ -20,6 +20,15 @@
 #include "../src/pc/net.c"
 #include "../src/sysdolphin/baselib/rumble.c"
 
+/* The single peer's state, under the names this test grew up with. */
+#define s_remote_have (net.peers[0].remote_have)
+#define s_remote_newest (net.peers[0].remote_newest)
+#define s_remote_ring (net.peers[0].remote_ring)
+#define s_last_acked (net.peers[0].last_acked)
+#define s_heard (net.peers[0].heard)
+#define s_mac_seen (net.peers[0].mac_seen)
+#define s_last_rx_ns (net.peers[0].last_rx_ns)
+
 #include <stdarg.h>
 
 /* not <assert.h>: the decomp's debug.h owns __assert, and -DNDEBUG must not blind this */
@@ -173,7 +182,8 @@ void net_addr_text(const struct sockaddr* sa, char* out, size_t cap) {
     snprintf(out, cap, "peer");
 }
 /* net_sim.c */
-void tx(const void* buf, size_t len) {
+void tx_to(int peer, const void* buf, size_t len) {
+    (void)peer;
     const uint8_t* p = buf;
     net.tx_pkts++;
     if (p[0] == 'M' && len >= offsetof(Packet, pads)) {
@@ -183,6 +193,9 @@ void tx(const void* buf, size_t len) {
         s_tx_pkt_valid = true;
         net.tx_inputs++;
     }
+}
+void tx(const void* buf, size_t len) {
+    tx_to(0, buf, len);
 }
 void tx_flush(void) {}
 int held_put(Held* held, const void* buf, size_t len, uint64_t release_ns) {
@@ -231,6 +244,24 @@ void on_rel_ack(const RelAck* k) {
     (void)k;
 }
 void rel_reset(void) {}
+/* the per-peer entry points net.c uses in a 3-4 machine match: the resume
+ * machine only ever talks to one peer, so they fall through to the plain ones */
+bool net_rel_send_peer(int peer, uint8_t type, const void* payload, int len) {
+    (void)peer;
+    return pc_net_send_reliable(type, payload, len);
+}
+void on_rel_from(int peer, const Rel* r, int n) {
+    (void)peer;
+    on_rel(r, n);
+}
+void on_rel_ack_from(int peer, const RelAck* k) {
+    (void)peer;
+    on_rel_ack(k);
+}
+int pc_net_partner_bind_of(int machine) {
+    (void)machine;
+    return -1;
+}
 
 /* net_handshake.c / net_sync.c */
 void rules_restore(void) {}
@@ -247,6 +278,7 @@ int pc_net_game_port(int machine, int slot) {
 bool pc_net_matchmade(void) {
     return false;
 }
+void pc_net_clear_group_layout(void) {}
 void adv_note(int remote_adv, int local_adv) {
     (void)remote_adv;
     (void)local_adv;
@@ -432,6 +464,7 @@ static void setup(void) {
     net.active = true;
     net.local = 0;
     net.remote = 1;
+    net.peers[0].machine = 1; /* what connect_impl records for the peer */
     net.session = SESSION;
     net.seed = SEED;
     /* Mid-match means the match was agreed: session_established() is the
@@ -444,12 +477,12 @@ static void setup(void) {
     net.tick_frame = FRAME - 1;
     /* The peer's address: loopback discard, so sendto() succeeds and nothing
      * ever answers. */
-    struct sockaddr_in* p = (struct sockaddr_in*)&net.peer;
+    struct sockaddr_in* p = (struct sockaddr_in*)&net.peers[0].addr;
     memset(p, 0, sizeof *p);
     p->sin_family = AF_INET;
     p->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     p->sin_port = htons(9);
-    net.peer_len = sizeof *p;
+    net.peers[0].addr_len = sizeof *p;
     s_wrote = WROTE;
     s_remote_have = HAVE;
     s_last_acked = ACKED;
@@ -503,7 +536,7 @@ static void peer_pads(int32_t first, int32_t last) {
         pk.pads[i].pad[0].button = (uint16_t)(0x2000 + first + i);
     }
     peer_heard();
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
 }
 
 /* The peer's checksum for `frame`, as the one report an input packet
@@ -515,7 +548,7 @@ static void peer_ck(int32_t frame, uint32_t ck) {
     pk.newest = frame;
     pk.ck_frame = frame;
     pk.ck = ck;
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
 }
 
 /* ---- cases ------------------------------------------------------------ */
@@ -922,7 +955,7 @@ static void case_receive_identity(void) {
     recv_inputs();
     assert(!s_peer_left && net.session == SESSION);
 
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     a.h.magic = '?';
     send_dg(sender, &dst, &a, sizeof a);
     recv_inputs();
@@ -954,11 +987,12 @@ static void case_session_learned_only_from_rules(void) {
     setup();
     net.local = 1; /* the guest */
     net.remote = 0;
+    net.peers[0].machine = 0;
     net.session = 0; /* not told one yet: this is the learning window */
     net.hs = HS_PENDING;
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
 
     Ack a = {{'A', WIRE_VERSION, SESSION, 0}, 0, -1};
     wire_hdr(&a.h);
@@ -1013,7 +1047,7 @@ static void case_old_protocol(void) {
     setup();
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     Ack a = {{'A', 5, SESSION, 1}, 0, -1};
     wire_hdr(&a.h);
     wire_ack(&a);
@@ -1033,7 +1067,7 @@ static void case_bad_mac_rejected(void) {
     setup();
     struct sockaddr_in dst, src;
     sock_t sender = probe_open(&dst, &src);
-    memcpy(&net.peer, &src, sizeof src);
+    memcpy(&net.peers[0].addr, &src, sizeof src);
     net_key_direct("shared secret");
     assert(net_key_ready() && !s_mac_seen);
     /* A pinned key refuses from the very first datagram: it is not waiting
@@ -1127,7 +1161,7 @@ static void deliver_changed_input(void) {
     for (int i = 0; i < pk.count; i++) {
         pk.pads[i].pad[0].button = 0x100;
     }
-    on_inputs(&pk, false);
+    on_inputs(&net.peers[0], &pk, false);
     s_step = NULL;
 }
 
@@ -1314,12 +1348,12 @@ static void case_desync_checks_every_reported_frame(void) {
     peer_ck(HAVE + 5, 0x195); /* ahead of us, and it disagrees */
     peer_ck(HAVE + 7, 0x197); /* the next report must not bury it */
     check_desync();
-    assert(!net.desync_reported && s_ck_checked == HAVE);
+    assert(!net.desync_reported && net.peers[0].ck_checked == HAVE);
     peer_pads_as_predicted(); /* now we confirm through 198 */
     assert(confirmed_frame() == HAVE + 8);
     check_desync();
     assert(net.desync_reported);
-    assert(logged("net: DESYNC at frame 195 (local 00000bad remote 00000195)"));
+    assert(logged("net: DESYNC at frame 195 against machine 1 (local 00000bad remote 00000195)"));
     assert(logged_count("net: DESYNC") == 1);
     pc_net_disconnect();
 
@@ -1332,7 +1366,7 @@ static void case_desync_checks_every_reported_frame(void) {
     peer_ck(HAVE + 7, 0x197);
     peer_pads_as_predicted();
     check_desync();
-    assert(!net.desync_reported && s_ck_checked == HAVE + 7);
+    assert(!net.desync_reported && net.peers[0].ck_checked == HAVE + 7);
     /* Before ck_from the lobbies differ by design: never compared. */
     setup();
     net.ck_from = HAVE + 6;

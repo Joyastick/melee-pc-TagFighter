@@ -21,6 +21,10 @@ void pc_set_net_target(const char* code);
  * none has been saved yet. */
 bool pc_get_meleevs_team(uint8_t out[9]);
 void pc_set_meleevs_team(const uint8_t team[9]);
+/* The fighter (a CharacterKind) picked on the Party page, kept apart from the
+ * Matchmaking team. get returns -1 when none has been picked. */
+int pc_get_party_pick(void);
+void pc_set_party_pick(int ckind);
 #ifdef __cplusplus
 }
 #endif
