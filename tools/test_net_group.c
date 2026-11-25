@@ -17,6 +17,13 @@ bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* 
     return true;
 }
 
+static int s_gid_machines;
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines) {
+    (void)ids;
+    s_gid_machines = secret_key != NULL ? machines : 0;
+}
+
 static GroupMember member(uint8_t k, uint32_t ip) {
     GroupMember m;
     memset(&m, 0, sizeof m);
@@ -104,10 +111,17 @@ int main(void) {
     /* connect: a member behind our own public IP is dialled on its LAN address */
     assert(group_from_parties(&r, parties, sizes, 2));
     r.m[1].pub_ip = r.m[0].pub_ip; /* machines 0 and 1 share a router */
-    assert(group_connect(&r, 0, -1, 1) && s_connect_machines == 4 && s_connect_local == 0);
+    assert(group_connect(&r, 0, -1, 1, NULL) && s_connect_machines == 4 && s_connect_local == 0);
     assert(strcmp(s_ip1, "192.168.0.2") == 0);
-    assert(group_connect(&r, 2, -1, 1) && strcmp(s_ip1, "1.1.1.1") == 0); /* 3 dials 0 publicly */
-    assert(!group_connect(&r, 4, -1, 1));
+    /* 3 dials 0 publicly */
+    assert(group_connect(&r, 2, -1, 1, NULL) && strcmp(s_ip1, "1.1.1.1") == 0);
+    assert(!group_connect(&r, 4, -1, 1, NULL));
+    /* with an identity: it must be the roster's own entry, and keys all four machines */
+    PcNetIdentity me;
+    memset(&me, 0, sizeof me);
+    memcpy(me.public_key, r.m[1].key, 32);
+    assert(!group_connect(&r, 0, -1, 1, &me) && s_gid_machines == 0);
+    assert(group_connect(&r, 1, -1, 1, &me) && s_gid_machines == 4);
 
     puts("PASS: parties make teams, ports follow teams, roster round-trips, bad rosters refused");
     return 0;

@@ -2241,6 +2241,7 @@ void pc_net_disconnect(void) {
      * pairing secret it was derived under. */
     net_key_clear();
     pc_net_set_session_secret(NULL);
+    pc_net_set_group_identity(NULL, NULL, 0);
     rules_restore();
     HSD_PadLibData.qtype = 0;
     SDL_UnlockMutex(net.tx_lock);
@@ -2540,12 +2541,14 @@ static bool connect_impl(
 
 bool pc_net_connect(const char* ip, uint16_t port, int player, uint32_t seed) {
     pc_net_set_session_secret(NULL); /* only matchmaking agrees one */
+    pc_net_set_group_identity(NULL, NULL, 0);
     return connect_impl(SOCK_INVALID, ip, port, player, seed);
 }
 bool pc_net_connect_socket(
     intptr_t socket, const char* ip, uint16_t port, int player, uint32_t seed) {
     if (socket == -1)
         return false;
+    pc_net_set_group_identity(NULL, NULL, 0);
     return connect_impl((sock_t)socket, ip, port, player, seed);
 }
 

@@ -3,6 +3,7 @@
 #define PC_NET_GROUP_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "net_identity.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,8 +64,11 @@ int group_roster_decode(GroupRoster* r, const uint8_t* in, int len);
 
 /* Open the session for machine `local` of an agreed roster on `socket` (-1
  * binds a new one): each other machine is dialled on its LAN address when it
- * shares our public IP, else on its public one. */
-bool group_connect(const GroupRoster* r, int local, intptr_t socket, uint32_t seed);
+ * shares our public IP, else on its public one. `id` is our identity, which
+ * must be the roster's `local` entry; it keys every link under the identities
+ * the roster names (NULL keeps nonce-only keys). */
+bool group_connect(
+    const GroupRoster* r, int local, intptr_t socket, uint32_t seed, const PcNetIdentity* id);
 
 #ifdef __cplusplus
 }

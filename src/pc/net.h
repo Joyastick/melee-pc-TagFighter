@@ -82,6 +82,12 @@ bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* 
  * Set just before pc_net_connect_socket(); the handshake's datagram key is
  * then derived under it, and it is wiped when that session ends. */
 void pc_net_set_session_secret(const uint8_t* secret);
+/* For a group match: our identity secret key and every machine's identity key
+ * (indexed by machine number). Set just before pc_net_connect_group(); each
+ * link's datagram key is then derived under the X25519 secret between the two
+ * machines' identities. NULL clears it; any other connect and disconnect do. */
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines);
 /* Offered every IPv4 datagram on the session socket before the session sees
  * it; true consumes it. Runs on net.c's receive thread, and
  * pc_net_set_datagram_handler() returns only once no call into the previous

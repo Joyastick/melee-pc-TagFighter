@@ -430,6 +430,58 @@ int main(void) {
         net_key_clear();
         net_key_session(host_nonce, guest_nonce);
         assert(memcmp(s_key, key_guest, sizeof key_guest) == 0);
+
+        /* A group keys each link under X25519 between the two machines'
+         * identities: the two ends of a link agree, another link differs, and
+         * a machine that is not on the link (or holds another secret key)
+         * gets nothing it can verify with. */
+        uint8_t sk[3][64], pk[3][32], ids[3][32];
+        for (int i = 0; i < 3; i++) {
+            uint8_t seed[32];
+            memset(seed, 0x30 + i, sizeof seed);
+            crypto_eddsa_key_pair(sk[i], pk[i], seed);
+            memcpy(ids[i], pk[i], 32);
+        }
+        uint8_t k12[2][32], k02[32], k01[32];
+        int old_local = net.local, old_machine = net.peers[0].machine;
+        for (int end = 0; end < 2; end++) { /* machine 1 then machine 2, each facing the other */
+            int me = end + 1, other = 2 - end;
+            net.local = me;
+            net.peers[0].machine = other;
+            pc_net_set_group_identity(sk[me], (const uint8_t(*)[32])ids, 3);
+            net_key_clear();
+            net_key_session_peer(0, host_nonce, guest_nonce);
+            assert(net_key_ready_peer(0));
+            memcpy(k12[end], s_key[0], 32);
+        }
+        assert(memcmp(k12[0], k12[1], 32) == 0);
+        assert(memcmp(k12[0], key_guest, 32) != 0);
+        net.local = 0;
+        net.peers[0].machine = 2;
+        pc_net_set_group_identity(sk[0], (const uint8_t(*)[32])ids, 3);
+        net_key_clear();
+        net_key_session_peer(0, host_nonce, guest_nonce);
+        memcpy(k02, s_key[0], 32);
+        net.peers[0].machine = 1;
+        net_key_session_peer(0, host_nonce, guest_nonce);
+        memcpy(k01, s_key[0], 32);
+        assert(memcmp(k02, k12[0], 32) != 0 && memcmp(k01, k12[0], 32) != 0 &&
+               memcmp(k01, k02, 32) != 0);
+        /* machine 0 cannot produce 1's and 2's key without one of their secrets */
+        net.local = 1;
+        net.peers[0].machine = 2;
+        pc_net_set_group_identity(sk[0], (const uint8_t(*)[32])ids, 3);
+        net_key_session_peer(0, host_nonce, guest_nonce);
+        assert(memcmp(s_key[0], k12[0], 32) != 0);
+        /* a machine number outside the roster stays unkeyed */
+        net_key_clear();
+        net.peers[0].machine = 3;
+        net_key_session_peer(0, host_nonce, guest_nonce);
+        assert(!net_key_ready_peer(0));
+        pc_net_set_group_identity(NULL, NULL, 0);
+        net.local = old_local;
+        net.peers[0].machine = old_machine;
+        net_key_clear();
     }
     side_save(&host);
     printf("ok 1: exchange completes, host %016llx / guest %016llx bound both ways\n",

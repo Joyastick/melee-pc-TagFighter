@@ -114,6 +114,10 @@ char* SDL_strdup(const char* s) {
 }
 /* the 3-4 machine team matches (net_group.c, net_group_lobby.c, net_handshake.c) are not
  * exercised here: only what net_match.c links against */
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines) {
+    (void)secret_key, (void)ids, (void)machines;
+}
 bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
     const uint16_t* ports, uint32_t seed) {
     (void)socket;

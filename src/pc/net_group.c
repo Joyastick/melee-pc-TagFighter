@@ -154,7 +154,8 @@ int group_roster_decode(GroupRoster* r, const uint8_t* in, int len) {
     return need;
 }
 
-bool group_connect(const GroupRoster* r, int local, intptr_t socket, uint32_t seed) {
+bool group_connect(
+    const GroupRoster* r, int local, intptr_t socket, uint32_t seed, const PcNetIdentity* id) {
     if (group_roster_check(r) != NULL || local < 0 || local >= r->n) {
         return false;
     }
@@ -170,5 +171,20 @@ bool group_connect(const GroupRoster* r, int local, intptr_t socket, uint32_t se
             (ip >> 8) & 255, ip & 255);
         ips[i] = text[i];
     }
-    return pc_net_connect_group(socket, local, r->n, ips, ports, seed);
+    if (id != NULL) {
+        /* Every link is keyed under the identities the roster names. */
+        if (memcmp(id->public_key, r->m[local].key, 32) != 0) {
+            return false;
+        }
+        uint8_t ids[GROUP_MAX][32];
+        for (int i = 0; i < r->n; i++) {
+            memcpy(ids[i], r->m[i].key, 32);
+        }
+        pc_net_set_group_identity(id->secret_key, ids, r->n);
+    }
+    bool ok = pc_net_connect_group(socket, local, r->n, ips, ports, seed);
+    if (!ok) {
+        pc_net_set_group_identity(NULL, NULL, 0);
+    }
+    return ok;
 }

@@ -22,6 +22,10 @@ void pc_dht_sha1(const void* data, size_t length, uint8_t out[20]) {
 void pc_log_line(const char* fmt, ...) {
     (void)fmt;
 }
+void pc_net_set_group_identity(
+    const uint8_t secret_key[64], const uint8_t (*ids)[32], int machines) {
+    (void)secret_key, (void)ids, (void)machines;
+}
 bool pc_net_connect_group(intptr_t socket, int local, int machines, const char* const* ips,
     const uint16_t* ports, uint32_t seed) {
     (void)socket, (void)local, (void)machines, (void)ips, (void)ports, (void)seed;

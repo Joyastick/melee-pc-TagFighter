@@ -1705,7 +1705,7 @@ static bool pm_connect(void) {
     pc_rdv_stop();
     intptr_t fd = pc_dht_take_socket();
     party_drop(); /* the link's socket becomes the match session */
-    if (!group_connect(&pm.desc.roster, local, fd, seed))
+    if (!group_connect(&pm.desc.roster, local, fd, seed, &identity))
         return false;
     /* Who sits on which game port: team t owns ports 2t and 2t+1; a team of one
      * machine has its second fighter (assist or couch player) on the next. */
@@ -2260,7 +2260,7 @@ static void group_poll(uint64_t now) {
             return;
         }
         pc_log_line("match: group of %d agreed, we are machine %d", r->n, local);
-        if (!group_connect(r, local, pc_dht_take_socket(), seed)) {
+        if (!group_connect(r, local, pc_dht_take_socket(), seed, &identity)) {
             fail("group connect failed");
             return;
         }
